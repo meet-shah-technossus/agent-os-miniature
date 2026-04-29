@@ -158,14 +158,21 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
     data_dir = ctx.config.storage.data_dir
     mod_json_path = data_dir / "modules" / f"{module_id}.json"
     if not mod_json_path.exists():
-        # JSON was never written (e.g. old data, pre-fix run). Auto-recover by
-        # re-running Module Maker rather than permanently failing the pipeline.
-        console.print(
-            f"[yellow]Module definition JSON missing for {module_id} "
-            f"({mod_json_path}) — auto-recovering via Module Maker.[/yellow]"
-        )
-        ctx.state_mgr.transition_to(PipelineStatus.MODULE_PLANNING)
-        return
+        # Restore from DB instead of re-running Module Maker for all modules
+        from ..storage.module_repo import ModuleRepository as _MR
+        mod_record = _MR(ctx.db.conn).get(module_id)
+        if mod_record and mod_record.definition_json:
+            mod_json_path.parent.mkdir(parents=True, exist_ok=True)
+            mod_json_path.write_text(mod_record.definition_json, encoding="utf-8")
+            console.print(
+                f"[yellow]Module definition JSON restored from DB for {module_id}[/yellow]"
+            )
+        else:
+            raise RuntimeError(
+                f"Module definition missing for {module_id} — "
+                f"not on disk ({mod_json_path}) and not in DB. "
+                f"Re-run the pipeline from MODULE_PLANNING."
+            )
     mod_def = ModuleDefinition.model_validate_json(mod_json_path.read_text())
 
     console.print(

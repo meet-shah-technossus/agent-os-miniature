@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Optional
 
-from ..config.schema import AgentOSConfig, PromptFramework
+from ..config.schema import AgentOSConfig
 from ..module_maker.schema import ModuleDefinition
 from .frameworks import load_template
 from .schema import FileVerdict, ReviewFeedback
@@ -34,133 +34,13 @@ class PromptGeneratorRunner:
         on_stdout: Optional[Callable[[str], None]] = None,
     ) -> Path:
         """Build the prompt and write it to a stamped file. Returns the path."""
-        if iteration > 1 and review and review.files:
-            # Refinement iteration: generate a focused change-only prompt
-            prompt = self._build_refinement_prompt(module_def, iteration, review)
-        else:
-            # First iteration: full template-based prompt
-            template = load_template(self._config.prompt_framework)
-            filled = self._fill_template(template, module_def, review)
-            prompt = self._enrich_via_chat(filled, module_def)
+        # Always build a full template-based prompt with the complete module spec.
+        # For iteration 2+, the review feedback is included via the review_section
+        # so the code generator has the full context to make targeted changes.
+        template = load_template(self._config.prompt_framework)
+        filled = self._fill_template(template, module_def, review)
+        prompt = self._enrich_via_chat(filled, module_def)
         return self._write_prompt(prompt, module_def.module_id, iteration, self._config)
-
-    # ------------------------------------------------------------------
-    # Refinement prompt (iteration 2+) — focused exclusively on changes
-    # ------------------------------------------------------------------
-
-    def _build_refinement_prompt(
-        self,
-        mod: ModuleDefinition,
-        iteration: int,
-        review: ReviewFeedback,
-    ) -> str:
-        """Build a change-only prompt from the code reviewer's feedback.
-
-        Instead of repeating the full module spec, this tells the code
-        generator exactly which files to modify and what changes to apply.
-        Files marked ACCEPT are explicitly left alone.
-        """
-        project_name = self._config.project.name or "Agent OS Target"
-        language = self._config.project.language
-
-        accepted = []
-        patches = []
-        regenerates = []
-
-        for fr in review.files:
-            if fr.verdict == FileVerdict.ACCEPT:
-                accepted.append(fr.file_path)
-            elif fr.verdict == FileVerdict.PATCH:
-                patches.append(fr)
-            elif fr.verdict == FileVerdict.REGENERATE:
-                regenerates.append(fr)
-
-        lines = [
-            f"# {mod.name} — Iteration {iteration} Refinement",
-            "",
-            "---",
-            "",
-            "## Role",
-            "",
-            f"You are an expert **{language}** developer performing a targeted "
-            f"code refinement for module `{mod.name}` in the **{project_name}** project.",
-            "",
-            "---",
-            "",
-            "## IMPORTANT — This Is a Refinement, NOT a Full Rewrite",
-            "",
-            "The codebase for this module already exists from the previous iteration. "
-            "You MUST only apply the specific changes described below. "
-            "Do NOT regenerate files that are marked as ACCEPTED. "
-            "Do NOT rewrite entire files when only a patch is requested.",
-            "",
-            "---",
-            "",
-        ]
-
-        # Accepted files — do not touch
-        if accepted:
-            lines.append("## Files to LEAVE UNCHANGED (ACCEPTED)")
-            lines.append("")
-            for fp in accepted:
-                lines.append(f"- `{fp}` — **DO NOT MODIFY**")
-            lines.append("")
-            lines.append("---")
-            lines.append("")
-
-        # Patch files — targeted fixes
-        if patches:
-            lines.append("## Files to PATCH (apply targeted fixes)")
-            lines.append("")
-            for fr in patches:
-                lines.append(f"### `{fr.file_path}`")
-                lines.append("")
-                lines.append("Apply the following changes:")
-                lines.append("")
-                for c in fr.comments:
-                    lines.append(f"- {c}")
-                lines.append("")
-            lines.append("---")
-            lines.append("")
-
-        # Regenerate files — full rewrite needed
-        if regenerates:
-            lines.append("## Files to REGENERATE (full rewrite)")
-            lines.append("")
-            for fr in regenerates:
-                lines.append(f"### `{fr.file_path}`")
-                lines.append("")
-                lines.append("Completely rewrite this file addressing:")
-                lines.append("")
-                for c in fr.comments:
-                    lines.append(f"- {c}")
-                lines.append("")
-            lines.append("---")
-            lines.append("")
-
-        # Reviewer summary
-        if review.summary:
-            lines.append("## Reviewer Summary")
-            lines.append("")
-            lines.append(review.summary)
-            lines.append("")
-            lines.append("---")
-            lines.append("")
-
-        # Rules
-        lines.extend([
-            "## Rules for This Refinement",
-            "",
-            "1. **ONLY** modify or rewrite the files listed above.",
-            "2. Do NOT create new files unless explicitly stated in a change.",
-            "3. Do NOT remove, rename, or add API endpoints, classes, functions, "
-            "or database tables beyond what the reviewer requested.",
-            "4. Preserve all existing functionality that was accepted.",
-            "5. After applying changes, write `summary.md` listing each file you "
-            "modified and what you changed. End with the word END on its own line.",
-        ])
-
-        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Template filling (programmatic — no LLM)

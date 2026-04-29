@@ -32,7 +32,6 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.PROMPT_GENERATION: [
         PipelineStatus.HITL_2_PROMPT_REVIEW,
-        PipelineStatus.MODULE_PLANNING,           # auto-recover when module JSON missing
         PipelineStatus.FAILED,
     ],
     PipelineStatus.HITL_2_PROMPT_REVIEW: [
