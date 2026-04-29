@@ -331,6 +331,7 @@ def handle_code_generation(ctx: HandlerContext) -> None:
         f"[cyan]Code Generator — generating code for {module_id} "
         f"(iteration {iteration})[/cyan]"
     )
+    console.print(f"  [dim]Working dir: {working_dir}[/dim]")
 
     def _stream_line(line: str) -> None:
         ctx.bus.publish(GenerationStatusMessage(
@@ -340,12 +341,20 @@ def handle_code_generation(ctx: HandlerContext) -> None:
             payload={"stream": "stdout", "line": line},
         ))
 
+    # Both stdout and stderr from Codex go to the Rich console so the user
+    # can see what Codex is doing (and see any auth/rate-limit error messages).
+    _ERROR_KEYWORDS = ("error", "unauthorized", "rate limit", "quota", "invalid api key", "timeout")
+
     def _stream_and_log(line: str) -> None:
-        logger.info("[Codex/codegen] %s", line)
+        if line.strip():
+            level = "red" if any(k in line.lower() for k in _ERROR_KEYWORDS) else "dim"
+            console.print(f"  [{level}][codex] {line}[/{level}]")
         _stream_line(line)
 
     def _log_stderr(line: str) -> None:
-        logger.info("[Codex/codegen/err] %s", line)
+        if line.strip():
+            level = "red" if any(k in line.lower() for k in _ERROR_KEYWORDS) else "dim"
+            console.print(f"  [{level}][codex/err] {line}[/{level}]")
 
     runner = CodeGeneratorRunner(config=ctx.config)
     gen_result = runner.run(iter_record.prompt_path, working_dir, on_stdout=_stream_and_log, on_stderr=_log_stderr)
