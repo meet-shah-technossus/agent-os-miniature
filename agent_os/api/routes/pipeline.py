@@ -458,7 +458,9 @@ class ResetResponse(BaseModel):
 def reset_pipeline(orch=Depends(get_orchestrator)):
     """Fully reset the pipeline: delete all modules, iterations, requirements,
     prompts, reviews, validations from DB and data files. Generated code on
-    disk is retained. Pipeline returns to IDLE state."""
+    disk is retained in the current project folder. A new versioned project
+    folder (name_v2, name_v3, …) is created and linked for the next session."""
+    import re
     import shutil
 
     try:
@@ -481,17 +483,43 @@ def reset_pipeline(orch=Depends(get_orchestrator)):
             if target.exists():
                 shutil.rmtree(target)
 
-        # Clean up .venv in project folder (auto-recreated on next run) but
-        # keep source code files the user may want to reference
-        proj_root = orch.config.project.root_path
-        if proj_root:
-            venv_dir = Path(proj_root) / ".venv"
-            if venv_dir.exists():
-                shutil.rmtree(venv_dir)
+        # ---------------------------------------------------------------
+        # Compute next versioned project folder
+        # ---------------------------------------------------------------
+        # The base slug comes from the current project name (or the
+        # existing root_path folder name as fallback).
+        prev_root = orch.config.project.root_path
+        project_name = orch.config.project.name or ""
 
-        # Reset project root_path and name in config so they re-provision on next start
-        orch.config.project.root_path = ""
-        orch.config.project.name = ""
+        def _slug(name: str) -> str:
+            return re.sub(r"[^\w\s-]", "", name).strip().replace(" ", "-").lower() or "agent-os-project"
+
+        if project_name:
+            base_slug = _slug(project_name)
+        elif prev_root:
+            # Strip any existing _vN suffix to find the true base name
+            folder_name = Path(prev_root).name
+            base_slug = re.sub(r"_v\d+$", "", folder_name) or _slug(folder_name)
+        else:
+            base_slug = "agent-os-project"
+
+        desktop = Path.home() / "Desktop"
+
+        # Find the next available version number.
+        # v1 is the original (un-suffixed) folder; v2 is the first reset copy.
+        version = 2
+        while (desktop / f"{base_slug}_v{version}").exists():
+            version += 1
+
+        new_project_dir = desktop / f"{base_slug}_v{version}"
+        new_project_dir.mkdir(parents=True, exist_ok=True)
+
+        # ---------------------------------------------------------------
+        # Persist new versioned path to config for the next session
+        # ---------------------------------------------------------------
+        orch.config.project.root_path = str(new_project_dir)
+        # Keep project.name so the next session knows the project identity;
+        # the folder name carries the version.
         try:
             from ..deps import orch_holder
             from .settings import _write_config_yaml
@@ -501,7 +529,11 @@ def reset_pipeline(orch=Depends(get_orchestrator)):
 
         return ResetResponse(
             success=True,
-            message="Pipeline fully reset. All module data cleared. Generated source code retained on disk.",
+            message=(
+                f"Pipeline reset. Previous code retained in "
+                f"{Path(prev_root).name if prev_root else '(none)'}. "
+                f"New session will use: {new_project_dir.name}"
+            ),
         )
     except Exception as e:
         return ResetResponse(success=False, message=f"Reset failed: {e}")
