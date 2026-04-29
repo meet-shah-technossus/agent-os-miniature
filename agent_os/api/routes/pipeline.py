@@ -458,9 +458,9 @@ class ResetResponse(BaseModel):
 def reset_pipeline(orch=Depends(get_orchestrator)):
     """Fully reset the pipeline: delete all modules, iterations, requirements,
     prompts, reviews, validations from DB and data files. Generated code on
-    disk is retained in the current project folder. A new versioned project
-    folder (name_v2, name_v3, …) is created and linked for the next session."""
-    import re
+    disk is retained in the current project folder. The new session will
+    provision a fresh project folder based on the new requirements loaded
+    after this reset (auto-versioning if the name already exists on disk)."""
     import shutil
 
     try:
@@ -476,50 +476,19 @@ def reset_pipeline(orch=Depends(get_orchestrator)):
         orch.state_mgr.reset()
 
         # Clear data files (prompts, reviews, validations, modules JSONs)
-        # but leave the DB itself intact
+        # but leave the DB itself and the generated source code intact
         data_dir = orch.config.storage.data_dir
         for subdir in ("modules", "prompts", "reviews", "validations", "summaries"):
             target = data_dir / subdir
             if target.exists():
                 shutil.rmtree(target)
 
-        # ---------------------------------------------------------------
-        # Compute next versioned project folder
-        # ---------------------------------------------------------------
-        # The base slug comes from the current project name (or the
-        # existing root_path folder name as fallback).
         prev_root = orch.config.project.root_path
-        project_name = orch.config.project.name or ""
 
-        def _slug(name: str) -> str:
-            return re.sub(r"[^\w\s-]", "", name).strip().replace(" ", "-").lower() or "agent-os-project"
-
-        if project_name:
-            base_slug = _slug(project_name)
-        elif prev_root:
-            # Strip any existing _vN suffix to find the true base name
-            folder_name = Path(prev_root).name
-            base_slug = re.sub(r"_v\d+$", "", folder_name) or _slug(folder_name)
-        else:
-            base_slug = "agent-os-project"
-
-        desktop = Path.home() / "Desktop"
-
-        # Find the next available version number.
-        # v1 is the original (un-suffixed) folder; v2 is the first reset copy.
-        version = 2
-        while (desktop / f"{base_slug}_v{version}").exists():
-            version += 1
-
-        new_project_dir = desktop / f"{base_slug}_v{version}"
-        new_project_dir.mkdir(parents=True, exist_ok=True)
-
-        # ---------------------------------------------------------------
-        # Persist new versioned path to config for the next session
-        # ---------------------------------------------------------------
-        orch.config.project.root_path = str(new_project_dir)
-        # Keep project.name so the next session knows the project identity;
-        # the folder name carries the version.
+        # Clear name and root_path so the next session derives both from the
+        # new requirements.yaml and auto-provisions a fresh versioned folder.
+        orch.config.project.root_path = ""
+        orch.config.project.name = ""
         try:
             from ..deps import orch_holder
             from .settings import _write_config_yaml
@@ -527,12 +496,12 @@ def reset_pipeline(orch=Depends(get_orchestrator)):
         except Exception:
             pass
 
+        prev_label = Path(prev_root).name if prev_root else "(none)"
         return ResetResponse(
             success=True,
             message=(
-                f"Pipeline reset. Previous code retained in "
-                f"{Path(prev_root).name if prev_root else '(none)'}. "
-                f"New session will use: {new_project_dir.name}"
+                f"Pipeline reset. Previous code retained in {prev_label}. "
+                f"Load new requirements to start the next session."
             ),
         )
     except Exception as e:

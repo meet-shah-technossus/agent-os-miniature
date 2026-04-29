@@ -23,7 +23,12 @@ def handle_idle(ctx: HandlerContext) -> None:
 
 
 def _auto_provision_project_folder(ctx: HandlerContext) -> None:
-    """Create a project folder on Desktop from the project name in config."""
+    """Create a versioned project folder on Desktop from the project name in config.
+
+    If ``{slug}`` already exists (left over from a previous session), the folder
+    is named ``{slug}_v2``, ``{slug}_v3``, etc. so each session gets its own
+    isolated directory without touching any prior version's code.
+    """
     from pathlib import Path as _Path
     import re
 
@@ -33,12 +38,20 @@ def _auto_provision_project_folder(ctx: HandlerContext) -> None:
     if not slug:
         slug = "agent-os-project"
 
-    desktop = _Path.home() / "Desktop" / slug
-    desktop.mkdir(parents=True, exist_ok=True)
-    ctx.config.project.root_path = str(desktop)
+    desktop_base = _Path.home() / "Desktop"
+    candidate = desktop_base / slug
+    if candidate.exists():
+        # Bump version until we find an unused name
+        version = 2
+        while (desktop_base / f"{slug}_v{version}").exists():
+            version += 1
+        candidate = desktop_base / f"{slug}_v{version}"
 
-    console.print(f"[green]Project folder: {desktop}[/green]")
-    logger.info("Auto-provisioned project folder: %s", desktop)
+    candidate.mkdir(parents=True, exist_ok=True)
+    ctx.config.project.root_path = str(candidate)
+
+    console.print(f"[green]Project folder: {candidate}[/green]")
+    logger.info("Auto-provisioned project folder: %s", candidate)
 
     # Persist both name and root_path to config.yaml so they survive restarts
     try:
