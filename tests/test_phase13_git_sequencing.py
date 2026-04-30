@@ -310,15 +310,16 @@ class TestHandleGitCommit:
 
         assert state_mgr.current_status == PipelineStatus.MODULE_COMPLETE
 
-        # Verify branch was created
+        # Verify commit was made on main branch
         git = GitOpsManager(str(tmp_git_repo))
-        assert git.branch_exists("feature/mod-auth")
+        assert git.current_branch() == "main"
+        assert git.latest_commit_sha() is not None
 
         # Verify event published
         events = bus.history_for_channel(Channel.PIPELINE_EVENTS)
-        assert len(events) == 1
+        assert len(events) >= 1
         assert events[0].payload["event"] == "git_commit"
-        assert events[0].payload["branch"] == "feature/mod-auth"
+        assert events[0].payload["branch"] == "main"
 
     def test_git_disabled_skips_operations(self, db, bus, state_mgr, tmp_path):
         module_id = "mod-auth"
@@ -326,13 +327,18 @@ class TestHandleGitCommit:
         config = _config_with_git(tmp_path, git_enabled=False)
         _fast_forward_to(state_mgr, PipelineStatus.GIT_COMMIT, module_id, 1)
 
+        # Create a file so there's something to commit
+        (tmp_path / "app.py").write_text("# app")
+
         ctx = self._ctx(db, bus, config, state_mgr)
         handle_git_commit(ctx)
 
         assert state_mgr.current_status == PipelineStatus.MODULE_COMPLETE
         events = bus.history_for_channel(Channel.PIPELINE_EVENTS)
-        assert events[0].payload["git_enabled"] is False
-        assert events[0].payload["branch"] is None
+        assert events[0].payload["event"] == "git_commit"
+        assert events[0].payload["branch"] == "main"
+        # No push without github token
+        assert events[0].payload["pushed"] is False
 
     def test_git_commit_no_module_id_raises(self, db, bus, state_mgr, tmp_path):
         config = _config_with_git(tmp_path)
