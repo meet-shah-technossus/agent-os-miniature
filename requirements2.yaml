@@ -1,0 +1,210 @@
+epics:
+  - id: "E1"
+    title: "E-Commerce Storefront Lite"
+    description: >
+      A full-featured but compact e-commerce web application.
+      Frontend uses React + Tailwind CSS. Backend uses Python FastAPI with SQL database
+      operations. Authentication uses JWT with signup and login. The app supports
+      browsing products, searching products, and viewing user orders across multiple pages.
+    features:
+      - id: "F1"
+        title: "Backend API and SQL Data Model"
+        description: >
+          Build a Python FastAPI backend with SQL persistence (SQLite or PostgreSQL).
+          Use exactly 3 tables: users, products, orders. Expose REST endpoints for
+          product browsing/search and order display tied to authenticated users.
+        stories:
+          - id: "S1"
+            title: "Create SQL schema with 3 tables"
+            description: >
+              Create the following SQL tables:
+              users(id, name, email unique, password_hash, created_at),
+              products(id, name, description, category, price, stock_qty, image_url nullable,
+              created_at),
+              orders(id, user_id FK users.id, product_id FK products.id, quantity,
+              unit_price, total_price, order_status, created_at).
+              Run schema creation on app startup if tables do not exist.
+            acceptance_criteria:
+              - id: "AC1"
+                title: "Exactly three tables are created"
+                description: >
+                  On startup, database contains users, products, and orders tables only
+                  for application domain data.
+              - id: "AC2"
+                title: "Foreign key relationships are enforced"
+                description: >
+                  orders.user_id references users.id and orders.product_id references products.id.
+
+          - id: "S2"
+            title: "Product display and search APIs"
+            description: >
+              Implement APIs: GET /products, GET /products/{id}.
+              GET /products supports query params for search, category, min_price,
+              max_price, sort_by (price or created_at), and page/page_size.
+            acceptance_criteria:
+              - id: "AC3"
+                title: "Product list supports search"
+                description: >
+                  GET /products?search=shoe returns products whose name or description
+                  matches "shoe".
+              - id: "AC4"
+                title: "Product list supports filters and sorting"
+                description: >
+                  Query params for category, price range, and sort order are applied correctly.
+
+          - id: "S3"
+            title: "Order display APIs"
+            description: >
+              Implement authenticated APIs: GET /orders and GET /orders/{id}.
+              A user can only view their own orders. Each order response includes
+              basic product details joined from products table.
+            acceptance_criteria:
+              - id: "AC5"
+                title: "Users can view their order history"
+                description: >
+                  GET /orders returns only orders belonging to the authenticated user.
+              - id: "AC6"
+                title: "Unauthorized order access is blocked"
+                description: >
+                  User A cannot retrieve User B's order via GET /orders/{id} and receives 403 or 404.
+
+          - id: "S4"
+            title: "Dashboard summary endpoint"
+            description: >
+              Implement GET /dashboard/summary to return per-user metrics:
+              total_products, total_orders, pending_orders, shipped_orders, total_spent.
+              Metrics must be computed from products and orders tables.
+            acceptance_criteria:
+              - id: "AC7"
+                title: "Summary returns computed metrics"
+                description: >
+                  Endpoint returns all 5 metrics for the authenticated user and values
+                  are derived from current database state.
+
+      - id: "F2"
+        title: "JWT Authentication and Access Control"
+        description: >
+          Add secure signup/login flow with JWT-based authentication and route protection.
+          Passwords must be hashed; protected endpoints require a valid Bearer token.
+        stories:
+          - id: "S5"
+            title: "Signup endpoint"
+            description: >
+              Implement POST /auth/signup accepting name, email, and password.
+              Hash password before storing in users table and reject duplicate emails.
+            acceptance_criteria:
+              - id: "AC8"
+                title: "Valid signup creates user"
+                description: >
+                  Successful signup returns 201 with user id and email, without password hash.
+              - id: "AC9"
+                title: "Duplicate email is rejected"
+                description: >
+                  Signing up with an existing email returns 409.
+
+          - id: "S6"
+            title: "Login endpoint returns JWT"
+            description: >
+              Implement POST /auth/login that validates credentials and issues JWT access token
+              containing user id and email claims with expiration.
+            acceptance_criteria:
+              - id: "AC10"
+                title: "Login returns token"
+                description: >
+                  Valid credentials return 200 with access_token and token_type=bearer.
+              - id: "AC11"
+                title: "Invalid credentials fail"
+                description: >
+                  Incorrect email or password returns 401.
+
+          - id: "S7"
+            title: "Protected route middleware/dependency"
+            description: >
+              Add auth dependency to validate JWT for protected endpoints and provide
+              current user context to handlers.
+            acceptance_criteria:
+              - id: "AC12"
+                title: "Missing token is unauthorized"
+                description: >
+                  Requests to protected endpoints without Bearer token return 401.
+              - id: "AC13"
+                title: "Expired or invalid token is rejected"
+                description: >
+                  Requests with malformed, expired, or invalid JWT return 401.
+
+      - id: "F3"
+        title: "React + Tailwind Frontend Multi-Page App"
+        description: >
+          Build a React app (Vite + TypeScript preferred) with Tailwind CSS.
+          Use client-side routing and API integration with JWT auth.
+          The application should include multiple pages and advanced UX features,
+          while keeping implementation scope manageable.
+        stories:
+          - id: "S8"
+            title: "Pages and navigation"
+            description: >
+              Implement at least 6 pages:
+              Home, Signup, Login, Product Display, Order Display, Profile/Settings.
+              Add a top navigation bar and protected route guard for authenticated pages.
+            acceptance_criteria:
+              - id: "AC14"
+                title: "All required pages are present"
+                description: >
+                  User can navigate to Home, Signup, Login, Product Display,
+                  Order Display, and Profile/Settings pages.
+              - id: "AC15"
+                title: "Protected routes redirect unauthenticated users"
+                description: >
+                  Attempting to open Product Display, Order Display, or Profile without login
+                  redirects to Login.
+
+          - id: "S9"
+            title: "Signup and login UI with JWT handling"
+            description: >
+              Build forms for signup/login with validation and error messages.
+              On successful login, store JWT token and include it in API requests.
+            acceptance_criteria:
+              - id: "AC16"
+                title: "Signup form validates input"
+                description: >
+                  Invalid email, short password, or empty name shows inline errors.
+              - id: "AC17"
+                title: "Login persists auth state"
+                description: >
+                  Successful login stores token, updates UI to authenticated state,
+                  and routes to Product Display.
+
+          - id: "S10"
+            title: "Product display and order display workflows"
+            description: >
+              Product Display page shows product cards with a search bar, category filter,
+              and price sorting. Order Display page shows user's orders with status,
+              quantity, product info, and totals.
+            acceptance_criteria:
+              - id: "AC18"
+                title: "Product display shows products and search bar"
+                description: >
+                  Product Display page renders product list and a visible search bar that
+                  filters products by text query.
+              - id: "AC19"
+                title: "Order display shows user order history"
+                description: >
+                  Order Display page fetches and renders only logged-in user's orders,
+                  including order status and total price.
+
+          - id: "S11"
+            title: "Profile/settings and quality-of-life features"
+            description: >
+              Profile page allows user to view account details and logout.
+              Add quality-of-life UI features: loading states, empty states,
+              optimistic updates, and toast notifications for API outcomes.
+            acceptance_criteria:
+              - id: "AC20"
+                title: "Logout clears token and session UI"
+                description: >
+                  Clicking logout removes stored token and redirects user to Login.
+              - id: "AC21"
+                title: "Feedback states are visible"
+                description: >
+                  User sees loaders during API calls, friendly empty-state messages,
+                  and success/error toasts for major actions.
