@@ -152,6 +152,17 @@ export default function PipelineView() {
                 Module: {status.current_module_id} — Iteration {status.current_iteration}
               </p>
             )}
+            {status.metadata?.repo_url && (
+              <a
+                href={status.metadata.repo_url as string}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 mt-1 text-xs text-purple-400 hover:text-purple-300"
+              >
+                <span>⬆️</span>
+                GitHub: {(status.metadata.repo_url as string).replace('https://github.com/', '')}
+              </a>
+            )}
           </div>
           <div className="flex gap-2">
             <button
