@@ -642,6 +642,9 @@ def handle_code_review(ctx: HandlerContext) -> None:
         },
     ))
 
+    # ── Per-iteration commit & push (Code Reviewer pushes after every review) ──
+    _push_iteration_code(ctx, module_id, iteration)
+
     ctx.state_mgr.transition_to(PipelineStatus.HITL_3_REVIEW_DECISION)
 
 
@@ -719,6 +722,88 @@ def handle_decision(ctx: HandlerContext) -> None:
             PipelineStatus.PROMPT_GENERATION,
             iteration=next_iter,
         )
+
+
+def _push_iteration_code(ctx: HandlerContext, module_id: str, iteration: int) -> None:
+    """Commit and push current code after each code review iteration.
+
+    Called by handle_code_review so the code reviewer pushes code to GitHub
+    after every iteration — not just at module completion.
+    - First module, first iteration: creates the remote repo.
+    - All iterations: commits on main and pushes.
+    """
+    from ..comms.messages import PipelineEventMessage
+    from ..git_ops.manager import GitOpsManager
+
+    git_cfg = ctx.config.git
+    gh_cfg = ctx.config.github
+
+    if not git_cfg.enabled or not gh_cfg.auto_push:
+        return
+
+    working_dir = ctx.config.project.root_path or "."
+    git = GitOpsManager(working_dir=working_dir, remote=git_cfg.remote)
+
+    # Init local repo if needed
+    if not git.is_repo():
+        git._run("init")
+        git._run("checkout", "-b", "main")
+        console.print("  [dim]Initialised local git repo[/dim]")
+
+    # Ensure on main branch
+    current = git.current_branch()
+    if current != "main":
+        git.checkout("main")
+
+    # Commit all changes
+    commit_msg = f"feat({module_id}): iteration {iteration} reviewed"
+    commit_result = git.commit_all(commit_msg)
+
+    if not commit_result.success or "nothing to commit" in commit_result.stdout:
+        console.print("  [dim]No new changes to push[/dim]")
+        return
+
+    commit_sha = git.latest_commit_sha()
+    console.print(f"  [dim]Committed: {commit_sha}[/dim]")
+
+    # Ensure remote repo exists (creates on first call, no-op after)
+    remote_ready = _ensure_remote_repo(ctx, git)
+    if not remote_ready:
+        console.print("  [yellow]Remote not ready — code committed locally only[/yellow]")
+        return
+
+    # Push to main
+    push_result = git.push("main")
+    if not push_result.success:
+        push_result = git._run("push", "-u", "origin", "main")
+
+    if push_result.success:
+        gh_cfg = ctx.config.github
+        repo_url = f"https://github.com/{gh_cfg.owner}/{gh_cfg.repo}"
+        console.print(f"  [green]Pushed iteration {iteration} → {repo_url}[/green]")
+
+        # Publish push event (visible on frontend)
+        ctx.bus.publish(PipelineEventMessage(
+            sender="code_reviewer",
+            module_id=module_id,
+            iteration=iteration,
+            payload={
+                "event": "git_push",
+                "branch": "main",
+                "commit_sha": commit_sha,
+                "repo_url": repo_url,
+                "iteration": iteration,
+            },
+        ))
+
+        # Store repo_url in pipeline metadata so frontend can display it
+        state = ctx.state_mgr.state
+        metadata = dict(state.metadata)
+        metadata["repo_url"] = repo_url
+        metadata["pushed"] = True
+        ctx.state_mgr.update_metadata(metadata)
+    else:
+        console.print(f"  [red]Push failed: {push_result.stderr[:200]}[/red]")
 
 
 def _create_github_client(ctx: HandlerContext, *, require_repo: bool = True):
@@ -814,6 +899,16 @@ def _ensure_remote_repo(ctx: HandlerContext, git: "GitOpsManager") -> bool:
         )
         if create_result.success:
             console.print(f"  [green]Created GitHub repo: {owner}/{repo_name}[/green]")
+            # Publish repo_created event for frontend visibility
+            from ..comms.messages import PipelineEventMessage
+            ctx.bus.publish(PipelineEventMessage(
+                sender="code_reviewer",
+                payload={
+                    "event": "repo_created",
+                    "repo_name": f"{owner}/{repo_name}",
+                    "repo_url": f"https://github.com/{owner}/{repo_name}",
+                },
+            ))
         elif create_result.status_code == 422 and "already exists" in (create_result.error or "").lower():
             console.print(f"  [dim]GitHub repo already exists: {owner}/{repo_name}[/dim]")
         else:
