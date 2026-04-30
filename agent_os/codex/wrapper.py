@@ -87,6 +87,8 @@ class CodexWrapper:
         model = self._model_routing.get(session_type.value) or self._default_model
         if model:
             cmd.extend(["--model", model])
+        # Enable API request logging (store: true)
+        cmd.extend(["-c", "store=true"])
         cmd.append(prompt)
         session = CodexSession(
             session_type=session_type,

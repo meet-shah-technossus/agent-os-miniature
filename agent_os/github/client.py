@@ -59,9 +59,11 @@ class GitHubClient:
         method: str,
         path: str,
         json_body: dict[str, Any] | None = None,
+        *,
+        absolute_url: str = "",
     ) -> GitHubResult:
         """Make an HTTP request with retry logic."""
-        url = f"{self._base_url}{path}"
+        url = absolute_url or f"{self._base_url}{path}"
 
         for attempt in range(_MAX_RETRIES + 1):
             try:
@@ -177,3 +179,32 @@ class GitHubClient:
         return self._request("PATCH", f"/pulls/{pr_number}", {
             "state": "closed",
         })
+
+    # ── Repository operations ─────────────────────────────────────
+
+    def create_repo(self, name: str, description: str = "", private: bool = False) -> GitHubResult:
+        """Create a new GitHub repository under the authenticated user's account.
+
+        Args:
+            name: Repository name.
+            description: Short description.
+            private: Whether the repo is private.
+
+        Returns:
+            GitHubResult with data containing clone_url, html_url, full_name.
+        """
+        logger.info("Creating GitHub repo: %s", name)
+        return self._request(
+            "POST", "", json_body={
+                "name": name,
+                "description": description,
+                "private": private,
+                "auto_init": False,
+            },
+            absolute_url=f"{_GITHUB_API}/user/repos",
+        )
+
+    def repo_exists(self) -> bool:
+        """Check if the configured owner/repo exists on GitHub."""
+        result = self._request("GET", "")
+        return result.success

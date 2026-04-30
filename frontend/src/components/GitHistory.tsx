@@ -32,22 +32,21 @@ function EventDetail({ payload }: { payload: Record<string, unknown> }) {
     const branch = payload.branch as string | undefined;
     const sha = payload.commit_sha as string | undefined;
     const pushed = payload.pushed as boolean | undefined;
-    const prNumber = payload.pr_number as number | undefined;
-    const prUrl = payload.pr_url as string | undefined;
+    const repoUrl = payload.repo_url as string | undefined;
     return (
       <div className="text-xs text-slate-400 mt-1 space-y-0.5">
         {branch && <div>Branch: <span className="text-indigo-400">{branch}</span></div>}
         {sha && <div>SHA: <span className="text-slate-300">{sha}</span></div>}
         {pushed && <div className="text-cyan-400">Pushed to remote</div>}
-        {prNumber && (
+        {repoUrl && (
           <div>
             <a
-              href={prUrl || '#'}
+              href={repoUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-purple-400 hover:text-purple-300"
             >
-              PR #{prNumber}
+              {repoUrl}
             </a>
           </div>
         )}
@@ -55,28 +54,46 @@ function EventDetail({ payload }: { payload: Record<string, unknown> }) {
     );
   }
 
-  if (event === 'pr_merged') {
-    const prNumber = payload.pr_number as number | undefined;
+  if (event === 'git_push') {
+    const branch = payload.branch as string | undefined;
+    const repoUrl = payload.repo_url as string | undefined;
     return (
-      <div className="text-xs text-green-400 mt-1">
-        PR #{prNumber} merged
+      <div className="text-xs text-cyan-400 mt-1 space-y-0.5">
+        <div>Pushed <span className="text-indigo-400">{branch || 'main'}</span> to GitHub</div>
+        {repoUrl && (
+          <a
+            href={repoUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-purple-400 hover:text-purple-300"
+          >
+            {repoUrl}
+          </a>
+        )}
       </div>
     );
   }
 
-  if (event === 'release_pr_created') {
-    const prNumber = payload.pr_number as number | undefined;
-    const prUrl = payload.pr_url as string | undefined;
+  if (event === 'module_complete') {
+    const moduleId = payload.module_id as string | undefined;
+    const pushed = payload.pushed as boolean | undefined;
+    const repoUrl = payload.repo_url as string | undefined;
     return (
-      <div className="text-xs mt-1">
-        <a
-          href={prUrl || '#'}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-amber-400 hover:text-amber-300"
-        >
-          Release PR #{prNumber}
-        </a>
+      <div className="text-xs text-green-400 mt-1 space-y-0.5">
+        <div>Module <span className="font-semibold">{moduleId}</span> completed</div>
+        {pushed && repoUrl && (
+          <div>
+            Code live at{' '}
+            <a
+              href={repoUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-purple-400 hover:text-purple-300"
+            >
+              {repoUrl}
+            </a>
+          </div>
+        )}
       </div>
     );
   }
