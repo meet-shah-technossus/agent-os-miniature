@@ -535,6 +535,7 @@ class TestCreateGitHubClient:
         handler_ctx.config.secrets.github_token = ""
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GITHUB_TOKEN", None)
+            os.environ.pop("GITHUB_PAT_TOKEN", None)
             client = _create_github_client(handler_ctx)
         assert client is None
 
