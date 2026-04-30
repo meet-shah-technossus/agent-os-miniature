@@ -325,8 +325,9 @@ class TestSettingsAPI:
 
 class TestTestGitHub:
 
+    @patch("agent_os.api.routes.settings.resolve_secret", return_value="")
     @patch("agent_os.api.routes.settings.httpx")
-    def test_no_token(self, mock_httpx, app_client):
+    def test_no_token(self, mock_httpx, mock_resolve, app_client):
         client, _orch = app_client
         resp = client.post("/api/settings/test-github")
         assert resp.status_code == 200
