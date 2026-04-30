@@ -22,6 +22,11 @@ _ENV_MAP = {
     "github_token": "GITHUB_TOKEN",
 }
 
+# Additional env var aliases checked as fallbacks (in order) when _ENV_MAP lookup fails.
+_ENV_ALIASES: dict[str, list[str]] = {
+    "github_token": ["GITHUB_PAT_TOKEN", "GITHUB_TOKEN"],
+}
+
 
 def _load_dotenv(project_root: str = ".") -> dict[str, str]:
     """Parse a .env file into a dict. Ignores comments and blank lines."""
@@ -76,16 +81,23 @@ def resolve_secret(
         return config_value
 
     env_var = _ENV_MAP.get(field, field.upper())
-    dotenv = _load_dotenv(project_root)
-    dotenv_val = dotenv.get(env_var, "")
-    if dotenv_val:
-        logger.debug("Secret '%s' resolved from .env file", field)
-        return dotenv_val
+    # Build the list of env var names to try: primary + any registered aliases.
+    candidates: list[str] = _ENV_ALIASES.get(field, [env_var])
+    if env_var not in candidates:
+        candidates = [env_var] + candidates
 
-    os_val = os.environ.get(env_var, "")
-    if os_val:
-        logger.debug("Secret '%s' resolved from os.environ", field)
-        return os_val
+    dotenv = _load_dotenv(project_root)
+    for candidate in candidates:
+        dotenv_val = dotenv.get(candidate, "")
+        if dotenv_val:
+            logger.debug("Secret '%s' resolved from .env file (%s)", field, candidate)
+            return dotenv_val
+
+    for candidate in candidates:
+        os_val = os.environ.get(candidate, "")
+        if os_val:
+            logger.debug("Secret '%s' resolved from os.environ (%s)", field, candidate)
+            return os_val
 
     logger.debug("Secret '%s' not found in any source", field)
     return ""
