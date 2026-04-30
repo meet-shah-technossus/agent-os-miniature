@@ -321,17 +321,17 @@ class TestHandleGitCommitGitHub:
         ctx.state_mgr.transition_to(PipelineStatus.DECISION)
         ctx.state_mgr.transition_to(PipelineStatus.GIT_COMMIT)
 
+    @patch("agent_os.orchestrator.handlers._ensure_remote_repo")
     @patch("agent_os.git_ops.manager.GitOpsManager")
-    @patch("agent_os.orchestrator.handlers._create_module_pr")
-    def test_push_and_pr_when_enabled(self, mock_create_pr, mock_git_cls, handler_ctx):
-        """When auto_push and auto_create_pr are enabled, push and create PR."""
+    def test_push_and_pr_when_enabled(self, mock_git_cls, mock_ensure_remote, handler_ctx):
+        """When GitHub token is configured, commit on main and push."""
         from agent_os.orchestrator.handlers import handle_git_commit
 
         self._setup_state(handler_ctx)
 
         mock_git = MagicMock()
         mock_git.is_repo.return_value = True
-        mock_git.create_and_checkout.return_value = GitResult(success=True, command="", stdout="")
+        mock_git.current_branch.return_value = "main"
         mock_git.commit_all.return_value = GitResult(success=True, command="", stdout="committed")
         mock_git.latest_commit_sha.return_value = "abc1234"
         mock_git.tag.return_value = GitResult(success=True, command="")
@@ -339,44 +339,40 @@ class TestHandleGitCommitGitHub:
         mock_git.push_tags.return_value = GitResult(success=True, command="")
         mock_git_cls.return_value = mock_git
 
-        mock_create_pr.return_value = (42, "https://github.com/o/r/pull/42")
+        mock_ensure_remote.return_value = True
 
         handle_git_commit(handler_ctx)
 
-        # Verify push was called
-        mock_git.push.assert_called_once_with("feature/mod-1")
+        # Verify push to main was called
+        mock_git.push.assert_called_once_with("main")
         mock_git.push_tags.assert_called_once()
-
-        # Verify PR creation
-        mock_create_pr.assert_called_once()
-
-        # Verify metadata contains PR info
-        state = handler_ctx.state_mgr.state
-        assert state.metadata.get("pr_number") == 42
 
         # Verify bus event
         events = handler_ctx.bus.history_for_channel(Channel.PIPELINE_EVENTS)
         git_events = [e for e in events if e.payload.get("event") == "git_commit"]
         assert len(git_events) == 1
-        assert git_events[0].payload["pr_number"] == 42
+        assert git_events[0].payload["branch"] == "main"
         assert git_events[0].payload["pushed"] is True
 
+    @patch("agent_os.orchestrator.handlers._ensure_remote_repo")
     @patch("agent_os.git_ops.manager.GitOpsManager")
-    def test_no_push_when_disabled(self, mock_git_cls, handler_ctx):
-        """When auto_push is False, no push occurs."""
+    def test_no_push_when_disabled(self, mock_git_cls, mock_ensure_remote, handler_ctx):
+        """When GitHub token is missing, no push occurs."""
         from agent_os.orchestrator.handlers import handle_git_commit
 
         handler_ctx.config.github.auto_push = False
-        handler_ctx.config.github.auto_create_pr = False
+        handler_ctx.config.secrets.github_token = ""
         self._setup_state(handler_ctx)
 
         mock_git = MagicMock()
         mock_git.is_repo.return_value = True
-        mock_git.create_and_checkout.return_value = GitResult(success=True, command="", stdout="")
+        mock_git.current_branch.return_value = "main"
         mock_git.commit_all.return_value = GitResult(success=True, command="", stdout="committed")
         mock_git.latest_commit_sha.return_value = "abc1234"
         mock_git.tag.return_value = GitResult(success=True, command="")
         mock_git_cls.return_value = mock_git
+
+        mock_ensure_remote.return_value = False
 
         handle_git_commit(handler_ctx)
 
@@ -391,7 +387,7 @@ class TestHandleGitCommitGitHub:
 
 class TestHandleModuleCompleteGitHub:
 
-    def _setup_state_at_module_complete(self, ctx, module_id="mod-1", pr_number=42):
+    def _setup_state_at_module_complete(self, ctx, module_id="mod-1"):
         from agent_os.storage.module_repo import ModuleRepository
 
         mod_repo = ModuleRepository(ctx.db.conn)
@@ -413,55 +409,29 @@ class TestHandleModuleCompleteGitHub:
         ctx.state_mgr.transition_to(PipelineStatus.GIT_COMMIT)
         ctx.state_mgr.transition_to(
             PipelineStatus.MODULE_COMPLETE,
-            metadata={"pr_number": pr_number, "pr_url": f"https://github.com/o/r/pull/{pr_number}"},
+            metadata={"pushed": True, "repo_url": "https://github.com/o/r"},
         )
 
-    @patch("agent_os.orchestrator.handlers._create_github_client")
-    def test_pr_comment_on_complete(self, mock_create_client, handler_ctx):
+    def test_module_complete_transitions_to_next_module(self, handler_ctx):
         from agent_os.orchestrator.handlers import handle_module_complete
 
         self._setup_state_at_module_complete(handler_ctx)
-
-        mock_client = MagicMock()
-        mock_client.add_pr_comment.return_value = GitHubResult(success=True, status_code=201)
-        mock_create_client.return_value = mock_client
-
         handle_module_complete(handler_ctx)
 
-        mock_client.add_pr_comment.assert_called_once()
-        args = mock_client.add_pr_comment.call_args
-        assert args[0][0] == 42  # PR number
-        assert "mod-1" in args[0][1]  # comment body contains module id
+        assert handler_ctx.state_mgr.current_status == PipelineStatus.NEXT_MODULE
 
-    @patch("agent_os.orchestrator.handlers._create_github_client")
-    def test_no_pr_comment_without_pr(self, mock_create_client, handler_ctx):
+    def test_module_complete_publishes_event(self, handler_ctx):
         from agent_os.orchestrator.handlers import handle_module_complete
 
-        # Set up without PR number in metadata
-        from agent_os.storage.module_repo import ModuleRepository
-        mod_repo = ModuleRepository(handler_ctx.db.conn)
-        mod_repo.upsert(ModuleRecord(id="mod-2", name="Test Module 2"))
-        mod_repo.update_status("mod-2", ModuleStatus.IN_PROGRESS)
-
-        handler_ctx.state_mgr.transition_to(PipelineStatus.LOADING_REQUIREMENTS)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.MODULE_PLANNING)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.HITL_1_MODULE_REVIEW)
-        handler_ctx.state_mgr.transition_to(
-            PipelineStatus.PROMPT_GENERATION, module_id="mod-2", iteration=1,
-        )
-        handler_ctx.state_mgr.transition_to(PipelineStatus.HITL_2_PROMPT_REVIEW)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.CODE_GENERATION)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.VALIDATION)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.CODE_REVIEW)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.HITL_3_REVIEW_DECISION)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.DECISION)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.GIT_COMMIT)
-        handler_ctx.state_mgr.transition_to(PipelineStatus.MODULE_COMPLETE)
-
+        self._setup_state_at_module_complete(handler_ctx)
         handle_module_complete(handler_ctx)
 
-        # No GitHub client interactions
-        mock_create_client.assert_not_called()
+        events = handler_ctx.bus.history_for_channel(Channel.PIPELINE_EVENTS)
+        complete_events = [e for e in events if e.payload.get("event") == "module_complete"]
+        assert len(complete_events) == 1
+        assert complete_events[0].payload["pushed"] is True
+        assert complete_events[0].payload["repo_url"] == "https://github.com/o/r"
+
 
 
 # ---------- Test: HITL_5 merge hook ───────────────────────────────────────
