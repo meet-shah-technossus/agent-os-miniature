@@ -99,6 +99,25 @@ def handle_module_planning(ctx: HandlerContext) -> None:
     from ..comms.channels import Channel
     from ..comms.messages import GenerationStatusMessage, ModuleUpdateMessage
     from ..module_maker.runner import ModuleMakerRunner
+    from ..storage.module_repo import ModuleRepository as _MR
+    from ..storage.models import ModuleStatus as _MS
+
+    # ── Guard: module planning must only run ONCE, at pipeline start ───────
+    # If any module has already been picked up (IN_PROGRESS) or finished
+    # (COMPLETED), the plan is already in the DB.  Skip re-generation and
+    # resume from the next-module selection stage instead.
+    _mr = _MR(ctx.db.conn)
+    _existing = _mr.get_all()
+    _non_pending = [m for m in _existing if m.status != _MS.PENDING]
+    if _existing and _non_pending:
+        console.print(
+            f"[yellow]Module plan already exists "
+            f"({len(_existing)} modules, {len(_non_pending)} non-pending) "
+            f"— skipping re-generation and resuming pipeline[/yellow]"
+        )
+        ctx.state_mgr.transition_to(PipelineStatus.NEXT_MODULE)
+        return
+    # ───────────────────────────────────────────────────────────────────────
 
     # Auto-provision project folder now that we have the project name from requirements
     if not ctx.config.project.root_path:

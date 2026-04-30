@@ -39,7 +39,10 @@ _GATE_TRANSITIONS: dict[PipelineStatus, PipelineStatus] = {
     PipelineStatus.HITL_1_MODULE_REVIEW: PipelineStatus.NEXT_MODULE,
     PipelineStatus.HITL_2_PROMPT_REVIEW: PipelineStatus.CODE_GENERATION,
     PipelineStatus.HITL_3_REVIEW_DECISION: PipelineStatus.DECISION,
-    PipelineStatus.HITL_4_MAX_ITERATIONS: PipelineStatus.NEXT_MODULE,
+    # HITL_4 must commit the module before advancing — do NOT go directly to
+    # NEXT_MODULE (that would leave the module IN_PROGRESS in the DB, breaking
+    # dependency resolution for all downstream modules).
+    PipelineStatus.HITL_4_MAX_ITERATIONS: PipelineStatus.GIT_COMMIT,
     PipelineStatus.HITL_5_PR_REVIEW: PipelineStatus.INTEGRATION_TEST,
 }
 

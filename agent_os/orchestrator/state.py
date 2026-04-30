@@ -22,6 +22,7 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.MODULE_PLANNING: [
         PipelineStatus.HITL_1_MODULE_REVIEW,
+        PipelineStatus.NEXT_MODULE,   # guard: modules already planned, skip re-generation
         PipelineStatus.FAILED,
     ],
     PipelineStatus.HITL_1_MODULE_REVIEW: [
@@ -108,6 +109,8 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
         PipelineStatus.PROMPT_GENERATION, # retry prompt generator after failure
         PipelineStatus.CODE_GENERATION,   # retry code gen after failure
         PipelineStatus.CODE_REVIEW,       # retry code reviewer after failure
+        PipelineStatus.GIT_COMMIT,        # retry git commit after failure
+        PipelineStatus.NEXT_MODULE,       # skip failed step, go to next module
     ],
 }
 

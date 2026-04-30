@@ -35,9 +35,42 @@ def get_pipeline_status(orch=Depends(get_orchestrator)):
 def start_pipeline(orch=Depends(get_orchestrator)):
     """Start or resume the pipeline in a background thread."""
     current = orch.state_mgr.current_status
-    # Reset terminal states so the pipeline can start fresh
-    if current in (PipelineStatus.PIPELINE_COMPLETE, PipelineStatus.FAILED):
-        orch.state_mgr.reset()
+
+    if current == PipelineStatus.FAILED:
+        # Only wipe to IDLE when the pipeline has never produced any modules
+        # (i.e., it failed before or during MODULE_PLANNING).  If modules
+        # already exist and some are IN_PROGRESS or COMPLETED, recover back to
+        # a runnable state instead — so we never accidentally re-trigger module
+        # generation just because the user pressed Start/Resume.
+        modules = orch.db.get_all_modules()
+        non_pending = [m for m in modules if m.status.value != "pending"]
+        if modules and non_pending:
+            # Modules are already planned and work has started.
+            # Recover to the closest valid state after the failure point.
+            pre = orch.state_mgr.state.metadata.get("pre_failure_status", "")
+            _recovery: dict[str, PipelineStatus] = {
+                "PROMPT_GENERATION":        PipelineStatus.PROMPT_GENERATION,
+                "HITL_2_PROMPT_REVIEW":     PipelineStatus.PROMPT_GENERATION,
+                "CODE_GENERATION":          PipelineStatus.CODE_GENERATION,
+                "VALIDATION":               PipelineStatus.CODE_GENERATION,
+                "CODE_REVIEW":              PipelineStatus.CODE_GENERATION,
+                "HITL_3_REVIEW_DECISION":   PipelineStatus.CODE_GENERATION,
+                "DECISION":                 PipelineStatus.CODE_GENERATION,
+                "GIT_COMMIT":               PipelineStatus.GIT_COMMIT,
+                "MODULE_COMPLETE":          PipelineStatus.NEXT_MODULE,
+                "NEXT_MODULE":              PipelineStatus.NEXT_MODULE,
+            }
+            target = _recovery.get(pre, PipelineStatus.PROMPT_GENERATION)
+            orch.state_mgr.transition_to(target)
+        else:
+            # Nothing planned yet — safe to start fresh.
+            orch.state_mgr.reset()
+
+    elif current == PipelineStatus.PIPELINE_COMPLETE:
+        # Pipeline is done.  Do NOT auto-reset to IDLE here — that would
+        # re-trigger module generation.  Use the explicit Reset button to
+        # start a brand-new project.
+        pass  # run() will exit immediately at PIPELINE_COMPLETE
     t = threading.Thread(target=orch.run, daemon=True, name="pipeline-run")
     t.start()
     state = orch.state_mgr.state
