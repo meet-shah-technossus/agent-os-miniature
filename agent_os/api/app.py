@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from ..config.loader import get_default_config, load_config
 from ..config.env import auto_load_dotenv
 from .deps import orch_holder
-from .routes import bus, metrics, modules, pipeline, project, requirements, settings
+from .routes import agents, bus, metrics, modules, pipeline, project, requirements, settings
 from .websocket import _broadcast_worker, _setup_bus_subscriptions, router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(bus.router)
     app.include_router(settings.router)
     app.include_router(project.router)
+    app.include_router(agents.router)
 
     # WebSocket router
     app.include_router(ws_router)

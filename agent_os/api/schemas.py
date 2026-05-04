@@ -138,3 +138,50 @@ class TestGitHubResponse(BaseModel):
     valid: bool
     user: str = ""
     message: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Agent Identity schemas
+# ---------------------------------------------------------------------------
+
+
+class AgentMeta(BaseModel):
+    name: str
+    display_name: str
+    is_builtin: bool
+    is_custom: bool
+    files_present: list[str]
+    post_assignment: Optional[str] = None
+
+
+class AgentListResponse(BaseModel):
+    agents: list[AgentMeta]
+
+
+class AgentDetailResponse(BaseModel):
+    name: str
+    is_builtin: bool
+    files: dict[str, str]  # {filename: content}
+
+
+class AgentFileResponse(BaseModel):
+    agent_name: str
+    file_name: str
+    content: str
+
+
+class AgentRegistryResponse(BaseModel):
+    mapping: dict[str, str]  # {PIPELINE_POST: agent_name}
+
+
+class CreateAgentRequest(BaseModel):
+    name: str
+    files: Optional[dict[str, str]] = None  # {filename: initial_content}
+
+
+class UpdateAgentFileRequest(BaseModel):
+    content: str
+
+
+class UpdateRegistryRequest(BaseModel):
+    mapping: dict[str, str]  # {PIPELINE_POST: agent_name}
