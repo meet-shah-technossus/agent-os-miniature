@@ -7,14 +7,19 @@ and the communication bus. Stubs will be replaced as each phase is implemented.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from rich.console import Console
 
+from ..agents.context import IdentityContextInjector
 from ..storage.models import PipelineStatus
 from .context import HandlerContext
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Absolute path to the agents directory (sibling of orchestrator/)
+_AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"
 
 
 def handle_idle(ctx: HandlerContext) -> None:
@@ -131,7 +136,11 @@ def handle_module_planning(ctx: HandlerContext) -> None:
             payload={"stream": "stdout", "line": line},
         ))
 
-    runner = ModuleMakerRunner(db=ctx.db, config=ctx.config)
+    runner = ModuleMakerRunner(
+        db=ctx.db,
+        config=ctx.config,
+        identity_ctx=IdentityContextInjector("MODULE_MAKER", _AGENTS_DIR),
+    )
     plan = runner.run(on_stdout=_stream_line)
 
     console.print(
@@ -224,7 +233,10 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
                 f"({len(review.files)} files)[/dim]"
             )
 
-    runner = PromptGeneratorRunner(config=ctx.config)
+    runner = PromptGeneratorRunner(
+        config=ctx.config,
+        identity_ctx=IdentityContextInjector("PROMPT_GENERATOR", _AGENTS_DIR),
+    )
 
     def _stream_line(line: str) -> None:
         ctx.bus.publish(PromptReadyMessage(
@@ -375,7 +387,10 @@ def handle_code_generation(ctx: HandlerContext) -> None:
             level = "red" if any(k in line.lower() for k in _ERROR_KEYWORDS) else "dim"
             console.print(f"  [{level}][codex/err] {line}[/{level}]")
 
-    runner = CodeGeneratorRunner(config=ctx.config)
+    runner = CodeGeneratorRunner(
+        config=ctx.config,
+        identity_ctx=IdentityContextInjector("CODE_GENERATOR", _AGENTS_DIR),
+    )
     gen_result = runner.run(iter_record.prompt_path, working_dir, on_stdout=_stream_and_log, on_stderr=_log_stderr)
 
     status = gen_result.completion.status
@@ -595,7 +610,10 @@ def handle_code_review(ctx: HandlerContext) -> None:
             payload={"stream": "stdout", "line": line},
         ))
 
-    runner = CodeReviewerRunner(config=ctx.config)
+    runner = CodeReviewerRunner(
+        config=ctx.config,
+        identity_ctx=IdentityContextInjector("CODE_REVIEWER", _AGENTS_DIR),
+    )
     run_result = runner.run(
         module_def=mod_def,
         iteration=iteration,

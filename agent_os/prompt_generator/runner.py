@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 class PromptGeneratorRunner:
     """Generate a framework-based prompt for a single module."""
 
-    def __init__(self, config: AgentOSConfig) -> None:
+    def __init__(self, config: AgentOSConfig, identity_ctx=None) -> None:
         self._config = config
+        self._identity_ctx = identity_ctx
 
     def run(
         self,
@@ -285,7 +286,8 @@ class PromptGeneratorRunner:
                 "shape and status codes. Adapt the emphasis to the module type.\n"
             )
 
-        system_prompt = "\n\n".join([
+        system_prompt = "\n\n".join(filter(None, [
+            self._identity_ctx.build_role_preamble() if self._identity_ctx else "",
             "You are an expert prompt engineer specialising in code-generation "
             "prompts for autonomous coding agents (like Codex, Claude, or GPT-4). "
             "You will be given a draft code-generation prompt built from a structured "
@@ -297,7 +299,7 @@ class PromptGeneratorRunner:
             "Return ONLY the final rewritten prompt — no preamble, no commentary, "
             "no 'Here is the rewritten prompt:' header. Start directly with the "
             "prompt content.",
-        ])
+        ]))
 
         user_prompt = (
             f"Rewrite this code-generation prompt for the **{mod.name}** module "

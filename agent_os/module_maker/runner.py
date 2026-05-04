@@ -178,9 +178,10 @@ should produce 1-3 files maximum.
 class ModuleMakerRunner:
     """Decompose requirements into modules via Codex CLI."""
 
-    def __init__(self, db: Database, config: AgentOSConfig) -> None:
+    def __init__(self, db: Database, config: AgentOSConfig, identity_ctx=None) -> None:
         self._db = db
         self._config = config
+        self._identity_ctx = identity_ctx
         self._req_repo = RequirementRepository(db.conn)
         self._mod_repo = ModuleRepository(db.conn)
         self._codex = CodexWrapper(
@@ -228,12 +229,17 @@ class ModuleMakerRunner:
                             lines.append(f"    {ac.description}")
 
         req_text = "\n".join(lines)
-        return _PROMPT_TEMPLATE.format(
+        base = _PROMPT_TEMPLATE.format(
             requirements_text=req_text,
             language=self._config.project.language or "python",
             project_name=self._config.project.name or "Target Project",
             project_root=self._config.project.root_path or ".",
         )
+        if self._identity_ctx:
+            preamble = self._identity_ctx.build_preamble()
+            if preamble:
+                return preamble + base
+        return base
 
     # --- Codex invocation ---
 

@@ -33,8 +33,9 @@ class CodeGenResult:
 class CodeGeneratorRunner:
     """Generate code for a single module iteration via Codex CLI."""
 
-    def __init__(self, config: AgentOSConfig) -> None:
+    def __init__(self, config: AgentOSConfig, identity_ctx=None) -> None:
         self._config = config
+        self._identity_ctx = identity_ctx
         self._codex = CodexWrapper(
             timeout_seconds=config.codex.timeout_seconds,
             max_retries=0,  # We handle retry logic ourselves for partial completion
@@ -89,11 +90,17 @@ class CodeGeneratorRunner:
 
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_prompt(prompt_path: Path) -> str:
-        """Prepend guardrails to the module prompt."""
+    def _build_prompt(self, prompt_path: Path) -> str:
+        """Prepend identity context and guardrails to the module prompt."""
         module_prompt = prompt_path.read_text(encoding="utf-8")
-        return f"{GUARDRAIL_PROMPT}\n\n{module_prompt}"
+        parts: list[str] = []
+        if self._identity_ctx:
+            preamble = self._identity_ctx.build_preamble()
+            if preamble:
+                parts.append(preamble)
+        parts.append(GUARDRAIL_PROMPT)
+        parts.append(module_prompt)
+        return "\n\n".join(parts)
 
     def _execute(self, prompt: str, working_dir: Path, *, on_stdout: Optional[Callable[[str], None]] = None, on_stderr: Optional[Callable[[str], None]] = None) -> CodexResult:
         return self._codex.execute(

@@ -74,7 +74,8 @@ class ReviewRunResult:
 class CodeReviewerRunner:
     """Runs a code review via Codex CLI and parses the structured result."""
 
-    def __init__(self, config: AgentOSConfig) -> None:
+    def __init__(self, config: AgentOSConfig, identity_ctx=None) -> None:
+        self._identity_ctx = identity_ctx
         self._wrapper = CodexWrapper(
             timeout_seconds=config.codex.timeout_seconds,
             max_retries=0,  # We handle retry logic externally if needed
@@ -118,7 +119,8 @@ class CodeReviewerRunner:
         validation_result: Optional[ValidationResult],
         working_dir: str = ".",
     ) -> str:
-        parts = [_REVIEW_SYSTEM_PROMPT]
+        preamble = self._identity_ctx.build_preamble() if self._identity_ctx else ""
+        parts = [preamble + _REVIEW_SYSTEM_PROMPT] if preamble else [_REVIEW_SYSTEM_PROMPT]
 
         parts.append(f"\n## Module: {module_def.module_id} — {module_def.name}")
         parts.append(f"Iteration: {iteration}")
