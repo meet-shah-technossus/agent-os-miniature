@@ -59,3 +59,18 @@ class ErrorAlertMessage(AgentMessage):
 
 class HeartbeatMessage(AgentMessage):
     channel: Channel = Channel.AGENT_HEARTBEATS
+
+
+class TerminalOutputMessage(AgentMessage):
+    """Raw terminal output (stdout/stderr) from a Codex subprocess.
+
+    Phase 4 — each Codex invocation streams lines here tagged with
+    ``agent_post``, ``session_id``, and ``stream`` type so the frontend
+    can route output to the correct per-agent terminal panel.
+
+    Special event types (``payload["event_type"]``):
+    - ``"line"``          — a single stdout/stderr line
+    - ``"session_start"`` — subprocess just launched
+    - ``"session_end"``   — subprocess exited
+    """
+    channel: Channel = Channel.TERMINAL_OUTPUT

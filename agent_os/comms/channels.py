@@ -17,3 +17,5 @@ class Channel(str, Enum):
     PIPELINE_EVENTS = "pipeline_events"
     ERROR_ALERTS = "error_alerts"
     AGENT_HEARTBEATS = "agent_heartbeats"
+    # Phase 4 — dedicated raw terminal output stream (stdout/stderr from Codex)
+    TERMINAL_OUTPUT = "terminal_output"

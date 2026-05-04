@@ -7,6 +7,7 @@ and the communication bus. Stubs will be replaced as each phase is implemented.
 from __future__ import annotations
 
 import logging
+import uuid
 from pathlib import Path
 
 from rich.console import Console
@@ -103,7 +104,7 @@ def handle_loading_requirements(ctx: HandlerContext) -> None:
 
 def handle_module_planning(ctx: HandlerContext) -> None:
     from ..comms.channels import Channel
-    from ..comms.messages import GenerationStatusMessage, ModuleUpdateMessage
+    from ..comms.messages import GenerationStatusMessage, ModuleUpdateMessage, TerminalOutputMessage
     from ..module_maker.runner import ModuleMakerRunner
     from ..storage.module_repo import ModuleRepository as _MR
     from ..storage.models import ModuleStatus as _MS
@@ -131,7 +132,34 @@ def handle_module_planning(ctx: HandlerContext) -> None:
 
     console.print("[cyan]Module Maker — decomposing requirements into modules...[/cyan]")
 
+    _mm_session_id = str(uuid.uuid4())
+    _mm_model = ctx.config.codex.model_routing.get("MODULE_MAKER") or ctx.config.codex.model
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="module_maker",
+        payload={
+            "event_type": "session_start",
+            "agent_post": "MODULE_MAKER",
+            "model": _mm_model,
+            "module_id": None,
+            "iteration": 0,
+            "session_id": _mm_session_id,
+        },
+    ))
+
     def _stream_line(line: str) -> None:
+        ctx.bus.publish(TerminalOutputMessage(
+            sender="module_maker",
+            payload={
+                "event_type": "line",
+                "stream": "stdout",
+                "line": line,
+                "agent_post": "MODULE_MAKER",
+                "module_id": None,
+                "iteration": 0,
+                "session_id": _mm_session_id,
+            },
+        ))
+        # Also forward to legacy GENERATION_STATUS so existing subscribers keep working
         ctx.bus.publish(GenerationStatusMessage(
             sender="module_maker",
             payload={"stream": "stdout", "line": line},
@@ -143,6 +171,18 @@ def handle_module_planning(ctx: HandlerContext) -> None:
         identity_ctx=IdentityContextInjector("MODULE_MAKER", _AGENTS_DIR),
     )
     plan = runner.run(on_stdout=_stream_line)
+
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="module_maker",
+        payload={
+            "event_type": "session_end",
+            "agent_post": "MODULE_MAKER",
+            "exit_code": 0,
+            "module_id": None,
+            "iteration": 0,
+            "session_id": _mm_session_id,
+        },
+    ))
 
     console.print(
         f"[green]Module plan ready — {len(plan.modules)} modules "
@@ -178,7 +218,7 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
     from pathlib import Path as _Path
 
     from ..comms.channels import Channel
-    from ..comms.messages import PromptReadyMessage
+    from ..comms.messages import PromptReadyMessage, TerminalOutputMessage
     from ..hardening.rollback import RollbackManager
     from ..module_maker.schema import ModuleDefinition
     from ..prompt_generator.runner import PromptGeneratorRunner
@@ -247,7 +287,37 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
         identity_ctx=IdentityContextInjector("PROMPT_GENERATOR", _AGENTS_DIR),
     )
 
+    _pg_session_id = str(uuid.uuid4())
+    _pg_model = ctx.config.codex.model_routing.get("PROMPT_GENERATOR") or ctx.config.codex.model
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="prompt_generator",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_start",
+            "agent_post": "PROMPT_GENERATOR",
+            "model": _pg_model,
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _pg_session_id,
+        },
+    ))
+
     def _stream_line(line: str) -> None:
+        ctx.bus.publish(TerminalOutputMessage(
+            sender="prompt_generator",
+            module_id=module_id,
+            iteration=iteration,
+            payload={
+                "event_type": "line",
+                "stream": "stdout",
+                "line": line,
+                "agent_post": "PROMPT_GENERATOR",
+                "module_id": module_id,
+                "iteration": iteration,
+                "session_id": _pg_session_id,
+            },
+        ))
         ctx.bus.publish(PromptReadyMessage(
             sender="prompt_generator",
             module_id=module_id,
@@ -256,6 +326,20 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
         ))
 
     prompt_path = runner.run(mod_def, iteration, review, on_stdout=_stream_line)
+
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="prompt_generator",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_end",
+            "agent_post": "PROMPT_GENERATOR",
+            "exit_code": 0,
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _pg_session_id,
+        },
+    ))
 
     # Read the written prompt content so we can store it in DB
     prompt_content = ""
@@ -342,7 +426,7 @@ def handle_code_generation(ctx: HandlerContext) -> None:
     from ..code_generator.completion import CompletionStatus
     from ..code_generator.runner import CodeGeneratorRunner
     from ..comms.channels import Channel
-    from ..comms.messages import GenerationStatusMessage
+    from ..comms.messages import GenerationStatusMessage, TerminalOutputMessage
     from ..hardening.dependency_mgr import DependencyManager
     from ..hardening.token_budget import TokenBudgetTracker
     from ..storage.iteration_repo import IterationRepository
@@ -381,8 +465,38 @@ def handle_code_generation(ctx: HandlerContext) -> None:
     )
     console.print(f"  [dim]Working dir: {working_dir}[/dim]")
 
+    _cg_session_id = str(uuid.uuid4())
+    _cg_model = ctx.config.codex.model_routing.get("CODE_GENERATOR") or ctx.config.codex.model
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="code_generator",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_start",
+            "agent_post": "CODE_GENERATOR",
+            "model": _cg_model,
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _cg_session_id,
+        },
+    ))
+
     def _stream_line(line: str) -> None:
-        ctx.bus.publish(GenerationStatusMessage(
+        ctx.bus.publish(TerminalOutputMessage(
+            sender="code_generator",
+            module_id=module_id,
+            iteration=iteration,
+            payload={
+                "event_type": "line",
+                "stream": "stdout",
+                "line": line,
+                "agent_post": "CODE_GENERATOR",
+                "module_id": module_id,
+                "iteration": iteration,
+                "session_id": _cg_session_id,
+            },
+        ))
+        ctx.bus.publish(GenerationStatusMessage(  # legacy forward
             sender="code_generator",
             module_id=module_id,
             iteration=iteration,
@@ -403,12 +517,41 @@ def handle_code_generation(ctx: HandlerContext) -> None:
         if line.strip():
             level = "red" if any(k in line.lower() for k in _ERROR_KEYWORDS) else "dim"
             console.print(f"  [{level}][codex/err] {line}[/{level}]")
+        ctx.bus.publish(TerminalOutputMessage(
+            sender="code_generator",
+            module_id=module_id,
+            iteration=iteration,
+            payload={
+                "event_type": "line",
+                "stream": "stderr",
+                "line": line,
+                "agent_post": "CODE_GENERATOR",
+                "module_id": module_id,
+                "iteration": iteration,
+                "session_id": _cg_session_id,
+            },
+        ))
 
     runner = CodeGeneratorRunner(
         config=ctx.config,
         identity_ctx=IdentityContextInjector("CODE_GENERATOR", _AGENTS_DIR),
     )
     gen_result = runner.run(iter_record.prompt_path, working_dir, on_stdout=_stream_and_log, on_stderr=_log_stderr)
+
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="code_generator",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_end",
+            "agent_post": "CODE_GENERATOR",
+            "exit_code": gen_result.codex_result.exit_code,
+            "duration_seconds": round(gen_result.codex_result.duration_seconds, 1),
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _cg_session_id,
+        },
+    ))
 
     status = gen_result.completion.status
     retried_str = " (retried)" if gen_result.retried else ""
@@ -564,7 +707,7 @@ def handle_code_review(ctx: HandlerContext) -> None:
 
     from ..code_reviewer.runner import CodeReviewerRunner, store_review_result
     from ..code_reviewer.schema import CodeReviewResult
-    from ..comms.messages import ReviewFeedbackMessage
+    from ..comms.messages import ReviewFeedbackMessage, TerminalOutputMessage
     from ..module_maker.schema import ModuleDefinition
     from ..storage.iteration_repo import IterationRepository
     from ..validation.schema import ValidationResult
@@ -628,8 +771,38 @@ def handle_code_review(ctx: HandlerContext) -> None:
         ctx.state_mgr.transition_to(PipelineStatus.FAILED)
         return
 
+    _cr_session_id = str(uuid.uuid4())
+    _cr_model = ctx.config.codex.model_routing.get("CODE_REVIEWER") or ctx.config.codex.model
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="code_reviewer",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_start",
+            "agent_post": "CODE_REVIEWER",
+            "model": _cr_model,
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _cr_session_id,
+        },
+    ))
+
     def _stream_line(line: str) -> None:
-        ctx.bus.publish(ReviewFeedbackMessage(
+        ctx.bus.publish(TerminalOutputMessage(
+            sender="code_reviewer",
+            module_id=module_id,
+            iteration=iteration,
+            payload={
+                "event_type": "line",
+                "stream": "stdout",
+                "line": line,
+                "agent_post": "CODE_REVIEWER",
+                "module_id": module_id,
+                "iteration": iteration,
+                "session_id": _cr_session_id,
+            },
+        ))
+        ctx.bus.publish(ReviewFeedbackMessage(  # legacy forward
             sender="code_reviewer",
             module_id=module_id,
             iteration=iteration,
@@ -647,6 +820,21 @@ def handle_code_review(ctx: HandlerContext) -> None:
         working_dir=working_dir,
         on_stdout=_stream_line,
     )
+
+    ctx.bus.publish(TerminalOutputMessage(
+        sender="code_reviewer",
+        module_id=module_id,
+        iteration=iteration,
+        payload={
+            "event_type": "session_end",
+            "agent_post": "CODE_REVIEWER",
+            "exit_code": run_result.codex_result.exit_code,
+            "duration_seconds": round(run_result.codex_result.duration_seconds, 1),
+            "module_id": module_id,
+            "iteration": iteration,
+            "session_id": _cr_session_id,
+        },
+    ))
 
     review = run_result.review
     json_path = store_review_result(review, ctx.config)
