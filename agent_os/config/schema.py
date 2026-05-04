@@ -113,6 +113,26 @@ class SecretsConfig(BaseModel):
     github_token: str = ""
 
 
+class GitHubInputConfig(BaseModel):
+    """Phase 5 — existing GitHub repo as read-only context for Module Maker."""
+
+    enabled: bool = False
+    source_repo_url: str = ""
+    clone_depth: int = Field(default=1, ge=1, le=100)
+    include_file_patterns: list[str] = Field(
+        default_factory=lambda: ["**/*.py", "**/*.ts", "README.md"]
+    )
+    exclude_patterns: list[str] = Field(
+        default_factory=lambda: [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/__pycache__/**",
+        ]
+    )
+    max_context_files: int = Field(default=50, ge=1, le=500)
+    new_repo_suffix: str = "-agent-os-fork"
+
+
 class AgentOSConfig(BaseModel):
     project: ProjectConfig = ProjectConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
@@ -128,6 +148,7 @@ class AgentOSConfig(BaseModel):
     error_handling: ErrorHandlingConfig = ErrorHandlingConfig()
     github: GitHubConfig = GitHubConfig()
     secrets: SecretsConfig = SecretsConfig()
+    github_input: GitHubInputConfig = GitHubInputConfig()
 
     @field_validator("project")
     @classmethod

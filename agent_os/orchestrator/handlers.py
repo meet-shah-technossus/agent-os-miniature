@@ -99,6 +99,45 @@ def handle_loading_requirements(ctx: HandlerContext) -> None:
         f"{stats['epics']} epics, {stats['features']} features, "
         f"{stats['stories']} stories, {stats['acceptance_criteria']} ACs[/green]"
     )
+
+    # Phase 5 — clone source repo as read-only context if configured
+    if ctx.config.github_input.enabled and ctx.config.github_input.source_repo_url:
+        from ..comms.messages import PipelineEventMessage
+        from ..github_input.cloner import RepoCloner
+
+        console.print(
+            f"[cyan]GitHub Input — cloning {ctx.config.github_input.source_repo_url}[/cyan]"
+        )
+        try:
+            cloner = RepoCloner(ctx.config.github_input)
+            result = cloner.clone()
+
+            # Store compact summary in pipeline metadata so Module Maker can use it
+            metadata = dict(ctx.state_mgr.state.metadata)
+            metadata["source_codebase"] = result.to_dict()
+            ctx.state_mgr.update_metadata(metadata)
+
+            file_count = len(result.files)
+            console.print(
+                f"[green]Repo cloned — {file_count} files included "
+                f"({'capped' if result.capped else 'all matched'}, "
+                f"{result.total_matched} matched)[/green]"
+            )
+
+            ctx.bus.publish(PipelineEventMessage(
+                sender="orchestrator",
+                payload={
+                    "event": "repo_cloned",
+                    "source_url": result.source_url,
+                    "file_count": file_count,
+                    "total_matched": result.total_matched,
+                    "capped": result.capped,
+                },
+            ))
+        except Exception as exc:
+            logger.warning("GitHub Input clone failed: %s", exc, exc_info=True)
+            console.print(f"[yellow]GitHub Input clone failed: {exc} — continuing without codebase context[/yellow]")
+
     ctx.state_mgr.transition_to(PipelineStatus.MODULE_PLANNING)
 
 
@@ -170,7 +209,10 @@ def handle_module_planning(ctx: HandlerContext) -> None:
         config=ctx.config,
         identity_ctx=IdentityContextInjector("MODULE_MAKER", _AGENTS_DIR),
     )
-    plan = runner.run(on_stdout=_stream_line)
+    plan = runner.run(
+        on_stdout=_stream_line,
+        source_codebase=ctx.state_mgr.state.metadata.get("source_codebase"),
+    )
 
     ctx.bus.publish(TerminalOutputMessage(
         sender="module_maker",
@@ -1106,10 +1148,19 @@ def _ensure_remote_repo(ctx: HandlerContext, git: "GitOpsManager") -> bool:
         console.print("  [yellow]No GitHub token — skipping remote push[/yellow]")
         return False
 
-    # Derive repo name from project folder name
+    # Derive repo name from project folder name.
+    # Phase 5: when github_input is enabled and a source repo is being extended,
+    # append the configured suffix (default "-agent-os-fork") so the generated
+    # code lands in a new repo rather than overwriting the original.
     folder_name = _Path(project_root).name
+    gi_cfg = ctx.config.github_input
+    if gi_cfg.enabled and gi_cfg.source_repo_url:
+        suffix = gi_cfg.new_repo_suffix or "-agent-os-fork"
+        base_name = gh_cfg.repo or folder_name
+        repo_name = base_name if base_name.endswith(suffix) else base_name + suffix
+    else:
+        repo_name = gh_cfg.repo or folder_name
     owner = gh_cfg.owner
-    repo_name = gh_cfg.repo or folder_name
 
     # Initialise local git repo if not already
     if not git.is_repo():

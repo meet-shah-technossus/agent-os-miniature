@@ -175,6 +175,46 @@ should produce 1-3 files maximum.
 """
 
 
+def _build_codebase_section(source_codebase: dict, source_repo_url: str) -> str:
+    """Build the Existing Codebase section appended to the Module Maker prompt.
+
+    Phase 5: GitHub Repository Input Mode.
+    """
+    tree_lines = source_codebase.get("file_tree", [])
+    files = source_codebase.get("files", [])
+
+    tree_str = "\n".join(f"  {p}" for p in tree_lines) if tree_lines else "  (no files matched)"
+    file_sections: list[str] = []
+    for f in files:
+        path = f.get("path", "")
+        content = f.get("content", "")
+        truncated = f.get("truncated", False)
+        suffix = "\n... (truncated)" if truncated else ""
+        file_sections.append(f"#### {path}\n```\n{content}{suffix}\n```")
+
+    files_str = "\n\n".join(file_sections) if file_sections else "(no file contents available)"
+    url_display = source_repo_url or "unknown"
+
+    return f"""
+
+## Existing Codebase (to be extended/modified)
+
+The following is the existing codebase from {url_display}:
+
+### File Tree
+
+{tree_str}
+
+### Key Files
+
+{files_str}
+
+Your module plan must account for what already exists. Do not re-implement \
+anything already present. Each module should clearly state whether it creates \
+new files, modifies existing files, or both.
+"""
+
+
 class ModuleMakerRunner:
     """Decompose requirements into modules via Codex CLI."""
 
@@ -193,9 +233,13 @@ class ModuleMakerRunner:
             default_model=config.codex.model,
         )
 
-    def run(self, on_stdout: Callable[[str], None] | None = None) -> ModulePlan:
+    def run(
+        self,
+        on_stdout: Callable[[str], None] | None = None,
+        source_codebase: dict | None = None,
+    ) -> ModulePlan:
         """Execute the full module-making pipeline and return the plan."""
-        prompt = self._build_prompt()
+        prompt = self._build_prompt(source_codebase=source_codebase)
         raw_json = self._invoke_codex(prompt, on_stdout=on_stdout)
         plan = self._parse_and_validate(raw_json)
         self._ensure_module_0_dependencies(plan)
@@ -205,7 +249,7 @@ class ModuleMakerRunner:
 
     # --- Prompt building ---
 
-    def _build_prompt(self) -> str:
+    def _build_prompt(self, source_codebase: dict | None = None) -> str:
         lines: list[str] = []
         epics = self._req_repo.get_by_type(RequirementType.EPIC.value)
         for epic in epics:
@@ -235,6 +279,14 @@ class ModuleMakerRunner:
             project_name=self._config.project.name or "Target Project",
             project_root=self._config.project.root_path or ".",
         )
+
+        # Phase 5 — inject existing codebase context when github_input is enabled
+        if source_codebase:
+            base = base + _build_codebase_section(
+                source_codebase,
+                self._config.github_input.source_repo_url,
+            )
+
         if self._identity_ctx:
             preamble = self._identity_ctx.build_preamble()
             if preamble:

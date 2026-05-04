@@ -595,3 +595,67 @@ def skip_to_next_module(orch=Depends(get_orchestrator)):
         approved=True,
         message=f"Accepting {module_id} as-is and proceeding to next module.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — Clone preview
+# ---------------------------------------------------------------------------
+
+
+class ClonePreviewRequest(BaseModel):
+    source_repo_url: str
+    include_file_patterns: list[str] = ["**/*.py", "**/*.ts", "README.md"]
+    exclude_patterns: list[str] = [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/__pycache__/**",
+    ]
+    max_context_files: int = 50
+    clone_depth: int = 1
+
+
+class ClonePreviewResponse(BaseModel):
+    source_url: str
+    file_tree: list[str]
+    total_matched: int
+    capped: bool
+    file_count: int
+
+
+@router.post("/clone-preview", response_model=ClonePreviewResponse)
+def clone_preview(body: ClonePreviewRequest):
+    """Dry-run a GitHub repo clone and return the matched file tree.
+
+    Does NOT start the pipeline. Lets the user verify which files would be
+    included as context before enabling github_input in settings.
+    """
+    from ...config.schema import GitHubInputConfig
+    from ...github_input.cloner import RepoCloner
+
+    cfg = GitHubInputConfig(
+        enabled=True,
+        source_repo_url=body.source_repo_url,
+        clone_depth=body.clone_depth,
+        include_file_patterns=body.include_file_patterns,
+        exclude_patterns=body.exclude_patterns,
+        max_context_files=body.max_context_files,
+    )
+
+    cloner = RepoCloner(cfg)
+    try:
+        cloner.validate_url(body.source_repo_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        result = cloner.clone()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ClonePreviewResponse(
+        source_url=result.source_url,
+        file_tree=result.file_tree,
+        total_matched=result.total_matched,
+        capped=result.capped,
+        file_count=len(result.files),
+    )
