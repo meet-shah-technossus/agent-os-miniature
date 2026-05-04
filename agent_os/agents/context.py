@@ -151,6 +151,10 @@ class IdentityContextInjector:
         if skills_text:
             sections.append(f"## Capabilities\n\n{skills_text}")
 
+        tools_text = self.tools().strip()
+        if tools_text:
+            sections.append(f"## Tools I Have Access To\n\n{tools_text}")
+
         ceiling_text = self.ceiling().strip()
         if ceiling_text:
             sections.append(f"## Constraints & Boundaries\n\n{ceiling_text}")

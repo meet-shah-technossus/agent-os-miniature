@@ -11,6 +11,7 @@ from pathlib import Path
 
 from rich.console import Console
 
+from ..agents.brain import BrainUpdater
 from ..agents.context import IdentityContextInjector
 from ..storage.models import PipelineStatus
 from .context import HandlerContext
@@ -161,6 +162,14 @@ def handle_module_planning(ctx: HandlerContext) -> None:
         },
     ))
 
+    # Phase 3 — update Module Maker brain
+    BrainUpdater(ctx.config, _AGENTS_DIR).update(
+        post="MODULE_MAKER",
+        task_summary=f"Decomposed requirements into {len(plan.modules)} modules",
+        output_summary="Module plan stored in DB; module JSON files written to disk",
+        extra_context={"module_count": len(plan.modules), "module_ids": [m.module_id for m in plan.modules]},
+    )
+
     ctx.state_mgr.transition_to(PipelineStatus.HITL_1_MODULE_REVIEW)
 
 
@@ -266,6 +275,14 @@ def handle_prompt_generation(ctx: HandlerContext) -> None:
     iter_repo.create(iter_record)
 
     console.print(f"[green]Prompt written → {prompt_path}[/green]")
+
+    # Phase 3 — update Prompt Generator brain
+    BrainUpdater(ctx.config, _AGENTS_DIR).update(
+        post="PROMPT_GENERATOR",
+        task_summary=f"Generated prompt for {module_id} iteration {iteration}",
+        output_summary=f"Prompt written to {prompt_path} ({len(prompt_content)} chars)",
+        extra_context={"module_id": module_id, "iteration": iteration, "has_review_feedback": review is not None},
+    )
 
     # Publish on Comm Bus
     ctx.bus.publish(PromptReadyMessage(
@@ -445,6 +462,15 @@ def handle_code_generation(ctx: HandlerContext) -> None:
         dep_result = dep_mgr.install_requirements()
         if not dep_result.success:
             console.print(f"  [yellow]Dep install issue: {dep_result.errors[:200]}[/yellow]")
+
+    # Phase 3 — update Code Generator brain (only on successful completion)
+    if status != CompletionStatus.FAILED:
+        BrainUpdater(ctx.config, _AGENTS_DIR).update(
+            post="CODE_GENERATOR",
+            task_summary=f"Generated code for {module_id} iteration {iteration}",
+            output_summary=f"Completion status: {status.value}; summary length: {len(gen_result.summary_text)} chars",
+            extra_context={"module_id": module_id, "iteration": iteration, "retried": gen_result.retried, "duration_seconds": round(gen_result.codex_result.duration_seconds, 1)},
+        )
 
     # Publish on Comm Bus
     ctx.bus.publish(GenerationStatusMessage(
@@ -662,6 +688,23 @@ def handle_code_review(ctx: HandlerContext) -> None:
 
     # ── Per-iteration commit & push (Code Reviewer pushes after every review) ──
     _push_iteration_code(ctx, module_id, iteration)
+
+    # Phase 3 — update Code Reviewer brain
+    BrainUpdater(ctx.config, _AGENTS_DIR).update(
+        post="CODE_REVIEWER",
+        task_summary=f"Reviewed {module_id} iteration {iteration}",
+        output_summary=(
+            f"Status: {review.overall_status}; convergence: {review.convergence_score}/100; "
+            f"blocking issues: {review.blocking_issues}"
+        ),
+        extra_context={
+            "module_id": module_id,
+            "iteration": iteration,
+            "file_count": len(review.files),
+            "ac_passed": sum(1 for ac in review.acceptance_criteria if ac.passed),
+            "ac_total": len(review.acceptance_criteria),
+        },
+    )
 
     ctx.state_mgr.transition_to(PipelineStatus.HITL_3_REVIEW_DECISION)
 
