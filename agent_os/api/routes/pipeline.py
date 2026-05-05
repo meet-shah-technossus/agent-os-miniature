@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -518,6 +521,19 @@ def reset_pipeline(orch=Depends(get_orchestrator)):
 
         prev_root = orch.config.project.root_path
 
+        # Revert model routing to initial defaults stored in the DB.
+        # If no defaults are recorded yet, the current config values become
+        # the defaults (i.e. the first reset is always a no-op for routing).
+        try:
+            from ...storage.agent_config_repo import AgentConfigRepo
+            repo = AgentConfigRepo(orch.db.conn)
+            defaults = repo.get_model_routing_defaults()
+            if defaults:
+                orch.config.codex.model_routing = defaults
+                repo.set_model_routing(defaults)
+        except Exception as _e:
+            logger.warning("Could not revert model routing on reset: %s", _e)
+
         # Clear name and root_path so the next session derives both from the
         # new requirements.yaml and auto-provisions a fresh versioned folder.
         orch.config.project.root_path = ""
@@ -594,6 +610,118 @@ def skip_to_next_module(orch=Depends(get_orchestrator)):
     return ApproveGateResponse(
         approved=True,
         message=f"Accepting {module_id} as-is and proceeding to next module.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Manual Push — user-triggered git commit + push at HITL gates
+# ---------------------------------------------------------------------------
+
+
+class ManualPushResponse(BaseModel):
+    success: bool
+    message: str
+    commit_sha: str = ""
+    repo_url: str = ""
+
+
+@router.post("/manual-push", response_model=ManualPushResponse)
+def manual_push(orch=Depends(get_orchestrator)):
+    """Commit and push the current project code to GitHub on demand.
+
+    Available only when the pipeline is paused at HITL_3_REVIEW_DECISION or
+    HITL_2_PROMPT_REVIEW.  Uses the same branch, repo, and commit message
+    format as the automatic push performed by the Code Reviewer.
+    """
+    current = orch.state_mgr.current_status
+    _allowed = {
+        PipelineStatus.HITL_3_REVIEW_DECISION,
+        PipelineStatus.HITL_2_PROMPT_REVIEW,
+    }
+    if current not in _allowed:
+        return ManualPushResponse(
+            success=False,
+            message=f"Manual push is only available at HITL_3_REVIEW_DECISION or "
+                    f"HITL_2_PROMPT_REVIEW (current: {current.value})",
+        )
+
+    from ...config.env import resolve_secret
+    from ...git_ops.manager import GitOpsManager
+
+    cfg = orch.config
+    git_cfg = cfg.git
+    gh_cfg = cfg.github
+
+    if not git_cfg.enabled:
+        return ManualPushResponse(success=False, message="Git is disabled in config.")
+
+    # Resolve GitHub token from config → DB → env
+    project_root = cfg.project.root_path or "."
+    token = resolve_secret("github_token", cfg.secrets.github_token, project_root)
+    if not token:
+        try:
+            from ...storage.agent_config_repo import AgentConfigRepo
+            token = AgentConfigRepo(orch.db.conn).get_secrets().get("github_token", "")
+        except Exception:
+            pass
+
+    if not token and gh_cfg.auto_push:
+        return ManualPushResponse(
+            success=False,
+            message="GitHub token not configured — please set it in Settings.",
+        )
+
+    working_dir = project_root
+    git = GitOpsManager(working_dir=working_dir, remote=git_cfg.remote)
+
+    if not git.is_repo():
+        return ManualPushResponse(success=False, message="No local git repository found.")
+
+    state = orch.state_mgr.state
+    module_id = state.current_module_id or "unknown"
+    iteration = state.current_iteration or 0
+
+    commit_msg = f"feat({module_id}): manual push at {current.value} (iter {iteration})"
+    commit_result = git.commit_all(commit_msg)
+
+    if not commit_result.success:
+        if "nothing to commit" in commit_result.stdout:
+            # Nothing new — still attempt push in case previous commit wasn't pushed
+            commit_sha = git.latest_commit_sha()
+        else:
+            return ManualPushResponse(
+                success=False,
+                message=f"Commit failed: {commit_result.stderr[:300]}",
+            )
+    else:
+        commit_sha = git.latest_commit_sha()
+        logger.info("Manual push — committed: %s", commit_sha)
+
+    push_result = git.push("main")
+    if not push_result.success:
+        push_result = git._run("push", "-u", "origin", "main")
+
+    if not push_result.success:
+        return ManualPushResponse(
+            success=False,
+            message=f"Push failed: {push_result.stderr[:300]}",
+            commit_sha=commit_sha,
+        )
+
+    repo_url = f"https://github.com/{gh_cfg.owner}/{gh_cfg.repo}" if gh_cfg.owner and gh_cfg.repo else ""
+
+    # Update pipeline metadata so frontend reflects new push
+    metadata = dict(state.metadata)
+    metadata["repo_url"] = repo_url
+    metadata["pushed"] = True
+    orch.state_mgr.update_metadata(metadata)
+
+    logger.info("Manual push succeeded — %s → %s", commit_sha, repo_url)
+    return ManualPushResponse(
+        success=True,
+        message=f"Pushed commit {commit_sha[:8]} to {repo_url or 'remote'}",
+        commit_sha=commit_sha,
+        repo_url=repo_url,
     )
 
 

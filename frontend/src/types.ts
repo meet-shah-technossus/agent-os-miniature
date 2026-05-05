@@ -175,3 +175,74 @@ export interface OpenResponse {
   success: boolean;
   message: string;
 }
+
+// ---------------------------------------------------------------------------
+// Agents (Phase 6)
+// ---------------------------------------------------------------------------
+
+export interface AgentMeta {
+  name: string;
+  display_name: string;
+  is_builtin: boolean;
+  is_custom: boolean;
+  files_present: string[];
+  post_assignment: string | null;
+}
+
+export interface AgentDetail {
+  name: string;
+  is_builtin: boolean;
+  files: Record<string, string>; // filename → content
+}
+
+export type AgentFile = 'soul' | 'skills' | 'tools' | 'ceiling' | 'brain';
+
+export const AGENT_FILES: AgentFile[] = ['soul', 'skills', 'tools', 'ceiling', 'brain'];
+
+export const PIPELINE_POSTS = [
+  'MODULE_MAKER',
+  'PROMPT_GENERATOR',
+  'CODE_GENERATOR',
+  'CODE_REVIEWER',
+] as const;
+
+export type PipelinePost = (typeof PIPELINE_POSTS)[number];
+
+// ---------------------------------------------------------------------------
+// Terminal output (Phase 7)
+// ---------------------------------------------------------------------------
+
+export type TerminalLineStyle = 'reasoning' | 'file_write' | 'error' | 'normal';
+
+export interface TerminalLine {
+  /** Monotonically increasing ID used as React key. */
+  id: number;
+  timestamp: string;
+  eventType: 'line' | 'session_start' | 'session_end';
+  text: string;
+  stream: 'stdout' | 'stderr' | null;
+  style: TerminalLineStyle;
+  sessionId: string;
+}
+
+export type AgentStatus = 'idle' | 'running' | 'done' | 'error';
+
+export interface AgentTerminalState {
+  /** e.g. "MODULE_MAKER" */
+  agentPost: string;
+  /** e.g. "module_maker" */
+  senderName: string;
+  /** Ring buffer — last N lines. */
+  lines: TerminalLine[];
+  status: AgentStatus;
+  model: string | null;
+  currentModuleId: string | null;
+  currentIteration: number;
+  /** ISO timestamp when current/last session started. */
+  sessionStartedAt: string | null;
+  /** Timestamp of session_end — used to compute final elapsed time. */
+  sessionEndedAt: string | null;
+  lastExitCode: number | null;
+  /** Total sessions processed since page load. */
+  sessionCount: number;
+}

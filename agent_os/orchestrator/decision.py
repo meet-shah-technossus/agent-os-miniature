@@ -22,7 +22,7 @@ def decide_iteration(
     if overall == "accepted":
         return "MODULE_COMPLETE"
 
-    if iteration >= max_iterations:
+    if iteration > max_iterations:
         return "HITL_4_MAX_ITERATIONS"
 
     files = review_json.get("files", [])

@@ -18,6 +18,8 @@ import type {
   Requirement,
   Settings,
   TestGitHubResponse,
+  AgentMeta,
+  AgentDetail,
 } from '../types';
 
 const BASE = '/api';
@@ -87,6 +89,12 @@ export const api = {
   skipToNextModule: () =>
     fetchJson<ApproveGateResponse>('/pipeline/skip-to-next-module', { method: 'POST' }),
 
+  manualPush: () =>
+    fetchJson<{ success: boolean; message: string; commit_sha: string; repo_url: string }>(
+      '/pipeline/manual-push',
+      { method: 'POST' },
+    ),
+
   getModuleDefinitions: () =>
     fetchJson<ModuleDefinitionsPayload>('/modules/definitions/all'),
 
@@ -134,4 +142,68 @@ export const api = {
 
   resetPipeline: () =>
     fetchJson<{ success: boolean; message: string }>('/pipeline/reset', { method: 'POST' }),
+
+  // ---------------------------------------------------------------------------
+  // Agents (Phase 6)
+  // ---------------------------------------------------------------------------
+
+  listAgents: () => fetchJson<{ agents: AgentMeta[] }>('/agents'),
+
+  getRegistry: () => fetchJson<{ mapping: Record<string, string> }>('/agents/registry'),
+
+  updateRegistry: (mapping: Record<string, string>) =>
+    fetchJson<{ mapping: Record<string, string> }>('/agents/registry', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mapping }),
+    }),
+
+  getAgent: (name: string) =>
+    fetchJson<AgentDetail>(`/agents/${encodeURIComponent(name)}`),
+
+  getAgentFile: (name: string, file: string) =>
+    fetchJson<{ agent_name: string; file_name: string; content: string }>(
+      `/agents/${encodeURIComponent(name)}/${file}`,
+    ),
+
+  updateAgentFile: (name: string, file: string, content: string) =>
+    fetchJson<{ agent_name: string; file_name: string; content: string }>(
+      `/agents/${encodeURIComponent(name)}/${file.endsWith('.md') ? file : file + '.md'}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      },
+    ),
+
+  clearAgentBrain: (name: string) =>
+    fetchJson<{ agent_name: string; file_name: string; content: string }>(
+      `/agents/${encodeURIComponent(name)}/brain.md`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: '' }),
+      },
+    ),
+
+  /** Create a new custom agent. files keys must include .md extension (e.g. "soul.md"). */
+  createAgent: (name: string, files: Record<string, string>) =>
+    fetchJson<AgentDetail>('/agents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, files }),
+    }),
+
+  deleteAgent: (name: string) =>
+    fetch(`/api/agents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  getModelRouting: () =>
+    fetchJson<{ model_routing: Record<string, string> }>('/agents/model-routing'),
+
+  updateModelRouting: (model_routing: Record<string, string>) =>
+    fetchJson<{ model_routing: Record<string, string> }>('/agents/model-routing', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model_routing }),
+    }),
 };

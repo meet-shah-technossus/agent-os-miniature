@@ -31,11 +31,23 @@ def get_settings(orch=Depends(get_orchestrator)):
     cfg = orch.config
     project_root = cfg.project.root_path or "."
 
+    # Supplement config-level secrets with DB-stored secrets as a fallback.
+    # DB takes priority over .env / os.environ when the config value is empty.
+    try:
+        from ...storage.agent_config_repo import AgentConfigRepo
+        _db_secrets = AgentConfigRepo(orch.db.conn).get_secrets()
+    except Exception:
+        _db_secrets = {}
+
     openai_resolved = resolve_secret(
-        "openai_api_key", cfg.secrets.openai_api_key, project_root,
+        "openai_api_key",
+        cfg.secrets.openai_api_key or _db_secrets.get("openai_api_key", ""),
+        project_root,
     )
     github_resolved = resolve_secret(
-        "github_token", cfg.secrets.github_token, project_root,
+        "github_token",
+        cfg.secrets.github_token or _db_secrets.get("github_token", ""),
+        project_root,
     )
 
     return SettingsResponse(
@@ -67,12 +79,16 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
     """Update settings, write to config.yaml, and hot-reload into the orchestrator."""
     cfg = orch.config
 
-    # Apply secrets (only overwrite non-empty values)
+    # Apply secrets (only overwrite non-empty, non-masked values)
+    _new_openai = ""
+    _new_github = ""
     if body.secrets is not None:
         if body.secrets.openai_api_key and not body.secrets.openai_api_key.startswith("***"):
             cfg.secrets.openai_api_key = body.secrets.openai_api_key
+            _new_openai = body.secrets.openai_api_key
         if body.secrets.github_token and not body.secrets.github_token.startswith("***"):
             cfg.secrets.github_token = body.secrets.github_token
+            _new_github = body.secrets.github_token
 
     if body.github is not None:
         cfg.github.owner = body.github.owner
@@ -94,6 +110,54 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
 
+    # Mirror model_routing and secrets to DB so they survive process restarts.
+    try:
+        from ...storage.agent_config_repo import AgentConfigRepo
+        _repo = AgentConfigRepo(orch.db.conn)
+        if cfg.codex.model_routing:
+            _repo.set_model_routing(dict(cfg.codex.model_routing))
+        if _new_openai or _new_github:
+            _repo.set_secrets(openai_api_key=_new_openai, github_token=_new_github)
+            # Inject into this process's os.environ immediately — resolve_secret
+            # will find it without needing a DB round-trip
+            import os as _os
+            if _new_openai:
+                _os.environ["OPENAI_API_KEY"] = _new_openai
+            if _new_github:
+                _os.environ["GITHUB_TOKEN"] = _new_github
+            # Also persist to .env at Agent OS root so the token survives
+            # a uvicorn --reload restart (which kills the process)
+            try:
+                from pathlib import Path as _Path
+                _env_path = _Path(".env").resolve()
+                _lines: list[str] = []
+                if _env_path.exists():
+                    _lines = _env_path.read_text().splitlines()
+                # Upsert each key
+                def _upsert(lines: list[str], key: str, val: str) -> list[str]:
+                    prefix = f"{key}="
+                    updated = False
+                    result = []
+                    for ln in lines:
+                        if ln.startswith(prefix):
+                            result.append(f'{key}="{val}"')
+                            updated = True
+                        else:
+                            result.append(ln)
+                    if not updated:
+                        result.append(f'{key}="{val}"')
+                    return result
+                if _new_openai:
+                    _lines = _upsert(_lines, "OPENAI_API_KEY", _new_openai)
+                if _new_github:
+                    _lines = _upsert(_lines, "GITHUB_TOKEN", _new_github)
+                _env_path.write_text("\n".join(_lines) + "\n")
+                logger.info("Saved token(s) to %s", _env_path)
+            except Exception as _env_err:
+                logger.debug("Could not write .env file: %s", _env_err)
+    except Exception as _e:
+        logger.warning("Could not mirror settings to DB: %s", _e)
+
     logger.info("Settings updated and persisted to config.yaml")
 
     # Return the updated (masked) settings
@@ -105,7 +169,12 @@ def test_github_connection(orch=Depends(get_orchestrator)):
     """Test the GitHub token by calling the /user endpoint."""
     cfg = orch.config
     project_root = cfg.project.root_path or "."
-    token = resolve_secret("github_token", cfg.secrets.github_token, project_root)
+    try:
+        from ...storage.agent_config_repo import AgentConfigRepo
+        _db_tok = AgentConfigRepo(orch.db.conn).get_secrets().get("github_token", "")
+    except Exception:
+        _db_tok = ""
+    token = resolve_secret("github_token", cfg.secrets.github_token or _db_tok, project_root)
 
     if not token:
         return TestGitHubResponse(valid=False, message="No GitHub token configured")

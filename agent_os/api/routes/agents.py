@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from ...agents.store import (
     AGENT_FILES,
@@ -13,6 +14,8 @@ from ...agents.store import (
     AgentNotFoundError,
     AgentRegistry,
 )
+from ...storage.agent_config_repo import AgentConfigRepo
+from ..deps import get_orchestrator
 from ..schemas import (
     AgentDetailResponse,
     AgentFileResponse,
@@ -26,7 +29,7 @@ from ..schemas import (
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
-_AGENTS_DIR = Path(__file__).resolve().parents[3] / "agents"
+_AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
 
 
 def _store() -> AgentIdentityStore:
@@ -35,6 +38,14 @@ def _store() -> AgentIdentityStore:
 
 def _registry() -> AgentRegistry:
     return AgentRegistry(_AGENTS_DIR / "registry.json")
+
+
+def _cfg_repo(orch=None) -> AgentConfigRepo:
+    """Return an AgentConfigRepo using the shared DB connection."""
+    if orch is None:
+        from ..deps import orch_holder
+        orch = orch_holder.orchestrator
+    return AgentConfigRepo(orch.db.conn)
 
 
 # ---------------------------------------------------------------------------
@@ -61,11 +72,57 @@ def get_registry():
 
 
 @router.put("/registry", response_model=AgentRegistryResponse)
-def update_registry(body: UpdateRegistryRequest):
-    """Update one or more pipeline-post → agent mappings."""
+def update_registry(body: UpdateRegistryRequest, orch=Depends(get_orchestrator)):
+    """Update one or more pipeline-post → agent mappings and persist to DB."""
     reg = _registry()
     reg.update_registry(body.mapping)
-    return AgentRegistryResponse(mapping=reg.get_registry())
+    full_mapping = reg.get_registry()
+    # Mirror to DB
+    _cfg_repo(orch).set_registry(full_mapping)
+    return AgentRegistryResponse(mapping=full_mapping)
+
+
+# ---------------------------------------------------------------------------
+# Model routing — dedicated endpoint (also mirrors to DB)
+# ---------------------------------------------------------------------------
+
+
+class ModelRoutingBody(BaseModel):
+    model_routing: dict[str, str]
+
+
+class ModelRoutingResponse(BaseModel):
+    model_routing: dict[str, str]
+
+
+@router.get("/model-routing", response_model=ModelRoutingResponse)
+def get_model_routing(orch=Depends(get_orchestrator)):
+    """Return current model routing (DB first, then config fallback)."""
+    repo = _cfg_repo(orch)
+    routing = repo.get_model_routing()
+    if routing is None:
+        # Fall back to live config values and seed the DB
+        routing = dict(orch.config.codex.model_routing)
+        repo.set_model_routing(routing)
+    return ModelRoutingResponse(model_routing=routing)
+
+
+@router.put("/model-routing", response_model=ModelRoutingResponse)
+def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator)):
+    """Save model routing to config.yaml AND the database."""
+    routing = body.model_routing
+    # Apply to live config
+    orch.config.codex.model_routing.update(routing)
+    # Write config.yaml
+    try:
+        from ..deps import orch_holder
+        from .settings import _write_config_yaml
+        _write_config_yaml(orch.config, orch_holder.config_path)
+    except Exception as exc:
+        logger.warning("Could not persist model routing to config.yaml: %s", exc)
+    # Mirror to DB (also seeds defaults on first call)
+    _cfg_repo(orch).set_model_routing(dict(orch.config.codex.model_routing))
+    return ModelRoutingResponse(model_routing=dict(orch.config.codex.model_routing))
 
 
 # ---------------------------------------------------------------------------
@@ -108,8 +165,13 @@ def get_agent_file(agent_name: str, file_name: str):
 
 
 @router.put("/{agent_name:path}/{file_name}", response_model=AgentFileResponse)
-def update_agent_file(agent_name: str, file_name: str, body: UpdateAgentFileRequest):
-    """Overwrite a single .md file for an agent."""
+def update_agent_file(
+    agent_name: str,
+    file_name: str,
+    body: UpdateAgentFileRequest,
+    orch=Depends(get_orchestrator),
+):
+    """Overwrite a single .md file for an agent — writes to disk AND database."""
     if file_name not in AGENT_FILES:
         raise HTTPException(
             status_code=422,
@@ -121,6 +183,8 @@ def update_agent_file(agent_name: str, file_name: str, body: UpdateAgentFileRequ
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Mirror to DB
+    _cfg_repo(orch).upsert_file(agent_name, file_name, body.content)
     return AgentFileResponse(agent_name=agent_name, file_name=file_name, content=body.content)
 
 
@@ -149,3 +213,4 @@ def delete_agent(agent_name: str):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AgentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+

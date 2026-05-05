@@ -55,6 +55,20 @@ CREATE TABLE IF NOT EXISTS pipeline_state (
     last_checkpoint TEXT NOT NULL,
     metadata TEXT DEFAULT '{}'
 );
+
+CREATE TABLE IF NOT EXISTS agent_config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_files (
+    agent_name TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (agent_name, file_name)
+);
 """
 
 

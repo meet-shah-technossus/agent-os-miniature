@@ -1105,6 +1105,15 @@ def _create_github_client(ctx: HandlerContext, *, require_repo: bool = True):
     gh_cfg = ctx.config.github
     project_root = ctx.config.project.root_path or "."
     token = resolve_secret("github_token", ctx.config.secrets.github_token, project_root)
+
+    # Fallback: read token from DB (stored when user saved it via Settings UI)
+    if not token:
+        try:
+            from ..storage.agent_config_repo import AgentConfigRepo
+            token = AgentConfigRepo(ctx.db.conn).get_secrets().get("github_token", "")
+        except Exception:
+            pass
+
     if not token:
         logger.warning("GitHub token not configured — skipping GitHub operations")
         return None
@@ -1144,6 +1153,12 @@ def _ensure_remote_repo(ctx: HandlerContext, git: "GitOpsManager") -> bool:
     gh_cfg = ctx.config.github
     project_root = ctx.config.project.root_path or "."
     token = resolve_secret("github_token", ctx.config.secrets.github_token, project_root)
+    if not token:
+        try:
+            from ..storage.agent_config_repo import AgentConfigRepo
+            token = AgentConfigRepo(ctx.db.conn).get_secrets().get("github_token", "")
+        except Exception:
+            pass
     if not token:
         console.print("  [yellow]No GitHub token — skipping remote push[/yellow]")
         return False

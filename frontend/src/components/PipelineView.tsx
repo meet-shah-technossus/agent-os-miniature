@@ -19,6 +19,8 @@ export default function PipelineView() {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetStatus, setResetStatus] = useState('');
+  const [pushing, setPushing] = useState(false);
+  const [pushMsg, setPushMsg] = useState('');
 
   useEffect(() => {
     const load = () => {
@@ -66,6 +68,18 @@ export default function PipelineView() {
     api.retryCodeReviewer().then((r) => {
       if (r.approved) api.getPipelineStatus().then(setStatus);
     });
+  };
+
+  const handleManualPush = () => {
+    setPushing(true);
+    setPushMsg('');
+    api.manualPush()
+      .then((r) => {
+        setPushMsg(r.message);
+        if (r.success) api.getPipelineStatus().then(setStatus);
+      })
+      .catch(() => setPushMsg('Push request failed'))
+      .finally(() => setPushing(false));
   };
 
   const handleSkipToNextModule = () => {
@@ -130,6 +144,10 @@ export default function PipelineView() {
     status?.pipeline_status === 'HITL_3_REVIEW_DECISION' ||
     status?.pipeline_status === 'HITL_4_MAX_ITERATIONS';
 
+  const canManualPush =
+    status?.pipeline_status === 'HITL_3_REVIEW_DECISION' ||
+    status?.pipeline_status === 'HITL_2_PROMPT_REVIEW';
+
   return (
     <div className="space-y-6">
       {/* Status banner */}
@@ -152,7 +170,7 @@ export default function PipelineView() {
                 Module: {status.current_module_id} — Iteration {status.current_iteration}
               </p>
             )}
-            {status.metadata?.repo_url && (
+            {!!status.metadata?.repo_url && (
               <a
                 href={status.metadata.repo_url as string}
                 target="_blank"
@@ -164,7 +182,7 @@ export default function PipelineView() {
               </a>
             )}
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2 justify-end">
             <button
               onClick={handleStart}
               className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-medium transition-colors"
@@ -219,6 +237,14 @@ export default function PipelineView() {
                 Retry Code Reviewer
               </button>
             )}
+            <button
+              onClick={handleManualPush}
+              disabled={pushing || !canManualPush}
+              title={canManualPush ? 'Push current code to GitHub' : 'Only available at HITL_3_REVIEW_DECISION or HITL_2_PROMPT_REVIEW'}
+              className="px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+            >
+              {pushing ? 'Pushing…' : '⬆ Push to GitHub'}
+            </button>
             {canSkipToNextModule && (
               <button
                 onClick={handleSkipToNextModule}
@@ -234,6 +260,14 @@ export default function PipelineView() {
               Reset
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Push status message */}
+      {pushMsg && (
+        <div className={`glass-card text-sm ${pushMsg.startsWith('Pushed') ? 'text-violet-400' : 'text-red-400'}`}>
+          {pushMsg}
+          <button onClick={() => setPushMsg('')} className="ml-3 text-xs underline">dismiss</button>
         </div>
       )}
 
