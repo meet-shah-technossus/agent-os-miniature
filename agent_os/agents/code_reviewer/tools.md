@@ -2,32 +2,31 @@
 
 ## Available Tools
 
-### 1. File Content Reader
-**What it does:** Reads the full contents of all source files in the project directory that belong to the current module (as declared in `file_paths`).
-**Input:** Module's `file_paths` list, project root path
-**Output:** Dict mapping file path → file contents
-**Used for:** The primary corpus for code review analysis
+### 1. GitHub API (GitHubClient)
+**What it does:** Makes authenticated HTTP calls to `api.github.com` using the GitHub PAT.
+**Operations used:**
+- `GET /repos/{owner}/{repo}/pulls/{pr}` (with `Accept: application/vnd.github.diff`) — fetch PR diff
+- `POST /repos/{owner}/{repo}/pulls/{pr}/comments` (with `path` + `line`) — add inline comment
+- `POST /repos/{owner}/{repo}/issues/{pr}/comments` — add global PR comment
+- `POST /repos/{owner}/{repo}/pulls/{pr}/reviews` — submit approval
+- `PUT /repos/{owner}/{repo}/pulls/{pr}/merge` — merge PR
+- `DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}` — delete feature branch
+**Used for:** All review operations when `requirements_source != "ado"`
 
-### 2. Validation Result Reader
-**What it does:** Reads the structured `ValidationResult` JSON produced by the Validation step for the current module and iteration.
-**Input:** Module ID, iteration number, data directory
-**Output:** `ValidationResult` with per-tool results (lint, type-check, tests, security scan)
-**Used for:** Incorporating automated tool findings into the review without redundant re-checking
+### 2. Azure DevOps API (ADOClient)
+**What it does:** Makes authenticated HTTP calls to `dev.azure.com/{org}/{project}/_apis/git/` using ADO PAT encoded as `Basic {base64(":pat")}`.
+**Operations used:**
+- `GET .../pullrequests/{prId}/iterations/{iterationId}/changes` — fetch PR diff
+- `POST .../pullrequests/{prId}/threads` (with `threadContext` for file/line) — add inline comment
+- `POST .../pullrequests/{prId}/threads` (without `threadContext`) — add global comment
+- `PATCH .../pullrequests/{prId}` with `{"status": "completed"}` — merge PR
+- `DELETE .../refs` with `newObjectId` all zeros + current tip SHA — delete feature branch
+**Used for:** All review operations when `requirements_source == "ado"`
 
-### 3. Module Specification Reader
-**What it does:** Reads the full `ModuleDefinition` for the current module from the database.
-**Input:** Module ID, database connection
-**Output:** `ModuleDefinition` with all APIs, classes, functions, db_schemas, constraints, acceptance_criteria
-**Used for:** Spec-adherence checking — verifying all specified elements are present and correctly implemented
+### 3. Review JSON Writer
+**What it does:** Writes the structured review JSON to the configured file path.
+**Input:** Review JSON object, iteration number, output directory
+**Output:** Persisted review JSON file
+**Used for:** Making the review durable for orchestrator, HITL display, and Prompt Generator consumption
 
-### 4. Codex CLI Invocation (via CodexWrapper)
-**What it does:** Invokes the OpenAI Codex CLI as a subprocess with the assembled review prompt (code + spec + validation results). The CLI produces the structured JSON review.
-**Input:** Review prompt string, working directory, session type `CODE_REVIEWER`, model from `model_routing`
-**Output:** Raw stdout from Codex containing the JSON review
-**Used for:** The actual AI-driven review analysis
-
-### 5. Review JSON Writer
-**What it does:** Writes the parsed review JSON to disk at `data/reviews/{module_id}/iteration-{n}.json`.
-**Input:** Review JSON object, module ID, iteration number
-**Output:** Persisted review file
-**Used for:** Making the review durable for audit, HITL display, and Prompt Generator consumption
+**Note: There is NO local file system reader.** The Code Reviewer does not read any local source files. All code access is exclusively via VCS API PR diff.

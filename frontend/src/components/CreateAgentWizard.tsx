@@ -230,6 +230,10 @@ interface WizardState {
 
   // Step 6 — Assignment
   postAssignment: PipelinePost | '';
+
+  // Tracks which displayName||name was used to generate soul/skills templates.
+  // When the name changes and the user clicks Next, templates are regenerated.
+  templateKey: string;
 }
 
 function initialState(): WizardState {
@@ -247,6 +251,7 @@ function initialState(): WizardState {
     ceilingMustEscalate: '',
     ceilingMustNotDo: '',
     postAssignment: '',
+    templateKey: '',
   };
 }
 
@@ -777,13 +782,18 @@ export default function CreateAgentWizard({ onDone, onCancel }: Props) {
     if (err) { setStepError(err); return; }
     setStepError('');
 
-    // Pre-populate templates on first visit
+    // Pre-populate (or re-populate) templates whenever the identity name changes
     if (step === 0) {
-      setState((prev) => ({
-        ...prev,
-        soul:   prev.soul   || soulTemplate(prev.displayName || prev.name, prev.description),
-        skills: prev.skills || skillsTemplate(prev.displayName || prev.name),
-      }));
+      setState((prev) => {
+        const newKey = prev.displayName || prev.name;
+        if (newKey === prev.templateKey) return prev; // name unchanged — keep current content
+        return {
+          ...prev,
+          soul:   soulTemplate(prev.displayName || prev.name, prev.description),
+          skills: skillsTemplate(prev.displayName || prev.name),
+          templateKey: newKey,
+        };
+      });
     }
 
     setStep((s) => s + 1);

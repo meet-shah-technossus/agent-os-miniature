@@ -17,10 +17,14 @@ class PipelineRepository:
 
     def get_state(self) -> PipelineState:
         row = self._conn.execute("SELECT * FROM pipeline_state WHERE id = 1").fetchone()
+        try:
+            status = PipelineStatus(row["pipeline_status"])
+        except ValueError:
+            # Stale status value from an old schema — fall back to IDLE
+            status = PipelineStatus.IDLE
         return PipelineState(
-            current_module_id=row["current_module_id"],
             current_iteration=row["current_iteration"],
-            pipeline_status=PipelineStatus(row["pipeline_status"]),
+            pipeline_status=status,
             last_checkpoint=datetime.fromisoformat(row["last_checkpoint"]),
             metadata=json.loads(row["metadata"]),
         )
@@ -28,10 +32,9 @@ class PipelineRepository:
     def save_state(self, state: PipelineState) -> None:
         self._conn.execute(
             """UPDATE pipeline_state SET
-               current_module_id = ?, current_iteration = ?, pipeline_status = ?,
+               current_iteration = ?, pipeline_status = ?,
                last_checkpoint = ?, metadata = ? WHERE id = 1""",
             (
-                state.current_module_id,
                 state.current_iteration,
                 state.pipeline_status.value,
                 datetime.utcnow().isoformat(),

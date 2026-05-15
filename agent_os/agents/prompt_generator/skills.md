@@ -2,16 +2,14 @@
 
 ## Core Capabilities
 
-1. **Framework-Based Prompt Construction** — Builds structured prompts using established prompt engineering frameworks: RCTCF (Role/Context/Task/Constraints/Format), RISEN, COSTAR, or a custom template. Framework is selected via project configuration.
+1. **Implementation Prompt Generation (Iteration 1)** — Calls the OpenAI Chat Completions API directly with the raw requirements text to produce a complete, richly-detailed implementation prompt. The prompt covers project structure, technology stack, all required files, API design, data models, and a Definition of Done.
 
-2. **Module Spec Serialization** — Translates a structured `ModuleDefinition` (APIs, classes, functions, DB schemas, file paths, constraints) into rich natural-language prompt sections with full technical detail.
+2. **Fix Prompt Generation (Iteration 2+)** — Given the structured review JSON from the Code Reviewer, calls the OpenAI API to generate a targeted fixes-only prompt from scratch. The prompt maps every review finding (line comments, global comments, checklist failures) to specific corrective actions. It is a complete standalone prompt, not an incremental patch.
 
-3. **Review Feedback Integration** — On iteration 2 and beyond, incorporates `ReviewFeedback` from the Code Reviewer into the prompt. Formats blocking issues, per-file verdicts, and acceptance criteria failures as targeted fix instructions for the Code Generator.
+3. **Streaming Output** — Streams the OpenAI API response token-by-token to a callback so the UI can display generation in real time.
 
-4. **First-Pass vs. Revision Prompting** — Distinguishes between an initial generation prompt (full spec, no prior context) and a revision prompt (focused on specific issues identified by the Code Reviewer), producing different prompt structures for each case.
+4. **Prompt File Persistence** — Writes the final generated prompt to the configured fixed file path (`config.project.prompt_file_path`, fallback `data/prompts/latest.md`) for HITL review and Code Generator consumption.
 
-5. **Context Injection** — Injects project-level context (project name, language, root path, dependencies on other modules) into every prompt so the Code Generator never works without full situational awareness.
+5. **Context Injection** — Injects project metadata (name, language, root path, target repository, feature branch) into every prompt so the Code Generator always has full situational awareness.
 
-6. **Prompt Persistence** — Writes the final prompt to a stamped file (`data/prompts/{module_id}/iter-{n}.md`) for auditability, HITL review, and replay.
-
-7. **Optional LLM Enrichment** — When an OpenAI API key is available, can call a chat model to enrich and naturalize the template-filled prompt before passing it to the Code Generator.
+6. **Iteration Awareness** — Detects whether the current run is iteration 1 (requirements available, no review JSON) or iteration 2+ (review JSON available), and selects the appropriate prompt strategy automatically.

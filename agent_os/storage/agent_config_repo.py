@@ -122,3 +122,10 @@ class AgentConfigRepo:
             (agent_name,),
         ).fetchall()
         return {row["file_name"]: row["content"] for row in rows}
+
+    def delete_agent_files(self, agent_name: str) -> None:
+        """Remove all stored .md file entries for an agent from the DB."""
+        self._conn.execute(
+            "DELETE FROM agent_files WHERE agent_name = ?", (agent_name,)
+        )
+        self._conn.commit()

@@ -2,18 +2,32 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
+import pty
+import struct
 import subprocess
+import termios
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
 from .session import CodexResult, CodexSession, SessionType
-from .streaming import kill_process, stream_pipe
+from .streaming import kill_process, stream_pty
+from .cli_adapter import build_command, executable_name, UnsupportedToolError
 
 logger = logging.getLogger(__name__)
+
+
+def _set_pty_size(fd: int, rows: int, cols: int) -> None:
+    """Set the terminal size on a PTY file descriptor (TIOCSWINSZ)."""
+    try:
+        winsize = struct.pack("HHHH", rows, cols, 0, 0)
+        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
+    except OSError:
+        pass
 
 
 class CodexWrapper:
@@ -27,6 +41,7 @@ class CodexWrapper:
         project_root: str = ".",
         model_routing: dict[str, str] | None = None,
         default_model: str = "",
+        cli_routing: dict[str, str] | None = None,
     ) -> None:
         self._timeout = timeout_seconds
         self._max_retries = max_retries
@@ -34,6 +49,7 @@ class CodexWrapper:
         self._project_root = project_root
         self._model_routing = model_routing or {}
         self._default_model = default_model
+        self._cli_routing = cli_routing or {}
         self._active_sessions: dict[SessionType, CodexSession] = {}
 
     def execute(
@@ -78,85 +94,108 @@ class CodexWrapper:
         on_stdout: Optional[Callable[[str], None]],
         on_stderr: Optional[Callable[[str], None]],
     ) -> CodexResult:
-        """Single invocation of codex exec."""
+        """Single invocation of codex exec via a pseudo-terminal.
+
+        Uses ``pty.openpty()`` so the child process sees a real TTY and
+        produces its full interactive output (permissions, ANSI, progress).
+        """
         working_dir = Path(working_dir).resolve()
         if not working_dir.exists():
             working_dir.mkdir(parents=True, exist_ok=True)
 
-        cmd = ["codex", "exec", "--full-auto", "--skip-git-repo-check"]
+        # Build command using the configured CLI tool for this agent
+        tool = self._cli_routing.get(session_type.value, "codex")
         model = self._model_routing.get(session_type.value) or self._default_model
-        if model:
-            cmd.extend(["--model", model])
-        # Enable API request logging (store: true)
-        cmd.extend(["-c", "store=true"])
-        cmd.append(prompt)
+        start_time = time.monotonic()
+        try:
+            cmd = build_command(tool, model, prompt, working_dir=str(working_dir))
+        except UnsupportedToolError as exc:
+            logger.error("Unsupported tool '%s' for %s: %s", tool, session_type.value, exc)
+            return CodexResult(
+                exit_code=-1, stdout="", stderr=str(exc),
+                duration_seconds=time.monotonic() - start_time,
+            )
+        _exe = executable_name(tool)
+
+        # Callbacks — merge PTY output into on_stdout; on_stderr receives nothing
+        # since the PTY merges both streams (identical to a real terminal).
+        combined_cb = on_stdout
+
         session = CodexSession(
             session_type=session_type,
             _on_stdout=on_stdout,
             _on_stderr=on_stderr,
         )
-        start_time = time.monotonic()
 
         try:
             from ..config.env import build_codex_env
+            env = build_codex_env(self._openai_api_key, self._project_root)
+            # Ensure the child sees a proper TERM variable
+            env.setdefault("TERM", "xterm-256color")
+
+            # Allocate a pseudo-terminal pair
+            master_fd, slave_fd = pty.openpty()
+
+            # Set a reasonable terminal size (120 cols × 40 rows)
+            _set_pty_size(master_fd, 40, 120)
 
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
                 cwd=str(working_dir),
-                text=True,
-                env=build_codex_env(self._openai_api_key, self._project_root),
+                env=env,
+                close_fds=True,
+                start_new_session=True,
             )
+            # Close slave in the parent — only the child needs it.
+            os.close(slave_fd)
+
             session.process = proc
             session.pid = proc.pid
             self._active_sessions[session_type] = session
 
-            logger.info("Started Codex CLI (PID %d) for %s", proc.pid, session_type.value)
+            logger.info("Started %s CLI (PID %d) via PTY for %s", _exe, proc.pid, session_type.value)
 
-            stdout_thread = threading.Thread(
-                target=stream_pipe, args=(proc.stdout, session.stdout_lines, on_stdout),
+            # Single reader thread for the merged PTY stream
+            pty_thread = threading.Thread(
+                target=stream_pty,
+                args=(master_fd, session.stdout_lines, combined_cb),
                 daemon=True,
             )
-            stderr_thread = threading.Thread(
-                target=stream_pipe, args=(proc.stderr, session.stderr_lines, on_stderr),
-                daemon=True,
-            )
-            stdout_thread.start()
-            stderr_thread.start()
+            pty_thread.start()
 
             try:
                 proc.wait(timeout=self._timeout)
             except subprocess.TimeoutExpired:
-                logger.warning("Codex CLI (PID %d) timed out after %ds", proc.pid, self._timeout)
+                logger.warning("%s CLI (PID %d) timed out after %ds", _exe, proc.pid, self._timeout)
                 kill_process(proc)
-                stdout_thread.join(timeout=5)
-                stderr_thread.join(timeout=5)
+                pty_thread.join(timeout=5)
                 return CodexResult(
                     exit_code=-1,
                     stdout="\n".join(session.stdout_lines),
-                    stderr="\n".join(session.stderr_lines),
+                    stderr="",
                     timed_out=True,
                     duration_seconds=time.monotonic() - start_time,
                 )
 
-            stdout_thread.join(timeout=10)
-            stderr_thread.join(timeout=10)
+            pty_thread.join(timeout=10)
 
             return CodexResult(
                 exit_code=proc.returncode,
                 stdout="\n".join(session.stdout_lines),
-                stderr="\n".join(session.stderr_lines),
+                stderr="",
                 timed_out=False,
                 duration_seconds=time.monotonic() - start_time,
             )
 
         except FileNotFoundError:
-            logger.error("'codex' CLI not found. Is it installed and on PATH?")
-            return CodexResult(exit_code=-127, stdout="", stderr="codex: command not found",
+            logger.error("'%s' CLI not found. Is it installed and on PATH?", _exe)
+            return CodexResult(exit_code=-127, stdout="", stderr=f"{_exe}: command not found",
                                duration_seconds=time.monotonic() - start_time)
         except Exception as e:
-            logger.exception("Unexpected error running Codex CLI")
+            logger.exception("Unexpected error running %s CLI", _exe)
             return CodexResult(exit_code=-1, stdout="", stderr=str(e),
                                duration_seconds=time.monotonic() - start_time)
         finally:

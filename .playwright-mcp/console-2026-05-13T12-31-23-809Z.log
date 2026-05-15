@@ -1,0 +1,14 @@
+[     268ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=65c00e7c:14336
+[     378ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useWebSocket.ts:46
+[     378ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useAgentTerminals.ts:178
+[     378ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useWebSocket.ts:46
+[   41259ms] [LOG] [vite] server connection lost. Polling for restart... @ http://localhost:5173/@vite/client:968
+[   42245ms] [ERROR] WebSocket connection to 'ws://localhost:5173/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/src/hooks/useWebSocket.ts:15
+[   42256ms] [ERROR] WebSocket connection to 'ws://localhost:5173/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/src/hooks/useWebSocket.ts:15
+[   42382ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/api/orchestrator/status:0
+[   43261ms] [ERROR] WebSocket connection to 'ws://localhost:5173/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/src/hooks/useWebSocket.ts:15
+[   43273ms] [ERROR] WebSocket connection to 'ws://localhost:5173/ws' failed: Error in connection establishment: net::ERR_CONNECTION_REFUSED @ http://localhost:5173/src/hooks/useWebSocket.ts:15
+[   44448ms] [INFO] %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold @ http://localhost:5173/node_modules/.vite/deps/react-dom_client.js?v=65c00e7c:14336
+[   44462ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useWebSocket.ts:46
+[   44462ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useAgentTerminals.ts:178
+[   44462ms] [WARNING] WebSocket connection to 'ws://localhost:5173/ws' failed: WebSocket is closed before the connection is established. @ http://localhost:5173/src/hooks/useWebSocket.ts:46

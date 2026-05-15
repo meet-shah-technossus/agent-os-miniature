@@ -1,0 +1,759 @@
+​epics:
+  - id: "E1"
+    title: "Platform Foundation, Security, and Persistence"
+    description: >
+      Establishes the FastAPI backend foundation, environment-driven runtime configuration,
+      JWT-based authentication, and SQLAlchemy-backed persistence with a clean architecture
+      split between use-cases, domain interfaces, and infrastructure repositories.
+    features:
+      - id: "F1"
+        title: "Application Bootstrap and Runtime Configuration"
+        description: >
+          Configures the API process with centralized settings, middleware, router registration,
+          generator wiring, logging, and health monitoring behavior.
+        stories:
+          - id: "S1"
+            title: "Centralized environment configuration"
+            description: >
+              Load database, JWT, CORS, storage, Ollama API URL, and debug settings through
+              pydantic-settings with .env support and sensible defaults.
+            acceptance_criteria:
+              - id: "AC1"
+                title: "Settings are environment-driven"
+                description: >
+                  infrastructure/config/settings.py defines Settings with database_url,
+                  jwt_secret_key, jwt_algorithm, access_token_expire_minutes, cors_origins,
+                  storage_dir, ollama_api_url, and debug, and reads from .env.
+              - id: "AC2"
+                title: "Generator API URL is wired at startup"
+                description: >
+                  main.py calls generators.utils.configure(api_url=settings.ollama_api_url)
+                  once during application boot so all generators share the configured endpoint.
+
+          - id: "S2"
+            title: "FastAPI app composition with middleware and routers"
+            description: >
+              Build and expose one API app that includes CORS middleware and route modules
+              for auth, datasets, generation, and health.
+            acceptance_criteria:
+              - id: "AC3"
+                title: "Router modules are mounted"
+                description: >
+                  main.py includes auth_router, dataset_router, generation_router, and
+                  health_router on a single FastAPI instance.
+              - id: "AC4"
+                title: "CORS policy is explicitly configured"
+                description: >
+                  CORSMiddleware allows configured origins, credentials, methods [GET, POST, DELETE],
+                  and headers [Authorization, Content-Type].
+
+          - id: "S3"
+            title: "Global error handling and health endpoint"
+            description: >
+              Provide baseline operational reliability with unhandled exception capture
+              and a simple health check route.
+            acceptance_criteria:
+              - id: "AC5"
+                title: "Unhandled exceptions are logged and normalized"
+                description: >
+                  A global exception handler logs method/path/exception with stack trace and returns
+                  HTTP 500 JSON {\"detail\": \"Internal server error\"}.
+              - id: "AC6"
+                title: "Health endpoint returns status payload"
+                description: >
+                  GET /health responds with {\"status\": \"ok\"}.
+
+      - id: "F2"
+        title: "JWT Authentication and Access Control"
+        description: >
+          Implements user registration, credential verification, JWT issuance/validation,
+          and dependency-based user resolution for protected routes.
+        stories:
+          - id: "S4"
+            title: "User registration with validation and hashing"
+            description: >
+              Register users with email/password form input, enforce validation rules,
+              and persist hashed passwords.
+            acceptance_criteria:
+              - id: "AC7"
+                title: "Registration validates payload shape"
+                description: >
+                  RegisterRequest validates email format and enforces password length >= 8
+                  before attempting persistence.
+              - id: "AC8"
+                title: "Duplicate email prevention and secure storage"
+                description: >
+                  register_user rejects pre-existing email addresses and stores bcrypt-hashed
+                  passwords, returning HTTP 400 on duplicate registration attempts.
+
+          - id: "S5"
+            title: "Login flow issuing bearer tokens"
+            description: >
+              Authenticate users with OAuth2PasswordRequestForm and return a signed access token
+              for downstream API authorization.
+            acceptance_criteria:
+              - id: "AC9"
+                title: "Successful login returns bearer token"
+                description: >
+                  POST /login uses username/password form fields and returns
+                  {access_token, token_type=\"bearer\"} when credentials are valid.
+              - id: "AC10"
+                title: "Invalid credentials are rejected"
+                description: >
+                  Failed password or unknown email returns HTTP 400 with
+                  \"Incorrect email or password\".
+
+          - id: "S6"
+            title: "Protected user context resolution"
+            description: >
+              Decode JWT tokens, map subject claim to UUID, and fetch the current user entity
+              for all protected route handlers.
+            acceptance_criteria:
+              - id: "AC11"
+                title: "Invalid or missing token produces 401"
+                description: >
+                  get_current_user relies on OAuth2 bearer token, and decode/user lookup failures
+                  return HTTP 401 with WWW-Authenticate Bearer header.
+              - id: "AC12"
+                title: "Current user endpoint exposes safe profile fields"
+                description: >
+                  GET /me requires auth and returns only id and email for the authenticated user.
+
+      - id: "F3"
+        title: "Database Model and Repository Boundaries"
+        description: >
+          Defines ORM entities, domain dataclasses, repository contracts, and SQLAlchemy
+          implementations to keep business logic independent from persistence details.
+        stories:
+          - id: "S7"
+            title: "Relational model for users and datasets"
+            description: >
+              Persist authentication identities and generated dataset metadata
+              with UUID keys and ownership relationships.
+            acceptance_criteria:
+              - id: "AC13"
+                title: "Core tables and ownership relation exist"
+                description: >
+                  infrastructure/db/models.py defines users and datasets tables with
+                  datasets.user_id foreign key to users.id and ORM relationships.
+              - id: "AC14"
+                title: "Dataset metadata fields are stored"
+                description: >
+                  Dataset model stores name, dataset_type, format, storage_key, status,
+                  and created_at timestamps.
+
+          - id: "S8"
+            title: "Repository interfaces and implementations"
+            description: >
+              Encapsulate persistence operations behind domain interfaces and map
+              ORM models to domain entities.
+            acceptance_criteria:
+              - id: "AC15"
+                title: "Use-cases depend on abstractions"
+                description: >
+                  app/use_cases modules use UserRepositoryInterface and DatasetRepositoryInterface
+                  instead of directly importing ORM/session objects.
+              - id: "AC16"
+                title: "Repository operations handle transaction safety"
+                description: >
+                  SQLAlchemy repositories perform commit+refresh on success and rollback on exceptions.
+
+          - id: "S9"
+            title: "Session lifecycle and schema initialization"
+            description: >
+              Provide request-scoped DB sessions and a utility to initialize tables
+              during setup workflows.
+            acceptance_criteria:
+              - id: "AC17"
+                title: "Session provider closes resources correctly"
+                description: >
+                  get_db generators yield SessionLocal sessions and always close them in finally blocks.
+              - id: "AC18"
+                title: "Initialization creates metadata tables"
+                description: >
+                  init_db executes Base.metadata.create_all(bind=engine) and logs success/failure.
+
+  - id: "E2"
+    title: "Dataset Generation Engine and Validation Logic"
+    description: >
+      Implements multiple synthetic dataset generators (SFT, NL-SQL, RAG-QA, Classification,
+      Text-to-Code, Multilingual) with shared LLM utilities, structured parsing, validation
+      filters, deduplication, and dual CSV/JSONL persistence.
+    features:
+      - id: "F4"
+        title: "Shared Generator Utilities"
+        description: >
+          Central utilities handle model calls, JSON extraction, text normalization, and
+          append-based output persistence used by all dataset generator modules.
+        stories:
+          - id: "S10"
+            title: "Model invocation and response parsing"
+            description: >
+              Standardize remote model communication and robust extraction of JSON payloads
+              from noisy or fenced model output.
+            acceptance_criteria:
+              - id: "AC19"
+                title: "Ollama API invocation is centralized"
+                description: >
+                  call_model sends prompt/model/options to configured API URL and raises
+                  ModelNotFoundError on HTTP 404 responses.
+              - id: "AC20"
+                title: "JSON extraction handles wrappers and noise"
+                description: >
+                  extract_json and extract_json_array remove markdown fences and recover
+                  parseable JSON objects/arrays from mixed text outputs.
+
+          - id: "S11"
+            title: "Dual-format output persistence"
+            description: >
+              Persist generated rows consistently to both CSV and JSONL files for training
+              and inspection workflows.
+            acceptance_criteria:
+              - id: "AC21"
+                title: "CSV and JSONL append together"
+                description: >
+                  save_dataset and save_dataframe append rows to CSV and companion JSONL
+                  files using output_path and output_path.replace('.csv', '.jsonl').
+              - id: "AC22"
+                title: "Generator outputs include creation metadata"
+                description: >
+                  Major generator rows include created_at using UTC ISO timestamp strings.
+
+          - id: "S12"
+            title: "Normalization and dedup support"
+            description: >
+              Reduce duplicate examples by normalizing text and checking previously stored records.
+            acceptance_criteria:
+              - id: "AC23"
+                title: "Normalization utility is available"
+                description: >
+                  normalize_text lowercases and collapses whitespace for dedup keys.
+              - id: "AC24"
+                title: "Generators use historical output for dedup"
+                description: >
+                  Generators read existing CSV files when present and skip duplicate instructions,
+                  questions, or SQL queries based on normalized values.
+
+      - id: "F5"
+        title: "SFT Instruction Dataset Workflow"
+        description: >
+          Generate instruction-response training pairs with style/language controls,
+          quality filtering, and metadata persistence through API and script paths.
+        stories:
+          - id: "S13"
+            title: "SFT pair generation with quality checks"
+            description: >
+              Generate strict JSON instruction-response batches, apply quality gates,
+              and append accepted rows with descriptive metadata.
+            acceptance_criteria:
+              - id: "AC25"
+                title: "SFT generator enforces batch structure"
+                description: >
+                  generate_instruction_dataset expects JSON {pairs:[...]} and only accepts
+                  entries meeting minimum instruction/response quality thresholds.
+              - id: "AC26"
+                title: "SFT rows retain provenance fields"
+                description: >
+                  Saved rows include instruction, response, model, style, topic, language,
+                  and created_at fields.
+
+          - id: "S14"
+            title: "SFT API endpoint orchestration"
+            description: >
+              Expose POST /generate/sft to run generation, persist metadata, and return dataset identifiers.
+            acceptance_criteria:
+              - id: "AC27"
+                title: "Endpoint accepts complete SFT parameter set"
+                description: >
+                  /generate/sft consumes topic, model, style, num_pairs, language, temperature,
+                  and output_name as multipart form fields.
+              - id: "AC28"
+                title: "Generated SFT metadata is persisted"
+                description: >
+                  Successful generation writes dataset metadata with dataset_type \"sft\"
+                  and format \"csv\" before returning dataset_id.
+
+          - id: "S15"
+            title: "Legacy standalone instruction script"
+            description: >
+              Maintain a standalone Ollama-based script that can generate and append
+              instruction-response rows outside the API runtime.
+            acceptance_criteria:
+              - id: "AC29"
+                title: "Standalone script writes constrained columns"
+                description: >
+                  instruction_dataset_generator.py enforces JSON schema keys and writes
+                  instruction/response columns to CSV in append mode.
+              - id: "AC30"
+                title: "Script supports repeated generation runs"
+                description: >
+                  Script includes a looped example invocation pattern to accumulate multiple batches.
+
+      - id: "F6"
+        title: "NL-SQL and RAG-QA Generation Workflows"
+        description: >
+          Generate NL-SQL and retrieval-style QA datasets with schema normalization,
+          execution checks, contextual grounding checks, and file-based input handling.
+        stories:
+          - id: "S16"
+            title: "NL-SQL schema normalization and SQL validation"
+            description: >
+              Accept flexible schema JSON formats, generate SQL, validate identifiers,
+              validate execution on in-memory SQLite, and produce paired English questions.
+            acceptance_criteria:
+              - id: "AC31"
+                title: "Schema input is normalized to table/column objects"
+                description: >
+                  load_schema supports list/dict \"tables\" input and converts shorthand
+                  string columns into dict format with inferred types.
+              - id: "AC32"
+                title: "Only valid SQL-question pairs are saved"
+                description: >
+                  SQL is accepted only after token validation and successful sqlite3 execution,
+                  then paired with generated natural-language question.
+
+          - id: "S17"
+            title: "NL-SQL API file upload and cleanup"
+            description: >
+              Process uploaded schema files safely using temporary files and guaranteed cleanup.
+            acceptance_criteria:
+              - id: "AC33"
+                title: "Upload handling is sanitized and temporary"
+                description: >
+                  /generate/nl_sql sanitizes filename, writes UploadFile to temp storage,
+                  and passes the temp path into generation logic.
+              - id: "AC34"
+                title: "Temp files are always removed"
+                description: >
+                  NL-SQL route uses finally-block cleanup_temp_file to delete temp files
+                  on both success and failure.
+
+          - id: "S18"
+            title: "RAG QA generation with grounding checks"
+            description: >
+              Build QA pairs from text chunks and reject weak generations using overlap
+              and embedding similarity validation.
+            acceptance_criteria:
+              - id: "AC35"
+                title: "RAG generator supports TXT and PDF contexts"
+                description: >
+                  extract_document_text reads plain text files directly and extracts
+                  page text from PDFs with PyPDF2.
+              - id: "AC36"
+                title: "RAG output is filtered by validation layers"
+                description: >
+                  Generated QA rows are accepted only when overlap and semantic similarity
+                  checks pass, reducing ungrounded answers.
+
+          - id: "S19"
+            title: "RAG API endpoint workflow"
+            description: >
+              Expose POST /generate/rag_qa with difficulty and pair controls,
+              returning metadata-linked dataset IDs.
+            acceptance_criteria:
+              - id: "AC37"
+                title: "RAG endpoint supports contextual form inputs"
+                description: >
+                  /generate/rag_qa accepts context_file, output_name, model, difficulty,
+                  and num_pairs fields.
+              - id: "AC38"
+                title: "Error mapping and cleanup are explicit"
+                description: >
+                  Value errors return HTTP 400, unexpected failures return HTTP 500,
+                  and temporary uploads are removed in finally block.
+
+      - id: "F7"
+        title: "Classification, Text-to-Code, and Multilingual Workflows"
+        description: >
+          Support additional dataset families with class balancing constraints,
+          code-quality filtering, translation pipelines, and per-workflow route handlers.
+        stories:
+          - id: "S20"
+            title: "Classification dataset generation and endpoint"
+            description: >
+              Generate labeled text samples from task description and class labels
+              with label filtering and metadata columns.
+            acceptance_criteria:
+              - id: "AC39"
+                title: "Classification route validates labels input"
+                description: >
+                  /generate/classification parses comma-separated class_labels and rejects
+                  empty label sets with HTTP 400.
+              - id: "AC40"
+                title: "Classification rows contain scoped metadata"
+                description: >
+                  Saved classification samples include text, label, task, and created_at,
+                  with labels constrained to configured class_labels.
+
+          - id: "S21"
+            title: "Text-to-code generation and endpoint"
+            description: >
+              Generate instruction-code pairs with dedup and quality filtering
+              for code synthesis training data.
+            acceptance_criteria:
+              - id: "AC41"
+                title: "Code generator enforces quality checks"
+                description: >
+                  basic_quality_filter excludes short prompts/snippets and trivial placeholders
+                  such as TODO/pass-only outputs.
+              - id: "AC42"
+                title: "Text-to-code route captures required controls"
+                description: >
+                  /generate/text_to_code accepts domain, programming_language, output_name,
+                  model, num_samples, and temperature fields.
+
+          - id: "S22"
+            title: "Multilingual generation with Argos translation"
+            description: >
+              Generate source-language sentences with LLM and translate them using
+              Argos Translate language pairs, including auto-install behavior.
+            acceptance_criteria:
+              - id: "AC43"
+                title: "Language mapping and validation are enforced"
+                description: >
+                  get_language_code maps supported language names to ISO-like codes and raises
+                  ValueError for unsupported entries.
+              - id: "AC44"
+                title: "Translation model lifecycle is automated"
+                description: >
+                  get_translation_model checks installed language pairs, attempts package install
+                  when absent, and then translates rows into target_text outputs.
+
+  - id: "E3"
+    title: "Dataset Lifecycle Management and Storage Safety"
+    description: >
+      Covers metadata persistence, secure file-path handling, generation artifact retrieval,
+      and ownership-scoped deletion for produced datasets.
+    features:
+      - id: "F8"
+        title: "Metadata Persistence and Storage Key Conventions"
+        description: >
+          Ensure every generated artifact is linked to the authenticated user and
+          can be resolved deterministically in local storage.
+        stories:
+          - id: "S23"
+            title: "Generation metadata persistence"
+            description: >
+              Save a DatasetEntity record for each successful generation route execution.
+            acceptance_criteria:
+              - id: "AC45"
+                title: "Metadata captures ownership and identity"
+                description: >
+                  _save_metadata persists id, user_id, name, dataset_type, format, storage_key,
+                  and status fields through DatasetRepositoryInterface.
+              - id: "AC46"
+                title: "Storage key pattern is deterministic"
+                description: >
+                  create_dataset_context builds storage keys as <dataset_type>/<uuid>.csv
+                  and creates parent directories as needed.
+
+          - id: "S24"
+            title: "Safe file path and temp file handling"
+            description: >
+              Prevent path traversal and keep upload handling isolated to temporary files.
+            acceptance_criteria:
+              - id: "AC47"
+                title: "Path traversal is blocked"
+                description: >
+                  StorageService.get_storage_path resolves absolute paths and rejects keys
+                  that escape the configured base storage directory.
+              - id: "AC48"
+                title: "Temporary uploads are cleaned after use"
+                description: >
+                  save_upload_to_temp writes UploadFile streams to temp files and
+                  cleanup_temp_file removes them if present.
+
+      - id: "F9"
+        title: "Dataset Access, Download, and Deletion APIs"
+        description: >
+          Provide user-scoped endpoints to discover datasets by type, stream generated files,
+          and delete both metadata and physical files.
+        stories:
+          - id: "S25"
+            title: "Dataset listing by type and owner"
+            description: >
+              Return catalog entries for only the authenticated user's datasets
+              within the requested dataset_type.
+            acceptance_criteria:
+              - id: "AC49"
+                title: "List endpoint enforces required query"
+                description: >
+                  GET /datasets requires dataset_type query param and returns
+                  {id, name, format, created_at} per dataset.
+              - id: "AC50"
+                title: "Repository applies user + type filters"
+                description: >
+                  find_by_type_and_user filters records on both dataset_type and user_id.
+
+          - id: "S26"
+            title: "Dataset download with ownership checks"
+            description: >
+              Stream dataset CSV files only when dataset metadata belongs to
+              the authenticated user and referenced files exist.
+            acceptance_criteria:
+              - id: "AC51"
+                title: "Download endpoint is user-scoped"
+                description: >
+                  GET /datasets/{dataset_id} resolves metadata via find_by_id_and_user
+                  before returning FileResponse.
+              - id: "AC52"
+                title: "Missing metadata or file returns 404"
+                description: >
+                  Requests for unknown/non-owned datasets or missing storage files
+                  return HTTP 404.
+
+          - id: "S27"
+            title: "Dataset deletion lifecycle"
+            description: >
+              Delete dataset artifacts consistently across filesystem and metadata store.
+            acceptance_criteria:
+              - id: "AC53"
+                title: "Delete removes file and DB record"
+                description: >
+                  delete_dataset unlinks the storage file when present and then deletes
+                  the corresponding metadata row.
+              - id: "AC54"
+                title: "Delete failure behavior is explicit"
+                description: >
+                  DELETE /datasets/{dataset_id} returns HTTP 404 when dataset is not found
+                  for the authenticated user.
+
+  - id: "E4"
+    title: "Dataset Studio Frontend Experience"
+    description: >
+      Implements a React + Vite + Tailwind web application with protected routing,
+      dynamic dataset forms, asynchronous job tracking, toast notifications,
+      and AG Grid-based dataset visualization.
+    features:
+      - id: "F10"
+        title: "Authentication UX and Route Guarding"
+        description: >
+          Provide login/register pages, token persistence, current-user display,
+          and route segregation for authenticated versus unauthenticated users.
+        stories:
+          - id: "S28"
+            title: "Protected route behavior in App router"
+            description: >
+              Route users to auth pages until logged in, then expose dashboard,
+              pipeline, datasets, and fullscreen dataset viewer.
+            acceptance_criteria:
+              - id: "AC55"
+                title: "Unauthenticated users are restricted to auth routes"
+                description: >
+                  App renders /login and /register only when isAuthenticated is false,
+                  and redirects other routes to /login.
+              - id: "AC56"
+                title: "Authenticated users get application shell routes"
+                description: >
+                  Authenticated routing includes /, /pipeline, /datasets,
+                  and /view-dataset/:datasetId.
+
+          - id: "S29"
+            title: "Auth context lifecycle management"
+            description: >
+              Store token and user email in localStorage, apply auth headers,
+              and clear session state on logout.
+            acceptance_criteria:
+              - id: "AC57"
+                title: "Token persistence updates axios defaults"
+                description: >
+                  AuthContext loads token from localStorage and sets/removes
+                  axios Authorization header based on token state.
+              - id: "AC58"
+                title: "User profile hydration and logout cleanup"
+                description: >
+                  AuthContext fetches /me to cache userEmail and logout clears
+                  token + userEmail from state and localStorage.
+
+          - id: "S30"
+            title: "Application shell with navigation and identity display"
+            description: >
+              Build persistent sidebar/header shell for authenticated pages
+              with dataset type shortcuts and logout controls.
+            acceptance_criteria:
+              - id: "AC59"
+                title: "Sidebar renders dataset categories from config"
+                description: >
+                  Sidebar maps datasetConfigs keys to selectable dataset types and
+                  links to pipeline and dataset browsing pages.
+              - id: "AC60"
+                title: "Header exposes active user identity"
+                description: >
+                  Header displays authenticated user email badge and logout button.
+
+      - id: "F11"
+        title: "Dynamic Generation Dashboard and Job Tracking"
+        description: >
+          Render dataset-specific forms from configuration, submit generation requests
+          asynchronously, and track request lifecycle in a per-user pipeline queue.
+        stories:
+          - id: "S31"
+            title: "Config-driven form generation"
+            description: >
+              Build dashboard input controls from datasetConfigs definitions
+              and apply dynamic option logic for multilingual targets.
+            acceptance_criteria:
+              - id: "AC61"
+                title: "Fields are rendered from config schema"
+                description: >
+                  Dashboard iterates config.fields to render text/select/textarea/file
+                  controls for each dataset type.
+              - id: "AC62"
+                title: "Multilingual target options depend on source"
+                description: >
+                  destination_language options are derived from languageMapping
+                  based on selected source_language.
+
+          - id: "S32"
+            title: "Async submission with immediate UX feedback"
+            description: >
+              Submit generation requests without blocking the UI and provide
+              informational/success/error feedback through messages and toasts.
+            acceptance_criteria:
+              - id: "AC63"
+                title: "Form submission is asynchronous and authenticated"
+                description: >
+                  Dashboard posts FormData to `${API_BASE}${config.endpoint}` with bearer token,
+                  resets form state immediately, and keeps UI interactive.
+              - id: "AC64"
+                title: "Completion outcomes trigger notifications"
+                description: >
+                  Success/failure responses resolve job status and create user-visible
+                  toast notifications with contextual messages.
+
+          - id: "S33"
+            title: "Pending job context and pipeline page"
+            description: >
+              Track in-flight and completed generation jobs per authenticated user
+              with timing metadata and status rendering.
+            acceptance_criteria:
+              - id: "AC65"
+                title: "Job state model supports lifecycle transitions"
+                description: >
+                  PendingJobsContext stores jobs with id, type, status, startedAt,
+                  finishedAt, error, and userEmail, and exposes add/resolve helpers.
+              - id: "AC66"
+                title: "Pipeline UI separates active and completed work"
+                description: >
+                  Pipeline page displays pending and completed/failed sections with
+                  status badges, icons, and elapsed time labels.
+
+      - id: "F12"
+        title: "Dataset Browsing and Visualization"
+        description: >
+          Provide dataset discovery, preview, fullscreen viewing, and deletion
+          using authenticated API calls and AG Grid data rendering.
+        stories:
+          - id: "S34"
+            title: "Dataset list with actions"
+            description: >
+              Fetch and display generated datasets by type, including controls
+              to preview, open fullscreen, and delete records.
+            acceptance_criteria:
+              - id: "AC67"
+                title: "Datasets page supports type-filtered retrieval"
+                description: >
+                  Datasets page calls GET /datasets?dataset_type=<type> and renders
+                  dataset cards with metadata and action buttons.
+              - id: "AC68"
+                title: "Empty state is explicit"
+                description: >
+                  When no datasets exist for selected type, UI shows
+                  \"No datasets found\" messaging.
+
+          - id: "S35"
+            title: "Inline CSV modal preview"
+            description: >
+              Parse CSV responses client-side and render a modal grid preview
+              for quick dataset inspection.
+            acceptance_criteria:
+              - id: "AC69"
+                title: "CSV parser handles quoted content"
+                description: >
+                  parseCSV logic supports quoted values, escaped quotes, and newline handling
+                  before mapping rows into table objects.
+              - id: "AC70"
+                title: "Preview grid is interactive"
+                description: >
+                  Modal uses AG Grid with sortable/filterable/resizable columns
+                  and dynamic column definitions from CSV headers.
+
+          - id: "S36"
+            title: "Fullscreen dataset viewer route"
+            description: >
+              Load dataset CSV by id in a dedicated full-page route with
+              loading/error states and paginated grid rendering.
+            acceptance_criteria:
+              - id: "AC71"
+                title: "Viewer performs authenticated fetch by dataset id"
+                description: >
+                  DatasetViewer calls GET /datasets/{datasetId} with bearer token
+                  and extracts filename from content-disposition when available.
+              - id: "AC72"
+                title: "Viewer handles fetch lifecycle states"
+                description: >
+                  Viewer shows loading indicator, error fallback, and paginated AG Grid
+                  once data is parsed successfully.
+
+  - id: "E5"
+    title: "Automation and Auxiliary Generation Tooling"
+    description: >
+      Includes requirement-driven automation scripts for QA test-case dataset generation
+      and supporting standalone utilities for data conversion and experimentation.
+    features:
+      - id: "F13"
+        title: "Requirements-Driven QA Dataset Automation"
+        description: >
+          Use structured epic/feature/story seeds to generate acceptance criteria
+          and test cases at scale via scripted orchestration.
+        stories:
+          - id: "S37"
+            title: "Structured requirement seed inputs"
+            description: >
+              Maintain JSON requirement inputs listing epic, feature, and stories
+              for automated batch generation.
+            acceptance_criteria:
+              - id: "AC73"
+                title: "Requirement files define generation units"
+                description: >
+                  generators/requirements.json and generators/req2.json provide arrays
+                  of epics with nested features and stories.
+              - id: "AC74"
+                title: "Automation script iterates story-by-story"
+                description: >
+                  automate_gen.py reads requirement entries and invokes generator script
+                  with --epic, --feature, --story, --model, --batches arguments.
+
+          - id: "S38"
+            title: "QA AC and test-case generation pipeline"
+            description: >
+              Generate fixed-size acceptance-criteria batches with positive/negative/edge
+              test cases and retry invalid outputs.
+            acceptance_criteria:
+              - id: "AC75"
+                title: "Each batch enforces strict AC structure"
+                description: >
+                  generators/dataset.py requires exactly 4 unique acceptance criteria and
+                  each must include positive, negative, and edge test cases.
+              - id: "AC76"
+                title: "Invalid outputs are retried with hard limit"
+                description: >
+                  Generation retries up to 5 attempts per batch and raises runtime failure
+                  if valid data cannot be produced.
+
+          - id: "S39"
+            title: "Chat-style JSONL output for QA tuning"
+            description: >
+              Persist generated QA examples in chat message format suitable for
+              conversational fine-tuning pipelines.
+            acceptance_criteria:
+              - id: "AC77"
+                title: "Output rows use role-based message format"
+                description: >
+                  Each written JSONL record contains system/user/assistant messages with
+                  context, acceptance criterion, and structured test_cases payload.
+              - id: "AC78"
+                title: "Automation reports aggregate completion"
+                description: >
+                  automate_gen.py logs total processed stories and derived acceptance-criteria
+                  count (stories * 4) upon successful completion.

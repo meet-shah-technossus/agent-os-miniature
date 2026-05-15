@@ -12,13 +12,19 @@ from fastapi import APIRouter, Depends
 from ...config.env import mask_secret, resolve_secret
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import (
+    CliRoutingSettingsResponse,
     GitHubSettingsResponse,
+    GitHubReviewSettingsResponse,
     PipelineSettingsResponse,
     ProjectSettingsResponse,
+    RequirementsSettingsResponse,
     SecretsSettingsResponse,
     SettingsResponse,
     SettingsUpdateRequest,
     TestGitHubResponse,
+    AIToolsSettingsResponse,
+    AIToolCredentialResponse,
+    VCSSettingsResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,12 +71,75 @@ def get_settings(orch=Depends(get_orchestrator)):
             name=cfg.project.name,
             root_path=cfg.project.root_path,
             language=cfg.project.language,
+            repo_name=getattr(cfg.project, 'repo_name', ''),
+            feature_branch=getattr(cfg.project, 'feature_branch', 'dev'),
+            prompt_file_path=getattr(cfg.project, 'prompt_file_path', ''),
         ),
         pipeline=PipelineSettingsResponse(
-            max_iterations_per_module=cfg.orchestrator.max_iterations_per_module,
+            max_iterations=cfg.orchestrator.max_iterations,
             convergence_rule=cfg.orchestrator.convergence_rule.value,
             auto_approve_hitl=cfg.orchestrator.auto_approve_hitl,
         ),
+        cli_routing=CliRoutingSettingsResponse(
+            PROMPT_GENERATOR=cfg.codex.cli_routing.get("PROMPT_GENERATOR", "codex"),
+            CODE_GENERATOR=cfg.codex.cli_routing.get("CODE_GENERATOR", "codex"),
+            CODE_REVIEWER=cfg.codex.cli_routing.get("CODE_REVIEWER", "codex"),
+        ),
+        requirements=RequirementsSettingsResponse(
+            path=cfg.requirements.path,
+            source=getattr(cfg.requirements, 'source', 'device'),
+            jira_url=getattr(cfg.requirements, 'jira_url', ''),
+            jira_email=getattr(cfg.requirements, 'jira_email', ''),
+            jira_api_token=getattr(cfg.requirements, 'jira_api_token', ''),
+            jira_project_key=getattr(cfg.requirements, 'jira_project_key', ''),
+            asana_token=getattr(cfg.requirements, 'asana_token', ''),
+            asana_project_id=getattr(cfg.requirements, 'asana_project_id', ''),
+            ado_org=getattr(cfg.requirements, 'ado_org', ''),
+            ado_token=getattr(cfg.requirements, 'ado_token', ''),
+            ado_project=getattr(cfg.requirements, 'ado_project', ''),
+        ),
+        github_review=GitHubReviewSettingsResponse(
+            source_repo_url=cfg.github_review.source_repo_url,
+            requirements_path=cfg.github_review.requirements_path,
+            fork_repo_name=cfg.github_review.fork_repo_name,
+            branch_name=cfg.github_review.branch_name,
+        ),
+        pipeline_mode=getattr(cfg, 'pipeline_mode', 'standard'),
+        ai_tools=_serialize_ai_tools(cfg),
+        vcs=VCSSettingsResponse(
+            provider=getattr(getattr(cfg, 'vcs', None), 'provider', 'github') or 'github',
+        ),
+    )
+
+
+def _mask(val: str) -> str:
+    return "***" if val else ""
+
+
+def _cred_to_response(cred: object) -> AIToolCredentialResponse:
+    return AIToolCredentialResponse(
+        enabled=getattr(cred, 'enabled', False),
+        auth_method=getattr(cred, 'auth_method', ''),
+        api_key=_mask(getattr(cred, 'api_key', '')),
+        email=getattr(cred, 'email', ''),
+        account_id=getattr(cred, 'account_id', ''),
+        endpoint=getattr(cred, 'endpoint', ''),
+        extra=getattr(cred, 'extra', {}),
+    )
+
+
+def _serialize_ai_tools(cfg: object) -> AIToolsSettingsResponse:
+    at = getattr(cfg, 'ai_tools', None)
+    if at is None:
+        return AIToolsSettingsResponse()
+    return AIToolsSettingsResponse(
+        codex=_cred_to_response(getattr(at, 'codex', object())),
+        claude=_cred_to_response(getattr(at, 'claude', object())),
+        gemini=_cred_to_response(getattr(at, 'gemini', object())),
+        qwen=_cred_to_response(getattr(at, 'qwen', object())),
+        deepseek=_cred_to_response(getattr(at, 'deepseek', object())),
+        cursor=_cred_to_response(getattr(at, 'cursor', object())),
+        copilot=_cred_to_response(getattr(at, 'copilot', object())),
     )
 
 
@@ -79,14 +148,23 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
     """Update settings, write to config.yaml, and hot-reload into the orchestrator."""
     cfg = orch.config
 
-    # Apply secrets (only overwrite non-empty, non-masked values)
+    # Apply secrets (only overwrite non-empty, non-masked values).
+    # mask_secret() produces "XYZ...ABCD" (3 + "..." + 4 = 10 chars); treat
+    # that pattern the same as the legacy "***" sentinel — i.e. skip it so
+    # saving the pre-filled display value never overwrites the real token.
+    def _is_masked(val: str) -> bool:
+        return (
+            val.startswith("***")
+            or (len(val) == 10 and val[3:6] == "...")
+        )
+
     _new_openai = ""
     _new_github = ""
     if body.secrets is not None:
-        if body.secrets.openai_api_key and not body.secrets.openai_api_key.startswith("***"):
+        if body.secrets.openai_api_key and not _is_masked(body.secrets.openai_api_key):
             cfg.secrets.openai_api_key = body.secrets.openai_api_key
             _new_openai = body.secrets.openai_api_key
-        if body.secrets.github_token and not body.secrets.github_token.startswith("***"):
+        if body.secrets.github_token and not _is_masked(body.secrets.github_token):
             cfg.secrets.github_token = body.secrets.github_token
             _new_github = body.secrets.github_token
 
@@ -100,12 +178,77 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
         cfg.project.name = body.project.name
         cfg.project.root_path = body.project.root_path
         cfg.project.language = body.project.language
+        cfg.project.repo_name = getattr(body.project, 'repo_name', '')
+        cfg.project.feature_branch = getattr(body.project, 'feature_branch', 'dev')
+        cfg.project.prompt_file_path = getattr(body.project, 'prompt_file_path', '')
 
     if body.pipeline is not None:
-        cfg.orchestrator.max_iterations_per_module = body.pipeline.max_iterations_per_module
+        cfg.orchestrator.max_iterations = body.pipeline.max_iterations
         cfg.orchestrator.auto_approve_hitl = body.pipeline.auto_approve_hitl
         from ...config.schema import ConvergenceRule
         cfg.orchestrator.convergence_rule = ConvergenceRule(body.pipeline.convergence_rule)
+
+    if body.cli_routing is not None:
+        cfg.codex.cli_routing = {
+            "PROMPT_GENERATOR": body.cli_routing.PROMPT_GENERATOR,
+            "CODE_GENERATOR": body.cli_routing.CODE_GENERATOR,
+            "CODE_REVIEWER": body.cli_routing.CODE_REVIEWER,
+        }
+
+    if body.requirements is not None:
+        if body.requirements.path:
+            cfg.requirements.path = body.requirements.path
+        cfg.requirements.source = body.requirements.source
+        cfg.requirements.jira_url = body.requirements.jira_url
+        cfg.requirements.jira_email = body.requirements.jira_email
+        if body.requirements.jira_api_token and not body.requirements.jira_api_token.startswith('***'):
+            cfg.requirements.jira_api_token = body.requirements.jira_api_token
+        cfg.requirements.jira_project_key = body.requirements.jira_project_key
+        if body.requirements.asana_token and not body.requirements.asana_token.startswith('***'):
+            cfg.requirements.asana_token = body.requirements.asana_token
+        cfg.requirements.asana_project_id = body.requirements.asana_project_id
+        cfg.requirements.ado_org = body.requirements.ado_org
+        if body.requirements.ado_token and not body.requirements.ado_token.startswith('***'):
+            cfg.requirements.ado_token = body.requirements.ado_token
+        cfg.requirements.ado_project = body.requirements.ado_project
+
+    if body.pipeline_mode is not None:
+        cfg.pipeline_mode = body.pipeline_mode
+
+    if body.github_review is not None:
+        cfg.github_review.source_repo_url = body.github_review.source_repo_url
+        cfg.github_review.requirements_path = body.github_review.requirements_path
+        cfg.github_review.fork_repo_name = body.github_review.fork_repo_name
+        cfg.github_review.branch_name = body.github_review.branch_name or 'agent-os-fixes'
+
+    if body.ai_tools is not None:
+        at = getattr(cfg, 'ai_tools', None)
+        if at is None:
+            from ...config.schema import AIToolsConfig
+            cfg.ai_tools = AIToolsConfig()
+            at = cfg.ai_tools
+        for tool_name in ('codex', 'claude', 'gemini', 'qwen', 'deepseek', 'cursor', 'copilot'):
+            incoming = getattr(body.ai_tools, tool_name, None)
+            if incoming is None:
+                continue
+            cred = getattr(at, tool_name)
+            cred.enabled = incoming.enabled
+            cred.auth_method = incoming.auth_method
+            cred.email = incoming.email
+            cred.account_id = incoming.account_id
+            cred.endpoint = incoming.endpoint
+            cred.extra = incoming.extra
+            # Only overwrite API key if the caller sent a real value (not masked)
+            if incoming.api_key and not incoming.api_key.startswith('***'):
+                cred.api_key = incoming.api_key
+
+    if body.vcs is not None:
+        vcs_cfg = getattr(cfg, 'vcs', None)
+        if vcs_cfg is None:
+            from ...config.schema import VCSConfig
+            cfg.vcs = VCSConfig()
+            vcs_cfg = cfg.vcs
+        vcs_cfg.provider = body.vcs.provider if body.vcs.provider in ('github', 'ado') else 'github'
 
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
@@ -126,10 +269,17 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             if _new_github:
                 _os.environ["GITHUB_TOKEN"] = _new_github
             # Also persist to .env at Agent OS root so the token survives
-            # a uvicorn --reload restart (which kills the process)
+            # a uvicorn --reload restart (which kills the process).
+            # Use the config file's directory, not CWD, so the path is always
+            # correct regardless of where uvicorn was launched from.
             try:
                 from pathlib import Path as _Path
-                _env_path = _Path(".env").resolve()
+                _agent_os_root = (
+                    _Path(orch_holder.config_path).parent
+                    if orch_holder.config_path
+                    else _Path(".").resolve()
+                )
+                _env_path = _agent_os_root / ".env"
                 _lines: list[str] = []
                 if _env_path.exists():
                     _lines = _env_path.read_text().splitlines()
@@ -226,9 +376,10 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
         with open(config_path) as f:
             existing = yaml.safe_load(f) or {}
 
-    # Preserve storage, model_routing and budget from the file on disk.
+    # Preserve storage, model_routing, cli_routing and budget from the file on disk.
     existing_storage = existing.get("storage", {})
     existing_model_routing = existing.get("codex", {}).get("model_routing", {})
+    existing_cli_routing = existing.get("codex", {}).get("cli_routing", {})
     existing_budget = existing.get("budget", {})
 
     data = {
@@ -236,9 +387,12 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             "name": cfg.project.name,
             "root_path": cfg.project.root_path,
             "language": cfg.project.language,
+            "repo_name": getattr(cfg.project, 'repo_name', ''),
+            "feature_branch": getattr(cfg.project, 'feature_branch', 'dev'),
+            "prompt_file_path": getattr(cfg.project, 'prompt_file_path', ''),
         },
         "orchestrator": {
-            "max_iterations_per_module": cfg.orchestrator.max_iterations_per_module,
+            "max_iterations": cfg.orchestrator.max_iterations,
             "auto_approve_hitl": cfg.orchestrator.auto_approve_hitl,
             "hitl_timeout_seconds": cfg.orchestrator.hitl_timeout_seconds,
             "convergence_rule": cfg.orchestrator.convergence_rule.value,
@@ -251,6 +405,8 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             **({
                 "model_routing": existing_model_routing
             } if existing_model_routing else {}),
+            # Persist cli_routing — use live config value, fall back to existing file value
+            "cli_routing": cfg.codex.cli_routing or existing_cli_routing or {},
         },
         "prompt_framework": cfg.prompt_framework.value,
         "git": {
@@ -266,7 +422,16 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             "tests": cfg.validation.tests,
             "security_scan": cfg.validation.security_scan,
         },
-        "requirements": {"path": cfg.requirements.path},
+        "requirements": {
+            "path": cfg.requirements.path,
+            "ado_org": getattr(cfg.requirements, "ado_org", ""),
+            # Only write non-empty token (never write a masked placeholder)
+            **({"ado_token": cfg.requirements.ado_token}
+               if getattr(cfg.requirements, "ado_token", "")
+               and not cfg.requirements.ado_token.startswith("***")
+               else {}),
+            "ado_project": getattr(cfg.requirements, "ado_project", ""),
+        },
         # Preserve db_path from the file — it is a deployment setting, not a
         # user-editable field exposed through the Settings UI.
         "storage": {
@@ -309,6 +474,13 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
         "secrets": {
             "openai_api_key": "",
             "github_token": "",
+        },
+        "pipeline_mode": getattr(cfg, 'pipeline_mode', 'standard'),
+        "github_review": {
+            "source_repo_url": cfg.github_review.source_repo_url,
+            "requirements_path": cfg.github_review.requirements_path,
+            "fork_repo_name": cfg.github_review.fork_repo_name,
+            "branch_name": cfg.github_review.branch_name,
         },
     }
 

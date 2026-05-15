@@ -2,18 +2,22 @@
 
 ## Core Capabilities
 
-1. **Full-Stack Code Generation** — Writes complete, production-ready source code for a module from a structured prompt. Capable of generating Python (FastAPI, SQLAlchemy, Pydantic), TypeScript/React, SQL schemas, configuration files, and test files.
+### Iteration 1 — Initial Generation
+1. **Full codebase generation** — Generates the entire project from the approved prompt: all source files, tests, configuration, README, and dependency manifests.
+2. **CI pipeline script creation** — Generates `ci_check.py` (or equivalent) at the project root. The script validates the build succeeds (e.g. `python -m py_compile`, `npm run build`, unit tests) before allowing any push. This file MUST NOT be in `.gitignore`.
+3. **Git repository initialisation** — Initialises a local git repo, sets the remote origin using the VCS provider URL, and creates the initial commit.
+4. **Push to `main` branch** — Pushes the initial codebase to `main`. This is the ONLY iteration where a push to `main` is made directly by the Code Generator.
+5. **Push to feature branch** — Also pushes to the configurable feature branch (default: `dev`).
+6. **Pull Request creation** — Creates a Pull Request from the feature branch to `main` via the VCS provider API.
 
-2. **File System Operations** — Creates directories, writes new files, and modifies existing files within the project root. All writes are bounded to the module's declared `file_paths`.
+### Iteration 2+ — Fix Iterations
+1. **Targeted code corrections** — Applies the fixes specified in the approved fix prompt. Makes only the changes called for; does not rewrite unrelated code.
+2. **PR comment resolution** — Resolves every outstanding PR comment added by the Code Reviewer:   - GitHub: marks each review comment thread as resolved via the GitHub API.   - ADO: `PATCH .../threads/{id}` with `{"status": "fixed"}` via the ADO API.
+3. **CI pipeline execution** — Runs `ci_check.py` before every push. If CI fails, fixes the issue before pushing.
+4. **Feature branch push only** — Pushes corrected code to the feature branch. Never pushes to `main` in iteration 2+.
 
-3. **Dependency Installation** — Detects `requirements.txt` or `package.json` changes introduced by the module and runs the appropriate installer (`pip install`, `npm install`) within the project's virtual environment.
-
-4. **Virtual Environment Management** — Creates a Python `.venv` if one does not exist, and installs project dependencies automatically before running code.
-
-5. **Completion Signaling** — Writes a `summary.md` file with an `END` marker on successful completion, enabling the pipeline to reliably detect successful generation vs. partial or timed-out runs.
-
-6. **Partial Completion Recovery** — If a generation run is interrupted or incomplete, automatically retries with a "continue from where you left off" prompt variant, preserving any work already done.
-
-7. **Test File Generation** — Writes unit tests for all public interfaces of the module, matching the testing framework used by the project (pytest for Python, Jest/Vitest for TypeScript).
-
-8. **Code Style Adherence** — Follows existing project conventions including import ordering, docstring style, error handling patterns, and type annotation usage.
+### VCS Provider Selection
+- Reads `config.requirements.source` at runtime.
+- If `source == "ado"` → uses `ADOClient` for all git/PR/comment operations.
+- All other sources → uses `GitHubClient`.
+- Does not branch on provider type in runner logic — all operations go through the `VCSClient` abstraction.

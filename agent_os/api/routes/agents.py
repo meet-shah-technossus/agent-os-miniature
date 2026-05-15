@@ -204,8 +204,8 @@ def create_agent(body: CreateAgentRequest):
     return AgentDetailResponse(name=f"custom/{body.name}", files=files, is_builtin=False)
 
 
-@router.delete("/{agent_name}", status_code=204)
-def delete_agent(agent_name: str):
+@router.delete("/{agent_name:path}", status_code=204)
+def delete_agent(agent_name: str, orch=Depends(get_orchestrator)):
     """Delete a custom agent. Built-in agents cannot be deleted."""
     try:
         _store().delete_agent(agent_name)
@@ -213,4 +213,9 @@ def delete_agent(agent_name: str):
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except AgentNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    # Remove mirrored DB entries so the agent doesn't reappear on reload
+    try:
+        _cfg_repo(orch).delete_agent_files(agent_name)
+    except Exception as exc:  # non-fatal: filesystem delete already succeeded
+        logger.warning("Could not remove agent_files DB entries for '%s': %s", agent_name, exc)
 

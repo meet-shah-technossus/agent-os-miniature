@@ -3,15 +3,15 @@
 import type {
   ApproveGateResponse,
   BusMessage,
+  CliToolActionResponse,
+  CliToolStatus,
   CurrentPrompt,
   CurrentReview,
   FileContent,
   FileNode,
+  GitHubReviewSettings,
   Iteration,
   Metrics,
-  Module,
-  ModuleDefinitionsPayload,
-  ModuleDetail,
   OpenResponse,
   PipelineStatus,
   ProjectInfo,
@@ -22,6 +22,58 @@ import type {
   AgentDetail,
 } from '../types';
 
+export interface RequirementsUploadResponse {
+  filename?: string;
+  path: string;
+  epics?: number;
+  features?: number;
+  tasks?: number;
+  success?: boolean;
+  stats?: { epics?: number; features?: number; stories?: number; acceptance_criteria?: number };
+  message?: string;
+}
+
+export interface RemoteIngestRequest {
+  source: 'jira' | 'asana' | 'ado';
+  jira_url?: string;
+  jira_email?: string;
+  jira_api_token?: string;
+  jira_project_key?: string;
+  asana_token?: string;
+  asana_project_id?: string;
+  ado_org?: string;
+  ado_token?: string;
+  ado_project?: string;
+}
+
+export interface ReqAC {
+  id: string;
+  title: string;
+  description: string;
+}
+export interface ReqStory {
+  id: string;
+  title: string;
+  description: string;
+  acceptance_criteria: ReqAC[];
+}
+export interface ReqFeature {
+  id: string;
+  title: string;
+  description: string;
+  stories: ReqStory[];
+}
+export interface ReqEpic {
+  id: string;
+  title: string;
+  description: string;
+  features: ReqFeature[];
+}
+export interface RequirementsPreviewDoc {
+  epics: ReqEpic[];
+}
+
+
 const BASE = '/api';
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -31,36 +83,122 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getPipelineStatus: () => fetchJson<PipelineStatus>('/pipeline/status'),
+  getPipelineStatus: () => fetchJson<PipelineStatus>('/orchestrator/status'),
 
-  startPipeline: () =>
-    fetchJson<PipelineStatus>('/pipeline/start', { method: 'POST' }),
+  startPipeline: (pipeline_mode?: string, source_repo_url?: string) =>
+    fetchJson<ApproveGateResponse>('/orchestrator/start', {
+      method: 'POST',
+      ...(pipeline_mode || source_repo_url
+        ? {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...(pipeline_mode ? { pipeline_mode } : {}),
+              ...(source_repo_url ? { source_repo_url } : {}),
+            }),
+          }
+        : {}),
+    }),
 
   pausePipeline: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/pause', { method: 'POST' }),
+    fetchJson<ApproveGateResponse>('/orchestrator/pause', { method: 'POST' }),
 
   approveGate: (gate?: string) =>
-    fetchJson<ApproveGateResponse>('/pipeline/approve-gate', {
+    fetchJson<ApproveGateResponse>('/orchestrator/approve-gate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(gate ? { gate } : {}),
     }),
 
-  getModules: () => fetchJson<Module[]>('/modules'),
+  approvePrompt: (promptContent?: string, cliTool?: string) =>
+    fetchJson<ApproveGateResponse>('/orchestrator/approve-prompt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...(promptContent !== undefined ? { prompt_content: promptContent } : {}),
+        ...(cliTool ? { cli_tool: cliTool } : {}),
+      }),
+    }),
 
-  getModule: (id: string) => fetchJson<Module>(`/modules/${encodeURIComponent(id)}`),
+  approveReview: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/approve-review', { method: 'POST' }),
 
-  getIterations: (moduleId: string) =>
-    fetchJson<Iteration[]>(`/modules/${encodeURIComponent(moduleId)}/iterations`),
+  getIterations: () =>
+    fetchJson<{ iterations: Iteration[] }>('/orchestrator/iterations'),
+
+  getCurrentPrompt: () =>
+    fetchJson<CurrentPrompt>('/orchestrator/current-prompt'),
+
+  getCurrentReview: () =>
+    fetchJson<CurrentReview>('/orchestrator/current-review'),
+
+  ingestRequirements: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/start', { method: 'POST' }),
 
   getRequirements: () => fetchJson<Requirement[]>('/requirements'),
 
-  getMetrics: () => fetchJson<Metrics>('/metrics'),
+  previewRequirements: () => fetchJson<RequirementsPreviewDoc>('/requirements/preview'),
 
-  getBusHistory: (channel?: string) => {
-    const qs = channel ? `?channel=${encodeURIComponent(channel)}` : '';
-    return fetchJson<BusMessage[]>(`/bus/history${qs}`);
+  uploadRequirements: async (file: File): Promise<RequirementsUploadResponse> => {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/requirements/upload`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error((err as { detail?: string }).detail ?? res.statusText);
+    }
+    return res.json() as Promise<RequirementsUploadResponse>;
   },
+
+  selectRequirements: (path: string): Promise<RequirementsUploadResponse> =>
+    fetchJson<RequirementsUploadResponse>('/requirements/select', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    }),
+
+  ingestRemoteRequirements: async (req: RemoteIngestRequest): Promise<RequirementsUploadResponse> => {
+    const res = await fetch(`${BASE}/requirements/ingest-remote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error((err as { detail?: string }).detail ?? res.statusText);
+    }
+    return res.json() as Promise<RequirementsUploadResponse>;
+  },
+
+  validateRemoteConnection: async (req: RemoteIngestRequest): Promise<{ valid: boolean; errors: string[]; warnings: string[] }> => {
+    const res = await fetch(`${BASE}/requirements/validate-remote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error((err as { detail?: string }).detail ?? res.statusText);
+    }
+    return res.json() as Promise<{ valid: boolean; errors: string[]; warnings: string[] }>;
+  },
+
+  updateAdoWorkItemStates: async (targetState: string): Promise<{ updated: number; target_state: string }> => {
+    const res = await fetch(`${BASE}/requirements/ado-update-states`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target_state: targetState }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error((err as { detail?: string }).detail ?? res.statusText);
+    }
+    return res.json() as Promise<{ updated: number; target_state: string }>;
+  },
+
+  getBusHistory: (channel: string) =>
+    fetchJson<BusMessage[]>(`/orchestrator/bus-history?channel=${encodeURIComponent(channel)}`),
+
+  getMetrics: () => fetchJson<Metrics>('/metrics'),
 
   getSettings: () => fetchJson<Settings>('/settings'),
 
@@ -73,58 +211,6 @@ export const api = {
 
   testGitHub: () =>
     fetchJson<TestGitHubResponse>('/settings/test-github', { method: 'POST' }),
-
-  retryModuleMaker: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/retry-module-maker', { method: 'POST' }),
-
-  retryPromptGenerator: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/retry-prompt-generator', { method: 'POST' }),
-
-  retryCodeGenerator: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/retry-code-generator', { method: 'POST' }),
-
-  retryCodeReviewer: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/retry-code-reviewer', { method: 'POST' }),
-
-  skipToNextModule: () =>
-    fetchJson<ApproveGateResponse>('/pipeline/skip-to-next-module', { method: 'POST' }),
-
-  manualPush: () =>
-    fetchJson<{ success: boolean; message: string; commit_sha: string; repo_url: string }>(
-      '/pipeline/manual-push',
-      { method: 'POST' },
-    ),
-
-  getModuleDefinitions: () =>
-    fetchJson<ModuleDefinitionsPayload>('/modules/definitions/all'),
-
-  saveModuleDefinitions: (body: ModuleDefinitionsPayload) =>
-    fetchJson<ModuleDefinitionsPayload>('/modules/definitions/all', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    }),
-
-  getModuleDetail: (id: string) =>
-    fetchJson<ModuleDetail>(`/modules/${encodeURIComponent(id)}/detail`),
-
-  getCurrentPrompt: () => fetchJson<CurrentPrompt>('/pipeline/current-prompt'),
-
-  updateCurrentPrompt: (content: string) =>
-    fetchJson<CurrentPrompt>('/pipeline/current-prompt', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    }),
-
-  getCurrentReview: () => fetchJson<CurrentReview>('/pipeline/current-review'),
-
-  updateCurrentReview: (content: string) =>
-    fetchJson<CurrentReview>('/pipeline/current-review', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content }),
-    }),
 
   // Project routes
   getProjectInfo: () => fetchJson<ProjectInfo>('/project/info'),
@@ -141,7 +227,7 @@ export const api = {
     fetchJson<OpenResponse>('/project/open-in-finder', { method: 'POST' }),
 
   resetPipeline: () =>
-    fetchJson<{ success: boolean; message: string }>('/pipeline/reset', { method: 'POST' }),
+    fetchJson<ApproveGateResponse>('/orchestrator/reset', { method: 'POST' }),
 
   // ---------------------------------------------------------------------------
   // Agents (Phase 6)
@@ -206,4 +292,58 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_routing }),
     }),
+
+  // ---------------------------------------------------------------------------
+  // CLI Tool Management
+  // ---------------------------------------------------------------------------
+
+  getCliTools: () =>
+    fetchJson<{ tools: CliToolStatus[] }>('/cli-tools'),
+
+  getCliToolStatus: (key: string) =>
+    fetchJson<CliToolStatus>(`/cli-tools/${encodeURIComponent(key)}`),
+
+  loginCliTool: (key: string, body: { auth_method: string; api_key?: string }) =>
+    fetchJson<CliToolActionResponse>(`/cli-tools/${encodeURIComponent(key)}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+
+  logoutCliTool: (key: string) =>
+    fetchJson<CliToolActionResponse>(`/cli-tools/${encodeURIComponent(key)}/logout`, {
+      method: 'POST',
+    }),
+
+  refreshCliTool: (key: string) =>
+    fetchJson<CliToolStatus>(`/cli-tools/${encodeURIComponent(key)}/refresh`, {
+      method: 'POST',
+    }),
+
+  openInTerminal: (command: string) =>
+    fetchJson<{ opened: boolean; error?: string }>('/cli-tools/open-terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command }),
+    }),
+
+  setCliTool: (post: string, tool: string) =>
+    fetchJson<{ post: string; tool: string; cli_routing: Record<string, string> }>(
+      '/orchestrator/cli-tool',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ post, tool }),
+      }
+    ),
+
+  submitReview: (content: string) =>
+    fetchJson<{ iteration: number; overall_status: string; content: string }>(
+      '/orchestrator/review',
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content }),
+      }
+    ),
 };

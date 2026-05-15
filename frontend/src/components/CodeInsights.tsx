@@ -1,8 +1,9 @@
 /* Code Insights — generated file browser, validation results, review feedback */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { api } from '../hooks/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 import type { BusMessage, FileNode, ProjectInfo, FileContent } from '../types';
 
 const severityBadge: Record<string, string> = {
@@ -32,6 +33,9 @@ export default function CodeInsights() {
   const [fileLoading, setFileLoading] = useState(false);
   const [openStatus, setOpenStatus] = useState('');
 
+  const { messages } = useWebSocket();
+  const prevMsgLen = useRef(0);
+
   const loadData = () => {
     api.getBusHistory('review_feedback').then(setReviews).catch(() => {});
     api.getBusHistory('validation_results').then(setValidations).catch(() => {});
@@ -39,10 +43,27 @@ export default function CodeInsights() {
     api.getProjectFiles().then(setFileTree).catch(() => setFileTree([]));
   };
 
+  // Clear stale data immediately when the pipeline is reset, then refetch fresh
+  useEffect(() => {
+    const newMsgs = messages.slice(prevMsgLen.current);
+    prevMsgLen.current = messages.length;
+    const hasReset = newMsgs.some((m) => m.channel === 'pipeline' && m.event === 'reset');
+    if (hasReset) {
+      setReviews([]);
+      setValidations([]);
+      setFileTree([]);
+      setSelectedFile(null);
+      setProjectInfo(null);
+      loadData();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages]);
+
   useEffect(() => {
     loadData();
     const id = setInterval(loadData, 5000);
     return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleOpenFile = (path: string) => {

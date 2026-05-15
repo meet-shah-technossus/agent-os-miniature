@@ -1,352 +1,325 @@
-"""Prompt Generator runner — builds framework-based prompts from module definitions.
+"""Prompt Generator runner — generates implementation/fix prompts via OpenAI API.
 
-Fills template programmatically with structural data from the module JSON,
-then (optionally) enriches natural-language descriptions via OpenAI chat.
-Handles first-iteration and subsequent-iteration (review feedback) modes.
+Iteration 1   : Generates a comprehensive implementation prompt from raw requirements.
+Iteration 2+  : Generates a fixes-only prompt from the code reviewer's review JSON.
+
+All LLM output streams line-by-line to the ``on_stdout`` callback for real-time
+UI display in the Terminal Hub / Command Center.
+
+The generated prompt is written to the fixed path configured in
+``config.project.prompt_file_path`` (falls back to ``data/prompts/latest.md``).
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 from pathlib import Path
 from typing import Callable, Optional
 
 from ..config.schema import AgentOSConfig
-from ..module_maker.schema import ModuleDefinition
-from .frameworks import load_template
-from .schema import FileVerdict, ReviewFeedback
 
 logger = logging.getLogger(__name__)
 
 
 class PromptGeneratorRunner:
-    """Generate a framework-based prompt for a single module."""
+    """Generate implementation or fix prompts via OpenAI API streaming."""
 
-    def __init__(self, config: AgentOSConfig, identity_ctx=None) -> None:
+    # ── System prompts ────────────────────────────────────────────────────────
+
+    _SYSTEM_IMPLEMENTATION = """\
+You are an expert prompt engineer specialising in prompts for autonomous AI \
+coding agents (Codex, Claude Code, Gemini CLI, and similar tools).
+
+Your task is to produce a comprehensive, actionable **implementation prompt** \
+that an AI coding agent will follow to generate a complete software project from scratch.
+
+Rules for the generated prompt:
+1. Be explicit about every file that must be created and its purpose.
+2. Include the full technology stack, language version, framework, and directory structure.
+3. Specify a CI pipeline Python script (``ci_check.py`` at the project root) that:
+   - Validates the project builds successfully (language-appropriate checks).
+   - Must NOT be listed in ``.gitignore``.
+4. Include an Output Format section: the agent must write ``summary.md`` listing every \
+file created/modified, and end the file with the word END on its own line.
+5. Do not invent requirements beyond what is provided.
+6. Be specific and technical — assume the agent is capable but has no prior context.
+
+Reason through the key implementation challenges before writing the prompt."""
+
+    _SYSTEM_FIX = """\
+You are an expert prompt engineer for autonomous AI coding agents.
+Your task is to produce a targeted **fix prompt** that directs a coding agent to \
+correct specific defects identified by a code reviewer.
+
+Rules for the generated fix prompt:
+1. The agent has already implemented a full project — do NOT instruct it to start \
+from scratch.
+2. Include a "DO NOT TOUCH" section listing files/areas that passed review and must \
+not be modified.
+3. For each defect: state the exact file path, the specific problem, and a concrete \
+actionable fix instruction.
+4. Include context explaining WHY each fix is needed (import errors, wrong signatures, \
+security issues, architecture violations, etc.).
+5. If files exceed 200 lines, instruct the agent to split them into smaller modules.
+6. If clean architecture violations exist, instruct the agent to refactor per the \
+listed issue.
+7. Instruct the agent to run the existing ``ci_check.py`` after making all fixes and \
+to resolve any CI failures before declaring done.
+8. Include an Output Format section: write ``summary.md`` listing every modified file, \
+ending with END on its own line.
+
+Reason through each finding (root causes, fix ordering, interdependencies) before \
+writing the final fix prompt."""
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def __init__(self, config: AgentOSConfig) -> None:
         self._config = config
-        self._identity_ctx = identity_ctx
 
     def run(
         self,
-        module_def: ModuleDefinition,
         iteration: int,
-        review: Optional[ReviewFeedback] = None,
+        requirements_text: Optional[str] = None,
+        review_json: Optional[str] = None,
         on_stdout: Optional[Callable[[str], None]] = None,
-    ) -> Path:
-        """Build the prompt and write it to a stamped file. Returns the path."""
-        # Always build a full template-based prompt with the complete module spec.
-        # For iteration 2+, the review feedback is included via the review_section
-        # so the code generator has the full context to make targeted changes.
-        template = load_template(self._config.prompt_framework)
-        filled = self._fill_template(template, module_def, review)
-        prompt = self._enrich_via_chat(filled, module_def, iteration, review)
-        return self._write_prompt(prompt, module_def.module_id, iteration, self._config)
-
-    # ------------------------------------------------------------------
-    # Template filling (programmatic — no LLM)
-    # ------------------------------------------------------------------
-
-    def _fill_template(
-        self,
-        template: str,
-        mod: ModuleDefinition,
-        review: Optional[ReviewFeedback],
     ) -> str:
-        return template.format(
-            module_name=mod.name,
-            project_name=self._config.project.name or "Agent OS Target",
-            language=self._config.project.language,
-            description=mod.description or "(no description)",
-            technical_spec=mod.technical_spec or "(no spec)",
-            dependencies=", ".join(mod.dependencies) if mod.dependencies else "None",
-            api_section=self._format_apis(mod),
-            class_section=self._format_classes(mod),
-            function_section=self._format_functions(mod),
-            db_section=self._format_db_schemas(mod),
-            file_paths_section=self._format_file_paths(mod),
-            constraints_section=self._format_constraints(mod),
-            testing_section=self._format_testing(mod),
-            review_section=self._format_review(review),
-        )
+        """Generate a prompt and write it to the configured output path.
 
-    @staticmethod
-    def _format_apis(mod: ModuleDefinition) -> str:
-        if not mod.apis:
-            return "None"
-        lines = []
-        for api in mod.apis:
-            lines.append(f"#### `{api.method} {api.path}`")
-            if api.description:
-                lines.append(f"  {api.description}")
-            if api.request_body:
-                lines.append(f"  - **Request body**: `{api.request_body}`")
-            if api.response_body:
-                lines.append(f"  - **Response body**: `{api.response_body}`")
-            if api.status_codes:
-                lines.append(f"  - **Status codes**: {', '.join(api.status_codes)}")
-        return "\n".join(lines)
+        Args:
+            iteration: Current pipeline iteration (1 = first generation).
+            requirements_text: Raw requirements content for iteration 1. Pass when
+                ``iteration == 1``.
+            review_json: Review JSON from code reviewer for iteration 2+. Pass when
+                ``iteration >= 2``.
+            on_stdout: Callback called with each streamed line for real-time display.
 
-    @staticmethod
-    def _format_classes(mod: ModuleDefinition) -> str:
-        if not mod.classes:
-            return "None"
-        lines = []
-        for cls in mod.classes:
-            lines.append(f"#### `{cls.name}`")
-            if cls.description:
-                lines.append(f"  {cls.description}")
-            if cls.attributes:
-                lines.append("  **Attributes:**")
-                for attr in cls.attributes:
-                    lines.append(f"  - `{attr}`")
-            if cls.methods:
-                lines.append("  **Methods:**")
-                for method in cls.methods:
-                    lines.append(f"  - `{method}`")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_functions(mod: ModuleDefinition) -> str:
-        if not mod.functions:
-            return "None"
-        lines = []
-        for fn in mod.functions:
-            params = ", ".join(fn.params) if fn.params else ""
-            ret = f" → {fn.returns}" if fn.returns else ""
-            lines.append(f"#### `{fn.name}({params}){ret}`")
-            if fn.description:
-                lines.append(f"  {fn.description}")
-            if fn.raises:
-                lines.append(f"  **Raises**: {', '.join(fn.raises)}")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_db_schemas(mod: ModuleDefinition) -> str:
-        if not mod.db_schemas:
-            return "None"
-        lines = []
-        for db in mod.db_schemas:
-            lines.append(f"#### Table: `{db.table_name}`")
-            if db.description:
-                lines.append(f"  {db.description}")
-            if db.columns:
-                lines.append("  **Columns:**")
-                for col in db.columns:
-                    lines.append(f"  - `{col}`")
-            if db.indexes:
-                lines.append("  **Indexes:**")
-                for idx in db.indexes:
-                    lines.append(f"  - `{idx}`")
-            if db.constraints:
-                lines.append("  **Constraints:**")
-                for con in db.constraints:
-                    lines.append(f"  - `{con}`")
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_file_paths(mod: ModuleDefinition) -> str:
-        if not mod.file_paths:
-            return "Determine appropriate file paths based on project structure."
-        return "\n".join(f"- `{p}`" for p in mod.file_paths)
-
-    @staticmethod
-    def _format_constraints(mod: ModuleDefinition) -> str:
-        if not mod.constraints:
-            return "None specified."
-        return "\n".join(f"- {c}" for c in mod.constraints)
-
-    @staticmethod
-    def _format_testing(mod: ModuleDefinition) -> str:
-        if not mod.testing_notes:
-            return "Write unit tests for all public interfaces."
-        return mod.testing_notes
-
-    @staticmethod
-    def _format_review(review: Optional[ReviewFeedback]) -> str:
-        if not review or not review.files:
-            return ""
-        lines = ["## Review Feedback (from previous iteration)", ""]
-        for fr in review.files:
-            if fr.verdict == FileVerdict.ACCEPT:
-                lines.append(f"- `{fr.file_path}`: **ACCEPTED** — do not modify.")
-            elif fr.verdict == FileVerdict.PATCH:
-                lines.append(f"- `{fr.file_path}`: **PATCH** — apply targeted fixes:")
-                for c in fr.comments:
-                    lines.append(f"  - {c}")
-            elif fr.verdict == FileVerdict.REGENERATE:
-                lines.append(f"- `{fr.file_path}`: **REGENERATE** — rewrite this file:")
-                for c in fr.comments:
-                    lines.append(f"  - {c}")
-        if review.summary:
-            lines.append(f"\n**Reviewer summary**: {review.summary}")
-        return "\n".join(lines)
-
-    # ------------------------------------------------------------------
-    # Chat-based full rewrite — structure constrained, content free
-    # ------------------------------------------------------------------
-
-    def _enrich_via_chat(
-        self,
-        draft: str,
-        mod: ModuleDefinition,
-        iteration: int,
-        review: Optional[ReviewFeedback],
-    ) -> str:
-        """Fully rewrite the draft prompt via an LLM.
-
-        The LLM has maximum freedom over content, emphasis, ordering, and
-        depth — but must preserve every technical artefact (file paths, API
-        routes, class/function signatures, DB schemas, constraints) verbatim.
-
-        For iteration 1 the focus is on clarity and implementation depth.
-        For iteration 2+ the review failures become the most prominent section
-        and the spec is reframed as context rather than the primary directive.
+        Returns:
+            The generated prompt text (also written to disk).
         """
-        api_key = self._config.secrets.openai_api_key
-        if not api_key:
-            logger.info("No OpenAI API key — skipping prompt rewrite for %s", mod.module_id)
-            return draft
-
-        model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
-        is_review_iteration = iteration > 1 and review and review.files
-
-        # ── Structural constraints (same for every iteration) ──────────────
-        structural_rules = (
-            "STRUCTURAL CONSTRAINTS — you MUST respect these no matter what:\n"
-            "1. Every file path listed in the draft must appear in your output, "
-            "word-for-word, in a clearly labelled section.\n"
-            "2. Every API endpoint (method + path) must appear verbatim.\n"
-            "3. Every class name, method signature, function signature, and "
-            "database table/column definition must appear verbatim.\n"
-            "4. Every constraint bullet must appear verbatim.\n"
-            "5. Do NOT invent new endpoints, classes, functions, tables, or files "
-            "that are not in the draft.\n"
-            "6. Do NOT remove any of the above artefacts.\n"
-            "7. End with an Output Format section that tells the code generator "
-            "to write a summary.md listing each file created/modified, ending "
-            "with the word END on its own line.\n"
-        )
-
-        # ── Content freedom (same for every iteration) ─────────────────────
-        content_freedom = (
-            "CONTENT FREEDOM — within the structural constraints above, you have "
-            "full editorial control:\n"
-            "- Choose the most effective section order for this specific module.\n"
-            "- Decide how much detail to give each section based on complexity.\n"
-            "- Write rich, module-specific implementation guidance: if there are "
-            "tricky SQL constraints, call them out. If there are circular-import "
-            "risks, warn about them. If auth middleware must be applied to certain "
-            "routes, specify that explicitly.\n"
-            "- Write the Role/Context framing to match exactly what THIS module "
-            "does — not a generic developer persona.\n"
-            "- Add module-specific gotchas, sequencing advice, or "
-            "dependency-handling notes wherever they add value.\n"
-            "- Use whatever Markdown formatting best communicates priority and "
-            "structure (callout blocks, numbered steps, warning sections, etc.).\n"
-            "- Vary the depth: a trivial utility module may need only a compact "
-            "prompt, while a complex auth or DB module needs exhaustive detail.\n"
-        )
-
-        if is_review_iteration:
-            # ── Review iteration directive ──────────────────────────────────
-            focus_directive = (
-                f"ITERATION FOCUS — this is iteration {iteration} of the module. "
-                "A code reviewer found problems in the previous iteration.\n\n"
-                "Your PRIMARY task is to make the review failures impossible to miss. "
-                "Structure the prompt so that:\n"
-                "1. The FIRST major section is a high-visibility 'Critical Fixes Required' "
-                "block that lists every reviewer complaint with a concrete, actionable "
-                "fix instruction for each.\n"
-                "2. Files marked ACCEPTED by the reviewer must be listed as "
-                "'DO NOT MODIFY' with a warning.\n"
-                "3. The full module spec (APIs, classes, DB schemas, etc.) follows the "
-                "fixes section — reframe it as 'Reference Spec' to remind the code "
-                "generator what contracts must stay intact while applying the fixes.\n"
-                "4. Make it absolutely clear: this is a targeted fix run, not a "
-                "ground-up rewrite, unless a file is explicitly marked REGENERATE.\n"
+        if iteration == 1:
+            if not requirements_text:
+                raise ValueError("requirements_text is required for iteration 1")
+            prompt_text = self._generate_implementation_prompt(
+                requirements_text, iteration, on_stdout
             )
         else:
-            # ── First-iteration directive ───────────────────────────────────
-            focus_directive = (
-                "ITERATION FOCUS — this is the FIRST implementation of this module. "
-                "There is no prior code to fix.\n\n"
-                "Your task is to produce the clearest, most implementation-ready "
-                "prompt possible. Think like a senior engineer handing a module spec "
-                "to a capable but junior developer:\n"
-                "1. Lead with a crisp, module-specific Role and Objective — not a "
-                "generic 'you are a developer' statement.\n"
-                "2. Identify and call out the 2–3 most likely implementation pitfalls "
-                "for THIS specific module (e.g. transaction handling, auth context "
-                "propagation, schema migration ordering).\n"
-                "3. If multiple files need to created in a specific order "
-                "(e.g. models before routes), make that sequencing explicit.\n"
-                "4. For DB modules: emphasise exact column types, constraints, and "
-                "index names. For API modules: emphasise exact request/response "
-                "shape and status codes. Adapt the emphasis to the module type.\n"
-            )
+            if not review_json:
+                raise ValueError("review_json is required for iteration 2+")
+            prompt_text = self._generate_fix_prompt(review_json, iteration, on_stdout)
 
-        system_prompt = "\n\n".join(filter(None, [
-            self._identity_ctx.build_role_preamble() if self._identity_ctx else "",
-            "You are an expert prompt engineer specialising in code-generation "
-            "prompts for autonomous coding agents (like Codex, Claude, or GPT-4). "
-            "You will be given a draft code-generation prompt built from a structured "
-            "module specification. Your job is to REWRITE it into the highest-quality "
-            "prompt possible for that specific module.",
-            structural_rules,
-            content_freedom,
-            focus_directive,
-            "Return ONLY the final rewritten prompt — no preamble, no commentary, "
-            "no 'Here is the rewritten prompt:' header. Start directly with the "
-            "prompt content.",
-        ]))
+        self._write_prompt(prompt_text, iteration)
+        return prompt_text
+
+    # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _generate_implementation_prompt(
+        self,
+        requirements_text: str,
+        iteration: int,
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> str:
+        """Call OpenAI to produce a full implementation prompt from requirements."""
+        project_name = self._config.project.name or "the project"
+        language = self._config.project.language or "python"
 
         user_prompt = (
-            f"Rewrite this code-generation prompt for the **{mod.name}** module "
-            f"(iteration {iteration}).\n\n"
-            "Draft prompt to rewrite:\n"
+            f"Generate a comprehensive implementation prompt for **{project_name}** "
+            f"(language: {language}, iteration {iteration}).\n\n"
+            f"Here are the project requirements:\n\n"
             "---\n"
-            f"{draft}\n"
+            f"{requirements_text}\n"
             "---\n\n"
-            "Return the fully rewritten prompt now."
+            "First reason briefly through the main implementation challenges "
+            "(architecture, folder structure, key files, tech stack decisions), "
+            "then write the complete implementation prompt."
         )
+
+        fallback = self._fallback_implementation_prompt(requirements_text, project_name, language)
+        model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+
+        return self._stream_openai(
+            system_prompt=self._SYSTEM_IMPLEMENTATION,
+            user_prompt=user_prompt,
+            model=model,
+            label=f"iter-{iteration}-impl",
+            fallback=fallback,
+            on_stdout=on_stdout,
+        )
+
+    def _generate_fix_prompt(
+        self,
+        review_json: str,
+        iteration: int,
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> str:
+        """Call OpenAI to produce a targeted fix prompt from a review JSON."""
+        project_name = self._config.project.name or "the project"
+        language = self._config.project.language or "python"
+
+        user_prompt = (
+            f"Generate a fix prompt for **{project_name}** "
+            f"(language: {language}, fixing iteration {iteration - 1} → {iteration}).\n\n"
+            "Here is the structured review JSON from the code reviewer:\n\n"
+            "---\n"
+            f"{review_json}\n"
+            "---\n\n"
+            "Reason through each finding (root cause, fix ordering, interdependencies), "
+            "then produce the complete, actionable fix prompt."
+        )
+
+        fallback = self._fallback_fix_prompt(review_json, project_name, iteration)
+        model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+
+        return self._stream_openai(
+            system_prompt=self._SYSTEM_FIX,
+            user_prompt=user_prompt,
+            model=model,
+            label=f"iter-{iteration}-fix",
+            fallback=fallback,
+            on_stdout=on_stdout,
+        )
+
+    # ── OpenAI streaming ──────────────────────────────────────────────────────
+
+    def _stream_openai(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        label: str,
+        fallback: str,
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> str:
+        """Call OpenAI with streaming; pipe tokens to on_stdout; return full text."""
+
+        def _emit(line: str) -> None:
+            if on_stdout:
+                try:
+                    on_stdout(line)
+                except Exception:
+                    pass
+
+        api_key = (
+            getattr(self._config, "secrets", None)
+            and self._config.secrets.openai_api_key
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
+        if not api_key:
+            _emit("[prompt-generator] No OpenAI API key found — using fallback prompt.")
+            logger.warning("No OpenAI API key — returning fallback for %s", label)
+            return fallback
+
+        _emit(f"[prompt-generator] Calling {model} …")
+        logger.info("Generating prompt (%s) via %s", label, model)
 
         try:
             import openai
 
             client = openai.OpenAI(api_key=api_key)
-            resp = client.chat.completions.create(
-                model=model,
-                temperature=0.7,
-                messages=[
+
+            # Reasoning models don't accept temperature
+            _no_temp_prefixes = ("o1", "o3", "o4", "gpt-5")
+            create_kwargs: dict = {
+                "model": model,
+                "stream": True,
+                "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-            )
-            rewritten = resp.choices[0].message.content
-            if rewritten and rewritten.strip():
-                logger.info(
-                    "Prompt rewritten via LLM for %s iter %d (%d → %d chars)",
-                    mod.module_id, iteration, len(draft), len(rewritten),
-                )
-                return rewritten.strip()
-        except Exception:
-            logger.warning(
-                "LLM prompt rewrite failed for %s — using template draft.",
-                mod.module_id,
-                exc_info=True,
-            )
-        return draft
+            }
+            if not any(model.startswith(p) for p in _no_temp_prefixes):
+                create_kwargs["temperature"] = 0.7
 
-    # ------------------------------------------------------------------
-    # Output
-    # ------------------------------------------------------------------
+            resp = client.chat.completions.create(**create_kwargs)
+
+            full_text: list[str] = []
+
+            for chunk in resp:
+                delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
+                if not delta:
+                    continue
+                full_text.append(delta)
+                _emit(delta)  # emit each token chunk for real-time streaming
+
+            generated = "".join(full_text).strip()
+            if generated:
+                logger.info("Prompt generation complete (%s, %d chars)", label, len(generated))
+                return generated
+
+            _emit("[prompt-generator] Empty response from LLM — using fallback.")
+
+        except Exception as exc:
+            _emit(f"[prompt-generator] OpenAI call failed: {exc} — using fallback.")
+            logger.warning("OpenAI streaming failed for %s: %s", label, exc)
+
+        return fallback
+
+    # ── Disk output ───────────────────────────────────────────────────────────
+
+    def _write_prompt(self, content: str, iteration: int) -> Path:
+        """Write the prompt to the fixed configured path (or a default)."""
+        prompt_file_path = getattr(self._config.project, "prompt_file_path", "") or ""
+
+        if prompt_file_path:
+            out_path = Path(prompt_file_path)
+        else:
+            # Fallback: data/prompts/latest.md (always overwritten)
+            out_path = Path(self._config.storage.db_path).parent / "prompts" / "latest.md"
+
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(content, encoding="utf-8")
+
+        # Also keep a per-iteration archive for history
+        archive = (
+            Path(self._config.storage.db_path).parent
+            / "prompts"
+            / f"iteration-{iteration}.md"
+        )
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_text(content, encoding="utf-8")
+
+        logger.info("Prompt written: %s (%d chars)", out_path, len(content))
+        return out_path
+
+    # ── Fallback prompt builders ──────────────────────────────────────────────
 
     @staticmethod
-    def _write_prompt(content: str, module_id: str, iteration: int, config: "AgentOSConfig") -> Path:
-        out_dir = config.storage.data_dir / "prompts" / f"module-{module_id}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"iteration-{iteration}.md"
-        path.write_text(content, encoding="utf-8")
-        logger.info("Wrote prompt: %s (%d chars)", path, len(content))
-        return path
+    def _fallback_implementation_prompt(
+        requirements: str, project_name: str, language: str
+    ) -> str:
+        return (
+            f"# Implementation Prompt — {project_name}\n\n"
+            f"**Language / Stack**: {language}\n\n"
+            "## Requirements\n\n"
+            f"{requirements}\n\n"
+            "## Instructions\n\n"
+            "- Implement the complete project based on the requirements above.\n"
+            "- Create a clean folder structure appropriate for the stack.\n"
+            "- Write a ``ci_check.py`` script at the project root that validates "
+            "the build succeeds (syntax check, lint, tests). This file must NOT "
+            "be added to ``.gitignore``.\n"
+            "- Include all necessary dependency files (requirements.txt, package.json, etc.).\n\n"
+            "## Output Format\n\n"
+            "When done, write ``summary.md`` listing every file created/modified. "
+            "End the file with the word END on its own line."
+        )
+
+    @staticmethod
+    def _fallback_fix_prompt(review_json: str, project_name: str, iteration: int) -> str:
+        return (
+            f"# Fix Prompt — {project_name} (Iteration {iteration})\n\n"
+            "You are fixing an **existing implementation**. "
+            "Do NOT rewrite the project from scratch.\n\n"
+            "## Review Findings\n\n"
+            f"```json\n{review_json}\n```\n\n"
+            "## Instructions\n\n"
+            "- Address every issue listed in the review JSON.\n"
+            "- Do not modify files that passed review.\n"
+            "- Run ``ci_check.py`` after making fixes and resolve any failures.\n\n"
+            "## Output Format\n\n"
+            "When done, write ``summary.md`` listing every file modified. "
+            "End the file with the word END on its own line."
+        )
+
+

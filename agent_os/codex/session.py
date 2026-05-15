@@ -9,7 +9,6 @@ from typing import Callable, Optional
 
 
 class SessionType(str, Enum):
-    MODULE_MAKER = "MODULE_MAKER"
     PROMPT_GENERATOR = "PROMPT_GENERATOR"
     CODE_GENERATOR = "CODE_GENERATOR"
     CODE_REVIEWER = "CODE_REVIEWER"

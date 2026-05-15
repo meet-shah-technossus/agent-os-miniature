@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 AGENT_FILES = ("skills.md", "soul.md", "tools.md", "ceiling.md", "brain.md")
 
 # Built-in agent names that cannot be deleted
-BUILTIN_AGENTS = frozenset({"module_maker", "prompt_generator", "code_generator", "code_reviewer"})
+BUILTIN_AGENTS = frozenset({"prompt_generator", "code_generator", "code_reviewer"})
 
 # The pipeline posts that can be remapped to any agent
-PIPELINE_POSTS = ("MODULE_MAKER", "PROMPT_GENERATOR", "CODE_GENERATOR", "CODE_REVIEWER")
+PIPELINE_POSTS = ("PROMPT_GENERATOR", "CODE_GENERATOR", "CODE_REVIEWER")
 
 
 class AgentNotFoundError(Exception):
@@ -194,13 +194,15 @@ class AgentIdentityStore:
     def delete_agent(self, agent_name: str) -> None:
         """Delete a custom agent directory.
 
+        Accepts names as either 'my_agent' or 'custom/my_agent'.
         Raises ValueError if attempting to delete a built-in agent.
         Raises AgentNotFoundError if the agent doesn't exist.
         """
-        if agent_name in BUILTIN_AGENTS:
-            raise ValueError(f"Cannot delete built-in agent '{agent_name}'")
+        bare_name = agent_name.removeprefix("custom/")
+        if bare_name in BUILTIN_AGENTS:
+            raise ValueError(f"Cannot delete built-in agent '{bare_name}'")
 
-        agent_dir = self._root / "custom" / agent_name
+        agent_dir = self._root / "custom" / bare_name
         if not agent_dir.is_dir():
             raise AgentNotFoundError(f"Custom agent '{agent_name}' not found")
 
@@ -213,10 +215,7 @@ class AgentIdentityStore:
     # ------------------------------------------------------------------
 
     def _resolve_dir(self, agent_name: str) -> Path:
-        """Resolve the directory for an agent name.
-
-        Supports 'module_maker' (built-in) or 'custom/my_agent'.
-        """
+        """Resolve the directory for an agent name (e.g. 'prompt_generator', 'code_generator')."""
         if agent_name.startswith("custom/"):
             return self._root / agent_name
         return self._root / agent_name
@@ -265,7 +264,6 @@ class AgentRegistry:
     @staticmethod
     def _default_registry() -> dict[str, str]:
         return {
-            "MODULE_MAKER": "module_maker",
             "PROMPT_GENERATOR": "prompt_generator",
             "CODE_GENERATOR": "code_generator",
             "CODE_REVIEWER": "code_reviewer",

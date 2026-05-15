@@ -10,19 +10,14 @@ import { motion, AnimatePresence } from 'framer-motion';
 const PRIMARY_TABS = [
   { id: 'dashboard',    label: 'Dashboard',    icon: '◉' },
   { id: 'agents',       label: 'Agents',       icon: '⬡' },
-  { id: 'terminal-hub', label: 'Terminal Hub', icon: '⬛' },
+  { id: 'terminal-hub', label: 'Command Center', icon: '⬛' },
   { id: 'projects',     label: 'Projects',     icon: '⧉' },
   { id: 'settings',     label: 'Settings',     icon: '⚙' },
 ] as const;
 
 const TOOL_TABS = [
-  { id: 'terminal',      label: 'Bus Stream',    icon: '▸' },
-  { id: 'pipeline',      label: 'Pipeline',      icon: '⚡' },
   { id: 'workflow',      label: 'Workflow',       icon: '◩' },
   { id: 'insights',      label: 'Code Insights', icon: '◈' },
-  { id: 'prompt-editor', label: 'Prompt Editor', icon: '✎' },
-  { id: 'module-editor', label: 'Module Editor', icon: '❐' },
-  { id: 'review-editor', label: 'Review Editor', icon: '✓' },
   { id: 'git',           label: 'Git & History', icon: '⎇' },
   { id: 'metrics',       label: 'Metrics',       icon: '◔' },
 ] as const;

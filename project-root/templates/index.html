@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Clinic Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Today's Appointments</h1>
+      <p>Automatically refreshes every 3 seconds.</p>
+    </header>
+    <section id="summary">
+      <article>
+        <h2>Total</h2>
+        <p id="total">0</p>
+      </article>
+      <article>
+        <h2>Completed</h2>
+        <p id="completed">0</p>
+      </article>
+      <article>
+        <h2>Pending</h2>
+        <p id="pending">0</p>
+      </article>
+    </section>
+    <section>
+      <table>
+        <thead>
+          <tr>
+            <th>Patient</th>
+            <th>Time</th>
+            <th>Doctor</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="appointments"></tbody>
+      </table>
+    </section>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>

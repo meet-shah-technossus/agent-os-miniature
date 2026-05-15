@@ -25,10 +25,14 @@ class ProjectConfig(BaseModel):
     name: str = ""
     root_path: str = ""
     language: str = "python"
+    repo_name: str = ""
+    feature_branch: str = "dev"
+    prompt_file_path: str = ""
+    review_json_path: str = ""   # where code reviewer writes the review JSON
 
 
 class OrchestratorConfig(BaseModel):
-    max_iterations_per_module: int = Field(default=5, ge=1, le=20)
+    max_iterations: int = Field(default=5, ge=1, le=20)
     auto_approve_hitl: bool = False
     hitl_timeout_seconds: int = Field(default=0, ge=0)
     convergence_rule: ConvergenceRule = ConvergenceRule.NO_HIGH_SEVERITY
@@ -39,10 +43,15 @@ class CodexConfig(BaseModel):
     timeout_seconds: int = Field(default=300, ge=30)
     max_retries: int = Field(default=2, ge=0, le=5)
     model_routing: dict[str, str] = Field(default_factory=lambda: {
-        "MODULE_MAKER": "gpt-4.1-mini",
         "PROMPT_GENERATOR": "gpt-4.1-mini",
         "CODE_GENERATOR": "gpt-4.1",
         "CODE_REVIEWER": "gpt-4.1-mini",
+    })
+    # CLI tool to use per agent — defaults to "codex"; also supports "aider", "claude"
+    cli_routing: dict[str, str] = Field(default_factory=lambda: {
+        "PROMPT_GENERATOR": "codex",
+        "CODE_GENERATOR": "codex",
+        "CODE_REVIEWER": "codex",
     })
 
 
@@ -73,6 +82,19 @@ class StorageConfig(BaseModel):
 
 class RequirementsConfig(BaseModel):
     path: str = "requirements.yaml"
+    source: str = "device"          # "device" | "jira" | "asana" | "ado"
+    # JIRA connection
+    jira_url: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_project_key: str = ""
+    # Asana connection
+    asana_token: str = ""
+    asana_project_id: str = ""
+    # Azure DevOps connection
+    ado_org: str = ""
+    ado_token: str = ""
+    ado_project: str = ""
 
 
 class ApiConfig(BaseModel):
@@ -133,6 +155,43 @@ class GitHubInputConfig(BaseModel):
     new_repo_suffix: str = "-agent-os-fork"
 
 
+class GitHubReviewConfig(BaseModel):
+    """Phase 2 — GitHub repo + requirements review mode (Mode C)."""
+
+    source_repo_url: str = ""           # e.g. "https://github.com/owner/repo"
+    requirements_path: str = ""         # local path to requirements.yaml for this review
+    fork_repo_name: str = ""            # override fork name (default: <repo>-agent-os)
+    branch_name: str = "agent-os-fixes" # branch for changes
+
+
+class VCSConfig(BaseModel):
+    """Version-control target — independent of requirements source."""
+    provider: str = "github"  # "github" | "ado"
+
+
+class AIToolCredential(BaseModel):
+    """Auth config for a single AI coding tool CLI."""
+    enabled: bool = False
+    auth_method: str = ""   # "api_key" | "account" | "oauth" | "local" | "bedrock" | "vertex"
+    api_key: str = ""
+    email: str = ""
+    password: str = ""      # NOTE: stored hashed in transit; not persisted in plain text
+    account_id: str = ""    # org/workspace ID where applicable
+    endpoint: str = ""      # custom base URL / region override
+    extra: dict = {}        # catch-all for tool-specific fields (e.g. ADC project, workspace)
+
+
+class AIToolsConfig(BaseModel):
+    """Per-tool authentication & connection settings."""
+    codex: AIToolCredential = AIToolCredential()       # OpenAI Codex CLI
+    claude: AIToolCredential = AIToolCredential()      # Claude Code CLI
+    gemini: AIToolCredential = AIToolCredential()      # Gemini CLI
+    qwen: AIToolCredential = AIToolCredential()        # Qwen Coder CLI
+    deepseek: AIToolCredential = AIToolCredential()    # DeepSeek CLI
+    cursor: AIToolCredential = AIToolCredential()      # Cursor CLI (via cursor-headless)
+    copilot: AIToolCredential = AIToolCredential()     # GitHub Copilot CLI
+
+
 class AgentOSConfig(BaseModel):
     project: ProjectConfig = ProjectConfig()
     orchestrator: OrchestratorConfig = OrchestratorConfig()
@@ -149,6 +208,10 @@ class AgentOSConfig(BaseModel):
     github: GitHubConfig = GitHubConfig()
     secrets: SecretsConfig = SecretsConfig()
     github_input: GitHubInputConfig = GitHubInputConfig()
+    github_review: GitHubReviewConfig = GitHubReviewConfig()
+    pipeline_mode: str = "standard"  # "standard" | "github_review"
+    ai_tools: AIToolsConfig = AIToolsConfig()
+    vcs: VCSConfig = VCSConfig()
 
     @field_validator("project")
     @classmethod

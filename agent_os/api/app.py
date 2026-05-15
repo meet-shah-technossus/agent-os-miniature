@@ -15,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from ..config.loader import get_default_config, load_config
 from ..config.env import auto_load_dotenv
 from .deps import orch_holder
-from .routes import agents, bus, metrics, modules, pipeline, project, requirements, settings
-from .websocket import _broadcast_worker, _setup_bus_subscriptions, router as ws_router
+from .routes import agents, cli_tools, metrics, orchestrator, project, requirements, settings
+from .websocket import _broadcast_worker, _setup_bus_subscriptions, router as ws_router, _queue as _ws_queue
 
 logger = logging.getLogger(__name__)
 
@@ -36,17 +36,36 @@ def _sync_project_config(config, config_path) -> None:
             if req_path.exists():
                 raw = _yaml.safe_load(req_path.read_text(encoding="utf-8")) or {}
                 epics = raw.get("epics", [])
+                # Build a descriptive name from all epic titles, falling back to first epic
                 if epics:
-                    name = epics[0].get("title", "").strip()
+                    titles = [e.get("title", "").strip() for e in epics if e.get("title", "").strip()]
+                    if len(titles) == 1:
+                        name = titles[0]
+                    elif len(titles) > 1:
+                        # Use the first title but append count for clarity
+                        name = titles[0]
+                    else:
+                        name = ""
+                    # If the file was ingested from a remote source, prefer the filename hint
+                    req_filename = req_path.stem  # e.g. "requirements_from_ado"
                     if name:
                         config.project.name = name
-                        logger.info("Project name set from requirements.yaml: %s", name)
+                        logger.info("Project name set from requirements: %s", name)
 
         # Auto-provision project folder on Desktop if name is known but root_path is not
         if config.project.name and not config.project.root_path:
             slug = re.sub(r"[^\w\s-]", "", config.project.name).strip().replace(" ", "-").lower()
+            # Truncate long slugs to keep folder names reasonable
+            if len(slug) > 60:
+                slug = slug[:60].rstrip("-")
             if slug:
                 desktop = _Path.home() / "Desktop" / slug
+                # If folder already exists, append a numeric suffix to avoid collisions
+                if desktop.exists():
+                    counter = 2
+                    while (_Path.home() / "Desktop" / f"{slug}-{counter}").exists():
+                        counter += 1
+                    desktop = _Path.home() / "Desktop" / f"{slug}-{counter}"
                 desktop.mkdir(parents=True, exist_ok=True)
                 config.project.root_path = str(desktop)
                 logger.info("Auto-provisioned project folder: %s", desktop)
@@ -62,8 +81,13 @@ def _sync_project_config(config, config_path) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Startup/shutdown lifecycle for the API server."""
-    # Auto-load .env from the project root into os.environ before anything else
-    auto_load_dotenv()
+    # Auto-load .env from the Agent OS root (where config.yaml lives) into
+    # os.environ before anything else, so secrets are available process-wide.
+    _env_root = str(Path(_config_path).resolve().parent) if _config_path else "."
+    _auto_yaml = Path("config.yaml").resolve()
+    if not _config_path and _auto_yaml.exists():
+        _env_root = str(_auto_yaml.parent)
+    auto_load_dotenv(_env_root)
 
     if _config_path:
         config = load_config(_config_path)
@@ -81,6 +105,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             orch_holder.config_path = None
     orch_holder.init(config)
     logger.info("Orchestrator initialised")
+
+    # Wire the shared asyncio broadcast queue into the orchestrator so that
+    # every _emit() call from the pipeline loop reaches WebSocket clients.
+    orch_holder.orchestrator.set_ws_queue(_ws_queue)
 
     # Proactively sync project name and folder from requirements.yaml so the
     # dashboard shows correct info even before the pipeline is started.
@@ -118,14 +146,13 @@ def create_app() -> FastAPI:
     )
 
     # REST routers
-    app.include_router(pipeline.router)
-    app.include_router(modules.router)
     app.include_router(requirements.router)
     app.include_router(metrics.router)
-    app.include_router(bus.router)
     app.include_router(settings.router)
     app.include_router(project.router)
     app.include_router(agents.router)
+    app.include_router(orchestrator.router)
+    app.include_router(cli_tools.router)
 
     # WebSocket router
     app.include_router(ws_router)

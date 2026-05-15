@@ -193,3 +193,85 @@ class GitOpsManager:
         if not result.success:
             return []
         return result.stdout.splitlines()
+
+    # ── Clone operations ──────────────────────────────────────────
+
+    @staticmethod
+    def clone(url: str, dest: str, depth: int = 0) -> "GitResult":
+        """Clone a remote repository to a local destination.
+
+        Args:
+            url: Remote URL (token should be embedded for auth).
+            dest: Absolute or relative local path for the cloned repo.
+            depth: If > 0, create a shallow clone with that commit depth.
+
+        Returns:
+            GitResult indicating success/failure and any subprocess output.
+        """
+        cmd = ["git", "clone"]
+        if depth > 0:
+            cmd += ["--depth", str(depth)]
+        cmd += [url, dest]
+        cmd_str = " ".join(c if "x-access-token" not in c else "<redacted>" for c in cmd)
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # generous for large repos
+            )
+            return GitResult(
+                success=proc.returncode == 0,
+                command=cmd_str,
+                stdout=proc.stdout.strip(),
+                stderr=proc.stderr.strip(),
+                return_code=proc.returncode,
+            )
+        except FileNotFoundError:
+            return GitResult(success=False, command=cmd_str, stderr="git not found on PATH")
+        except subprocess.TimeoutExpired:
+            return GitResult(success=False, command=cmd_str, stderr="git clone timed out")
+
+    # ── Repository initialisation helpers ────────────────────────
+
+    def init_repo(self) -> GitResult:
+        """Initialise a new git repository in ``self.project_root``.
+
+        Idempotent — running on an already-initialised repo is a no-op.
+        """
+        return self._run("init")
+
+    def set_user(self, name: str, email: str) -> None:
+        """Set the local git user name and email (repo-scoped config).
+
+        Required before committing in a freshly cloned / inited workspace.
+        """
+        self._run("config", "user.name", name)
+        self._run("config", "user.email", email)
+
+    def remote_exists(self, name: str = "origin") -> bool:
+        """Return True if a remote with ``name`` is configured locally."""
+        result = self._run("remote", "get-url", name)
+        return result.success
+
+    def add_remote(self, name: str, url: str) -> GitResult:
+        """Add a remote, or update its URL if already present.
+
+        Args:
+            name: Remote alias, typically ``"origin"``.
+            url:  Remote URL.  Embed the PAT for authenticated push, e.g.
+                  ``https://x-access-token:{token}@github.com/owner/repo.git``.
+        """
+        if self.remote_exists(name):
+            logger.info("Remote '%s' exists — updating URL", name)
+            return self._run("remote", "set-url", name, url)
+        logger.info("Adding remote '%s' → %s", name, url if "token" not in url else "<redacted>")
+        return self._run("remote", "add", name, url)
+
+    def push_upstream(self, branch: str, remote: str = "origin") -> GitResult:
+        """Push ``branch`` and set it to track the remote branch.
+
+        Equivalent to ``git push -u {remote} {branch}``.
+        """
+        logger.info("Pushing branch '%s' to '%s' with upstream tracking", branch, remote)
+        return self._run("push", "-u", remote, branch)

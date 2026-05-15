@@ -148,6 +148,20 @@ class GitHubClient:
         """Get details of a pull request."""
         return self._request("GET", f"/pulls/{pr_number}")
 
+    def list_prs(self, head: str = "", state: str = "open") -> GitHubResult:
+        """List pull requests, optionally filtered by head branch and state.
+
+        ``head`` should be ``owner:branch`` for cross-fork or just ``branch``
+        (``owner:`` is prepended automatically when no colon is present).
+        """
+        params: dict[str, str] = {"state": state, "per_page": "5"}
+        if head:
+            if ":" not in head:
+                head = f"{self._owner}:{head}"
+            params["head"] = head
+        qs = "&".join(f"{k}={v}" for k, v in params.items())
+        return self._request("GET", f"/pulls?{qs}")
+
     def merge_pr(
         self,
         pr_number: int,
@@ -208,3 +222,204 @@ class GitHubClient:
         """Check if the configured owner/repo exists on GitHub."""
         result = self._request("GET", "")
         return result.success
+
+    def fork_repo(self, owner: str, repo: str) -> GitHubResult:
+        """Fork a GitHub repository to the authenticated user's account.
+
+        Args:
+            owner: Owner of the source repository (org or user).
+            repo: Name of the source repository.
+
+        Returns:
+            GitHubResult with data containing the fork's full name, clone URL,
+            and HTML URL.  A 202 response indicates the fork is being created
+            asynchronously — it is still treated as success.
+        """
+        logger.info("Forking %s/%s", owner, repo)
+        result = self._request(
+            "POST",
+            "",
+            json_body={},
+            absolute_url=f"{_GITHUB_API}/repos/{owner}/{repo}/forks",
+        )
+        # GitHub returns 202 Accepted for fork operations (async) — treat as success
+        if result.status_code == 202 or result.success:
+            result.success = True
+        return result
+
+    def get_authenticated_user(self) -> GitHubResult:
+        """Return the currently authenticated user's login and metadata."""
+        return self._request(
+            "GET", "", absolute_url=f"{_GITHUB_API}/user"
+        )
+
+    # ── PR review comment operations ──────────────────────────────
+
+    def add_pr_review_comment(
+        self,
+        pr_number: int,
+        body: str,
+        commit_id: str,
+        path: str,
+        line: int,
+        side: str = "RIGHT",
+    ) -> GitHubResult:
+        """Add an inline review comment to a specific file/line in a PR.
+
+        Args:
+            pr_number: Pull request number.
+            body: Comment text (markdown supported).
+            commit_id: The SHA of the commit to comment on (latest = PR head).
+            path: File path relative to the repo root.
+            line: Line number in the diff to attach the comment to.
+            side: "RIGHT" (post-change) or "LEFT" (pre-change).
+        """
+        logger.info("Adding inline review comment to PR #%d — %s:%d", pr_number, path, line)
+        return self._request("POST", f"/pulls/{pr_number}/comments", {
+            "body": body,
+            "commit_id": commit_id,
+            "path": path,
+            "line": line,
+            "side": side,
+        })
+
+    def get_pr_review_comments(self, pr_number: int) -> GitHubResult:
+        """Get all review (inline) comments on a PR.
+
+        Returns data as a list of comment dicts, each containing at minimum:
+          ``id``, ``body``, ``path``, ``node_id``.
+        """
+        return self._request("GET", f"/pulls/{pr_number}/comments")
+
+    def reply_to_review_comment(
+        self, pr_number: int, comment_id: int, body: str
+    ) -> GitHubResult:
+        """Reply to an existing inline review comment thread.
+
+        This is the REST equivalent of "resolving" a conversation — in the GitHub
+        UI, adding a reply is the standard way to mark a thread as addressed when
+        the GraphQL ``resolveReviewThread`` mutation is not available.
+        """
+        logger.info("Replying to review comment %d on PR #%d", comment_id, pr_number)
+        return self._request(
+            "POST", f"/pulls/{pr_number}/comments/{comment_id}/replies", {"body": body}
+        )
+
+    def resolve_review_thread(self, thread_node_id: str) -> GitHubResult:
+        """Resolve a pull request review thread via the GraphQL API.
+
+        Falls back gracefully if the PAT lacks the ``pull_requests:write`` scope.
+        """
+        logger.info("Resolving review thread %s via GraphQL", thread_node_id)
+        mutation = """
+mutation ResolveThread($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}
+"""
+        api_key = self._token
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.post(
+                    "https://api.github.com/graphql",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"query": mutation, "variables": {"threadId": thread_node_id}},
+                )
+            if resp.status_code == 200:
+                data = resp.json()
+                if "errors" not in data:
+                    return GitHubResult(success=True, status_code=200, data=data)
+                err_msg = "; ".join(e.get("message", "") for e in data["errors"])
+                return GitHubResult(success=False, status_code=200, error=err_msg)
+            return GitHubResult(
+                success=False, status_code=resp.status_code, error=resp.text[:200]
+            )
+        except Exception as exc:
+            return GitHubResult(success=False, error=str(exc))
+
+    def resolve_all_pr_review_comments(self, pr_number: int) -> list[GitHubResult]:
+        """Reply "Implemented ✅" to every open review comment thread on a PR.
+
+        Used by the code generator to mark all reviewer comments as addressed.
+        Returns one result per comment.
+        """
+        results: list[GitHubResult] = []
+        comments_result = self.get_pr_review_comments(pr_number)
+        if not comments_result.success or not comments_result.data:
+            return [comments_result]
+
+        comments = comments_result.data if isinstance(comments_result.data, list) else []
+        for comment in comments:
+            comment_id = comment.get("id")
+            if not comment_id:
+                continue
+            # Try GraphQL thread resolution first (requires node_id)
+            node_id = comment.get("node_id", "")
+            if node_id:
+                r = self.resolve_review_thread(node_id)
+                if r.success:
+                    results.append(r)
+                    continue
+            # Fallback: add a "Fixed ✅" reply
+            r = self.reply_to_review_comment(pr_number, comment_id, "Implemented ✅")
+            results.append(r)
+
+        logger.info(
+            "Resolved %d/%d review comments on PR #%d",
+            sum(1 for r in results if r.success), len(results), pr_number,
+        )
+        return results
+
+    # ── Branch operations ─────────────────────────────────────────
+
+    def delete_branch(self, branch: str) -> GitHubResult:
+        """Delete a remote branch by name (e.g. ``dev``, ``feature/agent-os``)."""
+        logger.info("Deleting remote branch: %s", branch)
+        return self._request("DELETE", f"/git/refs/heads/{branch}")
+
+    def get_pr_head_sha(self, pr_number: int) -> Optional[str]:
+        """Return the head commit SHA of a PR, or None on failure."""
+        result = self.get_pr(pr_number)
+        if result.success and result.data:
+            return (result.data.get("head") or {}).get("sha")
+        return None
+
+    # ── PR diff ───────────────────────────────────────────────────
+
+    def get_pr_diff(self, pr_number: int) -> GitHubResult:
+        """Fetch the unified diff of a pull request.
+
+        Uses the ``application/vnd.github.diff`` media type to get a plain
+        unified diff string rather than JSON.
+        """
+        logger.info("Fetching diff for PR #%d", pr_number)
+        url = f"{self._base_url}/pulls/{pr_number}"
+        try:
+            with httpx.Client(timeout=_TIMEOUT) as client:
+                resp = client.get(
+                    url,
+                    headers={
+                        **self._headers(),
+                        "Accept": "application/vnd.github.diff",
+                    },
+                )
+            if resp.status_code >= 400:
+                return GitHubResult(
+                    success=False, status_code=resp.status_code, error=resp.text[:200]
+                )
+            return GitHubResult(
+                success=True,
+                status_code=resp.status_code,
+                data={"diff": resp.text},
+            )
+        except Exception as exc:
+            return GitHubResult(success=False, error=str(exc))
+
+    def get_pr_files(self, pr_number: int) -> GitHubResult:
+        """Fetch the list of files changed in a PR (includes patch/diff per file)."""
+        return self._request("GET", f"/pulls/{pr_number}/files")
+

@@ -1,7 +1,7 @@
-/* useAgentTerminals — Phase 7
+/* useAgentTerminals — Phase 7 / updated Phase 10e
    Maintains a per-agent ring buffer of terminal output lines by
    opening a dedicated second WebSocket connection that filters exclusively
-   for channel=terminal_output messages.
+   for channel=terminal:{agent_post} messages (e.g. terminal:code_generator).
 */
 
 import { useEffect, useState } from 'react';
@@ -72,6 +72,7 @@ function makeInitialStates(): Record<string, AgentTerminalState> {
       sessionEndedAt: null,
       lastExitCode: null,
       sessionCount: 0,
+      activeTool: null,
     };
   }
   return states;
@@ -87,21 +88,35 @@ export function useAgentTerminals() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${protocol}//${window.location.host}/ws`);
 
-    ws.onopen = () => setConnected(true);
+    ws.onopen = () => {
+      setConnected(true);
+      // Subscribe to all terminal:* and pipeline channels
+      ws.send(JSON.stringify({
+        subscribe: [
+          'terminal:prompt_generator',
+          'terminal:code_generator',
+          'terminal:code_reviewer',
+          'pipeline',
+        ],
+      }));
+    };
     ws.onclose = () => setConnected(false);
 
     ws.onmessage = (ev: MessageEvent<string>) => {
       try {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const msg: any = JSON.parse(ev.data);
-        if (msg.channel !== 'terminal_output') return;
+        // Accept both the new terminal:{agent} channels and legacy terminal_output
+        const ch: string = msg.channel ?? '';
+        if (!ch.startsWith('terminal:') && ch !== 'terminal_output') return;
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const payload: Record<string, any> = msg.payload ?? {};
         const eventType: string = payload.event_type ?? '';
         const agentPost: string = payload.agent_post ?? '';
         const sessionId: string = payload.session_id ?? '';
-        const timestamp: string = msg.timestamp ?? new Date().toISOString();
+        // Always stamp with the client system clock so timing reflects local time
+        const timestamp: string = new Date().toISOString();
 
         setStates((prev) => {
           const agentState = prev[agentPost];
@@ -112,6 +127,7 @@ export function useAgentTerminals() {
             const model: string | null = payload.model ?? null;
             const moduleId: string | null = payload.module_id ?? null;
             const iteration: number = payload.iteration ?? 0;
+            const tool: string | null = payload.tool ?? null;
             const sessionNum = agentState.sessionCount + 1;
 
             const marker: TerminalLine = {
@@ -144,6 +160,7 @@ export function useAgentTerminals() {
                 sessionEndedAt: null,
                 lastExitCode: null,
                 sessionCount: sessionNum,
+                activeTool: tool,
               },
             };
           }
@@ -169,6 +186,7 @@ export function useAgentTerminals() {
                 status: exitCode !== 0 ? 'error' : 'done',
                 sessionEndedAt: timestamp,
                 lastExitCode: exitCode,
+                activeTool: null,
               },
             };
           }
@@ -196,6 +214,64 @@ export function useAgentTerminals() {
                 ...agentState,
                 lines: [...agentState.lines, line].slice(-RING_BUFFER_SIZE),
                 // Promote idle → running if we receive lines before session_start
+                status: agentState.status === 'idle' ? 'running' : agentState.status,
+                currentModuleId: moduleId ?? agentState.currentModuleId,
+                currentIteration: iteration || agentState.currentIteration,
+              },
+            };
+          }
+
+          // ── token (streaming append to last line) ────────────────────────
+          if (eventType === 'token') {
+            const text: string = payload.text ?? '';
+            const stream: 'stdout' | 'stderr' = payload.stream === 'stderr' ? 'stderr' : 'stdout';
+            const moduleId: string | null = payload.module_id ?? null;
+            const iteration: number = payload.iteration ?? 0;
+
+            // Split incoming text on newlines — first part appends to the
+            // current line; subsequent parts start new lines.
+            const parts = text.split('\n');
+            const updatedLines = [...agentState.lines];
+
+            // Append first part to the last existing line (if any and it's a
+            // streaming token line), otherwise create one.
+            const lastLine = updatedLines.length > 0 ? updatedLines[updatedLines.length - 1] : null;
+            if (lastLine && lastLine.eventType === 'token') {
+              updatedLines[updatedLines.length - 1] = {
+                ...lastLine,
+                text: lastLine.text + parts[0],
+                style: classifyLine(lastLine.text + parts[0], stream),
+              };
+            } else {
+              updatedLines.push({
+                id: nextId(),
+                timestamp,
+                eventType: 'token',
+                text: parts[0],
+                stream,
+                style: classifyLine(parts[0], stream),
+                sessionId,
+              });
+            }
+
+            // Each subsequent part after a \n starts a new token line
+            for (let i = 1; i < parts.length; i++) {
+              updatedLines.push({
+                id: nextId(),
+                timestamp,
+                eventType: 'token',
+                text: parts[i],
+                stream,
+                style: classifyLine(parts[i], stream),
+                sessionId,
+              });
+            }
+
+            return {
+              ...prev,
+              [agentPost]: {
+                ...agentState,
+                lines: updatedLines.slice(-RING_BUFFER_SIZE),
                 status: agentState.status === 'idle' ? 'running' : agentState.status,
                 currentModuleId: moduleId ?? agentState.currentModuleId,
                 currentIteration: iteration || agentState.currentIteration,

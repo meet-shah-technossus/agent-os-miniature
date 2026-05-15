@@ -1,262 +1,907 @@
-"""Main orchestrator engine — the central brain of Agent OS.
+"""Orchestrator engine — simple linear iteration loop for the POC pipeline.
 
-Owns the main loop, dispatches to handlers, manages state transitions.
-All step logic lives in handlers.py. CLI logic lives in cli.py.
+State machine:
+  IDLE → LOADING_REQUIREMENTS → PROMPT_GENERATION → HITL_PROMPT_REVIEW
+       → CODE_GENERATION → CODE_REVIEW → HITL_REVIEW_DECISION
+       → PROMPT_GENERATION (loop) ... → PIPELINE_COMPLETE
+
+Phase 3 will wire in the real prompt-generator, code-generator, and
+code-reviewer components. For now those steps are stubs.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Optional
-
 import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 
-from ..comms.bus import AgentCommBus
 from ..config.schema import AgentOSConfig
-from ..hardening.error_handler import (
-    RecoveryAction,
-    classify_error,
-    get_recovery_action,
-    publish_error,
-)
-from ..hardening.rollback import RollbackManager
 from ..storage.database import Database
-from ..storage.models import ModuleStatus, PipelineState, PipelineStatus
-from .context import HandlerContext
-from .events import EventBus, PipelineEvent
-from .handlers import HANDLER_REGISTRY
+from ..storage.models import PipelineState, PipelineStatus
 from .state import StateManager
 
 logger = logging.getLogger(__name__)
 console = Console()
 
-# HITL gate → next state mapping
-_GATE_TRANSITIONS: dict[PipelineStatus, PipelineStatus] = {
-    PipelineStatus.HITL_1_MODULE_REVIEW: PipelineStatus.NEXT_MODULE,
-    PipelineStatus.HITL_2_PROMPT_REVIEW: PipelineStatus.CODE_GENERATION,
-    PipelineStatus.HITL_3_REVIEW_DECISION: PipelineStatus.DECISION,
-    # HITL_4 must commit the module before advancing — do NOT go directly to
-    # NEXT_MODULE (that would leave the module IN_PROGRESS in the DB, breaking
-    # dependency resolution for all downstream modules).
-    PipelineStatus.HITL_4_MAX_ITERATIONS: PipelineStatus.GIT_COMMIT,
-    PipelineStatus.HITL_5_PR_REVIEW: PipelineStatus.INTEGRATION_TEST,
-}
-
 
 class Orchestrator:
-    """Autonomous SDLC pipeline orchestrator."""
+    """Autonomous SDLC pipeline orchestrator — POC linear loop."""
 
     def __init__(self, config: AgentOSConfig) -> None:
         self.config = config
         self.db = Database(config.storage.db_path)
         self.db.connect()
         self.state_mgr = StateManager(self.db)
-        self.events = EventBus()
-        self.bus = AgentCommBus()
-        self.ctx = HandlerContext(
-            state_mgr=self.state_mgr,
-            db=self.db,
-            config=config,
-            bus=self.bus,
-        )
-        self._rollback: Optional[RollbackManager] = None
-        self._pause_requested = threading.Event()
 
-        # Wire state transitions to event bus
+        self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+
+        # WebSocket broadcast queue — populated by _emit(); drained by API layer
+        self._ws_queue: Optional[asyncio.Queue] = None
+
+        # Register state transition listener for auto-marking iterations complete/failed
         self.state_mgr.on_transition(self._on_state_transition)
 
     def _on_state_transition(
         self,
         old_status: PipelineStatus,
         new_status: PipelineStatus,
-        state: PipelineState,
+        new_state: Any,
     ) -> None:
-        self.events.emit(
-            PipelineEvent(
-                old_status=old_status,
-                new_status=new_status,
-                module_id=state.current_module_id,
-                iteration=state.current_iteration,
-            )
-        )
+        """Auto-update iteration row status when pipeline enters terminal states."""
+        iter_num: int = new_state.current_iteration
+        if not iter_num:
+            return
+        if new_status == PipelineStatus.FAILED:
+            self._upsert_iteration(iter_num, status="failed",
+                                   completed_at=datetime.utcnow().isoformat())
+        elif new_status == PipelineStatus.PIPELINE_COMPLETE:
+            self._upsert_iteration(iter_num, status="completed",
+                                   completed_at=datetime.utcnow().isoformat())
 
-    # --- Main loop ---
+    def _upsert_iteration(self, iteration_number: int, **kwargs: Any) -> None:
+        """Create or update an iteration row in the iterations table.
+
+        On first call for a given iteration_number an INSERT is performed.
+        Subsequent calls only SET the provided columns.
+        """
+        try:
+            count = self.db.conn.execute(
+                "SELECT COUNT(*) FROM iterations WHERE iteration_number = ?",
+                (iteration_number,),
+            ).fetchone()[0]
+            if count == 0:
+                cols = ["iteration_number", "status", "started_at"] + list(kwargs.keys())
+                vals: list[Any] = [
+                    iteration_number,
+                    kwargs.pop("status", "in_progress"),
+                    kwargs.pop("started_at", datetime.utcnow().isoformat()),
+                    *kwargs.values(),
+                ]
+                placeholders = ", ".join("?" for _ in vals)
+                self.db.conn.execute(
+                    f"INSERT INTO iterations ({', '.join(cols)}) VALUES ({placeholders})",
+                    vals,
+                )
+            else:
+                if not kwargs:
+                    return
+                set_clause = ", ".join(f"{k} = ?" for k in kwargs)
+                self.db.conn.execute(
+                    f"UPDATE iterations SET {set_clause} WHERE iteration_number = ?",
+                    [*kwargs.values(), iteration_number],
+                )
+            self.db.conn.commit()
+        except Exception:
+            logger.debug("_upsert_iteration(%d) failed", iteration_number, exc_info=True)
+
+    # ── WebSocket integration ──────────────────────────────────────────────────
+
+    def set_ws_queue(self, queue: asyncio.Queue) -> None:
+        """Inject the asyncio broadcast queue from the API layer."""
+        self._ws_queue = queue
+
+    def _emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+        """Push a pipeline event onto the WebSocket broadcast queue (non-blocking)."""
+        if self._ws_queue is None:
+            return
+        import datetime as _dt
+        payload = {
+            "channel": "pipeline",
+            "sender": "orchestrator",
+            "event": event_type,
+            "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
+            "pipeline_status": self.state_mgr.current_status.value,
+            "current_iteration": self.state_mgr.state.current_iteration,
+            **(data or {}),
+        }
+        try:
+            self._ws_queue.put_nowait(payload)
+        except Exception:
+            pass  # queue full or closed — not fatal
+
+    def _emit_terminal(
+        self,
+        event_type: str,
+        agent_post: str,
+        session_id: str,
+        **kwargs: Any,
+    ) -> None:
+        """Push a terminal_output channel event so the frontend terminal grid
+        receives structured session_start / line / session_end events."""
+        if self._ws_queue is None:
+            return
+        import datetime as _dt
+        payload = {
+            "channel": f"terminal:{agent_post.lower()}",
+            "sender": agent_post.lower(),
+            "timestamp": _dt.datetime.utcnow().isoformat() + "Z",
+            "payload": {
+                "event_type": event_type,
+                "agent_post": agent_post,
+                "session_id": session_id,
+                **kwargs,
+            },
+        }
+        try:
+            self._ws_queue.put_nowait(payload)
+        except Exception:
+            pass
+
+    # ── Main run loop ──────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        """Run the pipeline from current state to completion (or HITL pause)."""
-        self._pause_requested.clear()
-        state = self.state_mgr.state
-        if state.pipeline_status != PipelineStatus.IDLE:
-            console.print(f"[yellow]Resuming from state: {state.pipeline_status.value}[/yellow]")
-        else:
-            console.print(Panel("Agent OS — Pipeline Starting", style="bold blue"))
-        self._run_loop()
+        """Run the pipeline from current state to completion or HITL pause.
 
-    def _run_loop(self) -> None:
-        """Execute state machine steps until paused (HITL), complete, or pause requested."""
+        Called in a background thread by the API /start route.
+        """
+        self._stop_event.clear()
+        self._pause_event.clear()
+        state = self.state_mgr.state
+        logger.info("Pipeline run() called — current status: %s", state.pipeline_status.value)
+        self._emit("run_started")
+        self._loop()
+
+    def _loop(self) -> None:
+        """Execute the linear state machine until paused, complete, HITL, or error."""
+        _DISPATCH = {
+            PipelineStatus.IDLE:                  self._step_idle,
+            PipelineStatus.LOADING_REQUIREMENTS:  self._step_load_requirements,
+            PipelineStatus.PROMPT_GENERATION:     self._step_prompt_generation,
+            PipelineStatus.CODE_GENERATION:       self._step_code_generation,
+            PipelineStatus.CODE_REVIEW:           self._step_code_review,
+        }
+
         while True:
-            # Check for user-requested pause between steps
-            if self._pause_requested.is_set():
-                console.print("[yellow]Pipeline paused by user.[/yellow]")
+            if self._stop_event.is_set():
+                logger.info("Pipeline stopped (reset requested)")
+                self._emit("stopped")
+                break
+
+            if self._pause_event.is_set():
+                logger.info("Pipeline paused by user")
+                self._emit("paused")
                 break
 
             status = self.state_mgr.current_status
 
             if status == PipelineStatus.PIPELINE_COMPLETE:
-                console.print("[bold green]Pipeline complete![/bold green]")
+                logger.info("Pipeline complete!")
+                self._emit("pipeline_complete")
+                # Auto-close ADO work items if they were ingested
+                self._close_ado_work_items()
                 break
 
             if status == PipelineStatus.FAILED:
-                console.print("[bold red]Pipeline failed. Reset with --reset to restart.[/bold red]")
+                logger.warning("Pipeline in FAILED state — awaiting reset")
+                self._emit("failed")
                 break
 
             if self.state_mgr.is_hitl_gate():
                 if self.config.orchestrator.auto_approve_hitl:
-                    console.print(f"[dim]Auto-approving HITL gate: {status.value}[/dim]")
-                    self._auto_approve_gate(status)
+                    logger.info("Auto-approving HITL gate: %s", status.value)
+                    self._auto_approve(status)
                     continue
-                console.print(
-                    f"[yellow]Paused at HITL gate: {status.value}[/yellow]\n"
-                    "Approve via frontend or CLI to continue."
-                )
+                logger.info("Paused at HITL gate: %s", status.value)
+                self._emit("hitl_gate", {"gate": status.value})
                 break
 
-            handler = HANDLER_REGISTRY.get(status)
-            if handler is None:
-                logger.error("No handler for state: %s", status.value)
+            step = _DISPATCH.get(status)
+            if step is None:
+                logger.error("No step handler for state: %s", status.value)
+                self.state_mgr.transition_to(PipelineStatus.FAILED)
                 break
 
             try:
-                handler(self.ctx)
+                step()
             except Exception as exc:
-                self._handle_error(exc, status)
+                logger.exception("Error in step %s: %s", status.value, exc)
+                self.state_mgr.transition_to(PipelineStatus.FAILED)
+                self._emit("error", {"message": str(exc)})
+                break
 
-    def request_pause(self) -> bool:
-        """Request the pipeline to pause after the current handler finishes.
+    # ── Step handlers ──────────────────────────────────────────────────────────
 
-        Returns True if the pipeline was running (pause will take effect).
-        The loop breaks at the top of the next iteration.
+    def _step_idle(self) -> None:
+        """IDLE → LOADING_REQUIREMENTS."""
+        self.state_mgr.transition_to(PipelineStatus.LOADING_REQUIREMENTS)
+        self._emit("state_changed")
+
+    def _step_load_requirements(self) -> None:
+        """LOADING_REQUIREMENTS → PROMPT_GENERATION.
+
+        Loads requirements from the configured source into the DB.
         """
-        self._pause_requested.set()
-        console.print("[yellow]Pause requested — will stop after current step completes.[/yellow]")
+        from ..requirements.parser import RequirementsParser
+        req_path = self.config.requirements.path
+        logger.info("Loading requirements from: %s", req_path)
+        self._emit("loading_requirements", {"path": req_path})
+
+        parser = RequirementsParser(db=self.db)
+        stats = parser.load_and_store(req_path)
+        logger.info("Requirements loaded: %s", stats)
+
+        # Derive project name from first epic if not already set
+        if not self.config.project.name:
+            try:
+                import yaml as _yaml
+                raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
+                epics = (raw or {}).get("epics", [])
+                if epics:
+                    self.config.project.name = epics[0].get("title", "").strip()
+                    logger.info("Project name set from requirements: %s", self.config.project.name)
+            except Exception:
+                logger.debug("Could not extract project name", exc_info=True)
+
+        state = self.state_mgr.state
+        self.state_mgr.transition_to(
+            PipelineStatus.PROMPT_GENERATION,
+            iteration=max(state.current_iteration, 1),
+        )
+        self._emit("state_changed")
+
+    def _step_prompt_generation(self) -> None:
+        """PROMPT_GENERATION → HITL_PROMPT_REVIEW.
+
+        Calls the real Prompt Generator (OpenAI API) to produce the iteration
+        prompt, then pauses at the HITL review gate.
+        """
+        from ..prompt_generator.runner import PromptGeneratorRunner
+
+        state = self.state_mgr.state
+        iteration = state.current_iteration
+        logger.info("Prompt generation — iteration %d", iteration)
+        self._emit("prompt_generation_started", {"iteration": iteration})
+
+        # Ensure an iteration row exists for this iteration number
+        self._upsert_iteration(iteration)
+
+        # For iteration 2+ we pass the review JSON from the previous iteration
+        review_json: dict | None = None
+        if iteration > 1:
+            review_content = state.metadata.get("review_json_content")
+            if review_content:
+                import json as _json
+                try:
+                    review_json = _json.loads(review_content)
+                except Exception:
+                    review_json = {"raw": review_content}
+
+        requirements_text: str | None = None
+        if iteration == 1:
+            req_path = getattr(self.config.requirements, "path", "")
+            if req_path:
+                req_file = Path(req_path)
+                if req_file.exists():
+                    requirements_text = req_file.read_text(encoding="utf-8")
+
+        import uuid as _uuid
+        _pg_session = f"pg-{iteration}-{_uuid.uuid4().hex[:8]}"
+        model_pg = self.config.codex.model_routing.get("PROMPT_GENERATOR") or self.config.codex.default_model or ""
+        self._emit_terminal("session_start", "PROMPT_GENERATOR", _pg_session,
+                            iteration=iteration, module_id="", model=model_pg)
+
+        def _on_stdout(line: str) -> None:
+            self._emit("prompt_token", {"line": line})
+            self._emit_terminal("token", "PROMPT_GENERATOR", _pg_session,
+                                text=line, stream="stdout",
+                                iteration=iteration, module_id="")
+
+        runner = PromptGeneratorRunner(self.config)
+        try:
+            prompt_text = runner.run(
+                iteration=iteration,
+                requirements_text=requirements_text,
+                review_json=review_json,
+                on_stdout=_on_stdout,
+            )
+        except Exception as exc:
+            logger.exception("Prompt generator failed: %s", exc)
+            self._emit_terminal("session_end", "PROMPT_GENERATOR", _pg_session, exit_code=1)
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": f"Prompt generation failed: {exc}"})
+            return
+
+        # Persist prompt content to DB metadata
+        self.state_mgr.update_metadata({"prompt_content": prompt_text})
+        logger.info("Prompt generation complete — %d chars", len(prompt_text))
+        self._emit_terminal("session_end", "PROMPT_GENERATOR", _pg_session, exit_code=0)
+        self._emit("prompt_generation_complete", {"iteration": iteration, "char_count": len(prompt_text)})
+
+        self.state_mgr.transition_to(PipelineStatus.HITL_PROMPT_REVIEW)
+        self._emit("hitl_gate", {"gate": PipelineStatus.HITL_PROMPT_REVIEW.value})
+
+    def _step_code_generation(self) -> None:
+        """CODE_GENERATION → CODE_REVIEW.
+
+        Invokes the Code Generator (Codex CLI) then performs iteration-aware
+        git commit + push + PR operations via the configured VCS provider.
+        """
+        from ..code_generator.runner import CodeGeneratorRunner
+        from ..vcs.factory import make_vcs_client
+
+        state = self.state_mgr.state
+        iteration = state.current_iteration
+        logger.info("Code generation — iteration %d", iteration)
+        self._emit("code_generation_started", {"iteration": iteration})
+
+        # Resolve paths
+        prompt_path = getattr(self.config.project, "prompt_file_path", "")
+        if not prompt_path:
+            prompt_path = "data/prompts/latest.md"
+
+        # Provision the project working directory under ~/Desktop if not set
+        working_dir = getattr(self.config.project, "root_path", "") or ""
+        if not working_dir:
+            working_dir = self._provision_project_dir()
+        if not working_dir:
+            working_dir = "."
+
+        # Retrieve the selected CLI tool and previously-opened PR number.
+        # When the user chooses a tool at the HITL_PROMPT_REVIEW gate, override
+        # the config's cli_routing so the CodexWrapper uses it for this step.
+        cli_tool = state.metadata.get("selected_cli_tool")
+        if cli_tool:
+            self.config.codex.cli_routing["CODE_GENERATOR"] = cli_tool
+            logger.info("CLI tool overridden to '%s' for code generation step", cli_tool)
+
+        pr_number: int | None = None
+        pr_raw = state.metadata.get("pr_number")
+        if pr_raw is not None:
+            try:
+                pr_number = int(pr_raw)
+            except (TypeError, ValueError):
+                pass
+
+        import uuid as _uuid
+        _cg_session = f"cg-{iteration}-{_uuid.uuid4().hex[:8]}"
+        _cg_model = self.config.codex.model_routing.get("CODE_GENERATOR") or self.config.codex.default_model or ""
+        _cg_tool = cli_tool or self.config.codex.cli_routing.get("CODE_GENERATOR", "codex")
+        self._emit_terminal("session_start", "CODE_GENERATOR", _cg_session,
+                            iteration=iteration, module_id="",
+                            model=_cg_model, tool=_cg_tool)
+
+        def _on_stdout(line: str) -> None:
+            self._emit("codex_stdout", {"line": line})
+            self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                line=line, stream="stdout",
+                                iteration=iteration, module_id="")
+
+        def _on_stderr(line: str) -> None:
+            self._emit("codex_stderr", {"line": line})
+            self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                line=line, stream="stderr",
+                                iteration=iteration, module_id="")
+
+        runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
+        try:
+            gen_result = runner.run(
+                prompt_path=prompt_path,
+                working_dir=working_dir,
+                iteration=iteration,
+                pr_number=pr_number,
+                on_stdout=_on_stdout,
+                on_stderr=_on_stderr,
+            )
+        except Exception as exc:
+            logger.exception("Code generator raised: %s", exc)
+            self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=1)
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": f"Code generation failed: {exc}"})
+            return
+
+        # Persist PR metadata for subsequent iterations
+        metadata_update: dict[str, Any] = {
+            "completion_status": gen_result.completion.status.value,
+        }
+        if cli_tool:
+            metadata_update["cli_tool_used"] = cli_tool
+        if gen_result.pr_number is not None:
+            metadata_update["pr_number"] = gen_result.pr_number
+            metadata_update["pr_url"] = gen_result.pr_url
+        if gen_result.git_errors:
+            metadata_update["git_errors"] = gen_result.git_errors
+        self.state_mgr.update_metadata(metadata_update)
+
+        # Persist cli_tool_used into the iterations table row for this iteration
+        if cli_tool:
+            try:
+                self.db.conn.execute(
+                    "UPDATE iterations SET cli_tool_used = ? WHERE iteration_number = ?",
+                    (cli_tool, iteration),
+                )
+                self.db.conn.commit()
+            except Exception:
+                logger.debug("Could not update iterations.cli_tool_used", exc_info=True)
+
+        # Persist prompt content and tool used to the iteration row
+        self._upsert_iteration(
+            iteration,
+            prompt_content=self.state_mgr.state.metadata.get("prompt_content", ""),
+            cli_tool_used=cli_tool or self.config.codex.cli_routing.get("CODE_GENERATOR", ""),
+        )
+
+        # Emit git errors visibly to the terminal
+        if gen_result.git_errors:
+            for git_err in gen_result.git_errors:
+                self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                    line=f"[git] {git_err}",
+                                    stream="stderr", iteration=iteration, module_id="")
+
+        self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session,
+                            exit_code=0 if gen_result.completion.status.value != "failed" else 1)
+
+        if gen_result.completion.status.value == "failed":
+            logger.warning("Code generation failed — transitioning to FAILED")
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": gen_result.completion.reason})
+            return
+
+        self._emit("code_generation_complete", {
+            "iteration": iteration,
+            "pr_number": gen_result.pr_number,
+            "pr_url": gen_result.pr_url,
+            "retried": gen_result.retried,
+        })
+        self.state_mgr.transition_to(PipelineStatus.CODE_REVIEW)
+        self._emit("state_changed")
+
+    def _step_code_review(self) -> None:
+        """CODE_REVIEW → HITL_REVIEW_DECISION (or PIPELINE_COMPLETE if accepted).
+
+        Invokes the Code Reviewer (OpenAI API via PR diff) and posts GitHub PR
+        comments. Transitions to HITL_REVIEW_DECISION for user approval, or
+        directly to PIPELINE_COMPLETE if the reviewer accepted and merged.
+        """
+        from ..code_reviewer.runner import CodeReviewerRunner
+        from ..vcs.factory import make_vcs_client
+        import json as _json
+
+        state = self.state_mgr.state
+        iteration = state.current_iteration
+        logger.info("Code review — iteration %d", iteration)
+        self._emit("code_review_started", {"iteration": iteration})
+
+        # Retrieve pr_number stored by _step_code_generation
+        pr_number: Optional[int] = None
+        pr_raw = state.metadata.get("pr_number")
+        if pr_raw is not None:
+            try:
+                pr_number = int(pr_raw)
+            except (TypeError, ValueError):
+                pass
+
+        feature_branch = self.config.project.feature_branch or "dev"
+
+        # Fallback 1: discover open PR via VCS API
+        if pr_number is None:
+            logger.info("PR number not in metadata — attempting discovery via VCS API")
+            try:
+                vcs = make_vcs_client(self.config)
+                if vcs is not None:
+                    discovered = vcs.find_open_pr(feature_branch)
+                    if discovered is not None:
+                        pr_number = discovered
+                        self.state_mgr.update_metadata({"pr_number": pr_number})
+                        logger.info("Discovered PR #%d for branch %s", pr_number, feature_branch)
+            except Exception:
+                logger.debug("PR discovery failed", exc_info=True)
+
+        # Fallback 2: create a new PR from the feature branch
+        if pr_number is None:
+            logger.info("PR discovery found nothing — attempting to create PR for review")
+            try:
+                vcs = make_vcs_client(self.config)
+                if vcs is not None:
+                    pr_title = f"[Agent OS] Iteration {iteration} — implementation"
+                    pr_body = (
+                        f"Automated pull request opened by Agent OS (code review fallback).\n\n"
+                        f"**Iteration:** {iteration}\n"
+                    )
+                    pr_result = vcs.create_pr(
+                        title=pr_title,
+                        head=feature_branch,
+                        base="main",
+                        body=pr_body,
+                    )
+                    if pr_result.success and pr_result.data:
+                        pr_number = pr_result.data.get("number")
+                        self.state_mgr.update_metadata({"pr_number": pr_number})
+                        logger.info("Created PR #%d as review fallback", pr_number)
+                    else:
+                        logger.warning("Fallback PR creation failed: %s", pr_result.error)
+            except Exception:
+                logger.debug("Fallback PR creation raised", exc_info=True)
+
+        # No PR available — skip automated review, go straight to HITL gate
+        if pr_number is None:
+            logger.warning(
+                "No PR available for automated review — proceeding to HITL_REVIEW_DECISION"
+            )
+            self.state_mgr.update_metadata({
+                "review_overall_status": "needs_work",
+                "review_overall_score": "0",
+                "review_json_content": "{\"overall_status\": \"needs_work\", "
+                    "\"overall_score\": 0, "
+                    "\"summary\": \"Automated review skipped — no pull request available.\"}",
+            })
+            self._emit("code_review_complete", {
+                "iteration": iteration,
+                "overall_status": "needs_work",
+                "overall_score": 0,
+                "comments_posted": 0,
+                "pr_merged": False,
+                "skipped": True,
+            })
+            self.state_mgr.transition_to(PipelineStatus.HITL_REVIEW_DECISION)
+            self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
+            return
+
+        import uuid as _uuid
+        _cr_session = f"cr-{iteration}-{_uuid.uuid4().hex[:8]}"
+        _cr_model = self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
+        self._emit_terminal("session_start", "CODE_REVIEWER", _cr_session,
+                            iteration=iteration, module_id="", model=_cr_model)
+
+        def _on_stdout(line: str) -> None:
+            self._emit("reviewer_stdout", {"line": line})
+            self._emit_terminal("line", "CODE_REVIEWER", _cr_session,
+                                line=line, stream="stdout",
+                                iteration=iteration, module_id="")
+
+        runner = CodeReviewerRunner(self.config, vcs_client=make_vcs_client(self.config))
+        try:
+            run_result = runner.run(
+                pr_number=pr_number,
+                iteration=iteration,
+                feature_branch=feature_branch,
+                on_stdout=_on_stdout,
+            )
+        except Exception as exc:
+            logger.exception("Code reviewer raised: %s", exc)
+            self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=1)
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": f"Code review failed: {exc}"})
+            return
+
+        review = run_result.review
+
+        # Persist review data to metadata for prompt generator + HITL display
+        self.state_mgr.update_metadata({
+            "review_json_content": review.model_dump_json(),
+            "review_json_path": run_result.review_json_path,
+            "review_overall_status": review.overall_status,
+            "review_overall_score": str(review.overall_score),
+            "pr_merged": str(run_result.pr_merged),
+            "branch_deleted": str(run_result.branch_deleted),
+        })
+
+        # Persist review data to the iteration row
+        self._upsert_iteration(
+            iteration,
+            review_json_content=review.model_dump_json(),
+            review_json_path=str(run_result.review_json_path),
+        )
+
+        self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=0)
+        self._emit("code_review_complete", {
+            "iteration": iteration,
+            "overall_status": review.overall_status,
+            "overall_score": review.overall_score,
+            "comments_posted": run_result.comments_posted,
+            "pr_merged": run_result.pr_merged,
+        })
+
+        # Accepted + merged → skip HITL, complete pipeline
+        if review.overall_status == "accepted" and run_result.pr_merged:
+            logger.info("Review accepted and PR merged — transitioning to PIPELINE_COMPLETE")
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {"reason": "accepted_by_reviewer", "iteration": iteration})
+            return
+
+        self.state_mgr.transition_to(PipelineStatus.HITL_REVIEW_DECISION)
+        self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
+
+    # ── HITL gate approvals ───────────────────────────────────────────────────
+
+    def _auto_approve(self, status: PipelineStatus) -> None:
+        """Auto-approve HITL gate (used when auto_approve_hitl=True)."""
+        if status == PipelineStatus.HITL_PROMPT_REVIEW:
+            self.state_mgr.transition_to(PipelineStatus.CODE_GENERATION)
+        elif status == PipelineStatus.HITL_REVIEW_DECISION:
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+        self._emit("state_changed")
+
+    def approve_prompt(
+        self,
+        prompt_content: Optional[str] = None,
+        cli_tool: Optional[str] = None,
+    ) -> bool:
+        """HITL checkpoint 1 — user approved the generated prompt.
+
+        Args:
+            prompt_content: Optional edited prompt text to persist.
+            cli_tool: CLI tool name to use for code generation.
+
+        Returns True if gate was approved, False if not at the expected gate.
+        """
+        if self.state_mgr.current_status != PipelineStatus.HITL_PROMPT_REVIEW:
+            logger.warning("approve_prompt() called but not at HITL_PROMPT_REVIEW")
+            return False
+
+        metadata: dict[str, Any] = {}
+        if cli_tool:
+            metadata["selected_cli_tool"] = cli_tool
+        if prompt_content is not None:
+            metadata["edited_prompt"] = prompt_content
+            # Persist to the configured prompt file path
+            prompt_path = getattr(self.config.project, "prompt_file_path", "")
+            if prompt_path:
+                try:
+                    Path(prompt_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(prompt_path).write_text(prompt_content, encoding="utf-8")
+                    logger.info("Edited prompt saved to: %s", prompt_path)
+                except Exception:
+                    logger.warning("Could not save prompt to file", exc_info=True)
+
+        if metadata:
+            self.state_mgr.update_metadata(metadata)
+
+        self.state_mgr.transition_to(PipelineStatus.CODE_GENERATION)
+        self._emit("state_changed", {"approved": "prompt"})
+
+        # Resume the pipeline loop in a background thread
+        self._resume_in_thread()
         return True
 
-    def _auto_approve_gate(self, status: PipelineStatus) -> None:
-        # Merge PR when approving HITL_5 (PR review gate)
-        if status == PipelineStatus.HITL_5_PR_REVIEW:
-            self._merge_module_pr()
-        next_state = _GATE_TRANSITIONS.get(status)
-        if next_state:
-            self.state_mgr.transition_to(next_state)
+    def approve_review(self) -> bool:
+        """HITL checkpoint 2 — user approved the code review JSON.
 
-    def _merge_module_pr(self) -> None:
-        """Merge the module's PR on HITL_5 approval (if one exists)."""
+        If the review was already accepted (reviewer merged the PR), transitions
+        directly to PIPELINE_COMPLETE. Otherwise loops back to PROMPT_GENERATION
+        for the next iteration, unless max_iterations is reached.
+        """
+        if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
+            logger.warning("approve_review() called but not at HITL_REVIEW_DECISION")
+            return False
+
         state = self.state_mgr.state
-        pr_number = state.metadata.get("pr_number")
-        if not pr_number:
-            return
 
-        from .handlers import _create_github_client
+        # If reviewer already accepted, just confirm completion
+        review_status = state.metadata.get("review_overall_status", "")
+        if review_status == "accepted":
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {"reason": "user_approved_accepted_review"})
+            return True
 
-        client = _create_github_client(self.ctx)
-        if not client:
-            return
-
-        module_id = state.current_module_id or "unknown"
-        result = client.merge_pr(
-            int(pr_number),
-            merge_method="squash",
-            commit_message=f"feat({module_id}): merge accepted module",
-        )
-        if result.success:
-            console.print(f"  [dim]PR #{pr_number} merged[/dim]")
-            from ..comms.messages import PipelineEventMessage
-
-            self.bus.publish(PipelineEventMessage(
-                sender="git_ops",
-                module_id=module_id,
-                payload={
-                    "event": "pr_merged",
-                    "pr_number": pr_number,
-                },
-            ))
+        max_iter = self.config.orchestrator.max_iterations
+        if state.current_iteration >= max_iter:
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {"reason": "max_iterations_reached"})
         else:
-            console.print(f"  [yellow]PR merge failed: {result.error[:200]}[/yellow]")
+            self.state_mgr.transition_to(
+                PipelineStatus.PROMPT_GENERATION,
+                iteration=state.current_iteration + 1,
+            )
+            self._emit("state_changed", {"approved": "review", "next_iteration": state.current_iteration + 1})
+            self._resume_in_thread()
 
-    def _handle_error(self, exc: Exception, status: PipelineStatus) -> None:
-        """Classify the error, attempt recovery, or transition to FAILED."""
-        category = classify_error(exc, context=status.value)
-        action = get_recovery_action(category)
-
-        logger.exception(
-            "Error in handler for state %s [%s → %s]",
-            status.value, category.value, action.value,
-        )
-        publish_error(self.bus, category, action, detail=str(exc))
-
-        state = self.state_mgr.state
-        module_id = state.current_module_id
-        iteration = state.current_iteration or 1
-
-        if action == RecoveryAction.ROLLBACK and module_id and self._rollback:
-            console.print(f"[yellow]Rolling back {module_id} to last checkpoint...[/yellow]")
-            self._rollback.rollback_to_latest_checkpoint(module_id)
-
-        self.state_mgr.transition_to(PipelineStatus.FAILED)
-
-    def _init_rollback(self) -> None:
-        """Lazily initialize the rollback manager when git is enabled."""
-        if self._rollback is not None:
-            return
-        if not self.config.git.enabled:
-            return
-        from ..git_ops.manager import GitOpsManager
-
-        working_dir = self.config.project.root_path or "."
-        git = GitOpsManager(working_dir=working_dir, remote=self.config.git.remote)
-        if git.is_repo():
-            self._rollback = RollbackManager(git)
-
-    # --- Public API (for frontend/CLI) ---
-
-    def approve_gate(self, gate: Optional[PipelineStatus] = None) -> bool:
-        current = self.state_mgr.current_status
-        if gate and current != gate:
-            logger.warning("Cannot approve gate %s — current state is %s", gate, current)
-            return False
-        if not self.state_mgr.is_hitl_gate():
-            logger.warning("Not at a HITL gate (current: %s)", current)
-            return False
-        self._auto_approve_gate(current)
         return True
 
-    def get_status_table(self) -> Table:
-        state = self.state_mgr.state
-        modules = self.db.get_all_modules()
+    def pause(self) -> bool:
+        """Request the pipeline to pause after the current step completes."""
+        self._pause_event.set()
+        logger.info("Pause requested")
+        return True
 
-        table = Table(title="Agent OS — Pipeline Status")
-        table.add_column("Field", style="cyan")
-        table.add_column("Value", style="white")
+    def reset(self) -> None:
+        """Reset the pipeline to IDLE, discarding all in-progress state.
 
-        table.add_row("Pipeline Status", state.pipeline_status.value)
-        table.add_row("Current Module", state.current_module_id or "—")
-        table.add_row("Current Iteration", str(state.current_iteration))
-        table.add_row("Total Modules", str(len(modules)))
+        Clears iteration history from the database so the Projects, Code
+        Insights, and Git History pages reflect a clean slate for the next run.
+        Also clears project name and root_path so a fresh folder is provisioned
+        on the next run based on updated requirements.
+        """
+        self._stop_event.set()
+        self._pause_event.set()
+        # Wipe iteration rows + reset pipeline_state in one transaction
+        self.db.clear_run_data()
+        # Clear project name + root_path so next run derives them fresh
+        self.config.project.name = ""
+        self.config.project.root_path = ""
+        # Re-initialize StateManager from the now-clean DB
+        self.state_mgr.reset()
+        logger.info("Pipeline reset to IDLE — iteration history cleared")
+        self._emit("reset")
 
-        for m in modules:
-            style = {
-                ModuleStatus.COMPLETED: "green",
-                ModuleStatus.IN_PROGRESS: "yellow",
-                ModuleStatus.FAILED: "red",
-                ModuleStatus.PENDING: "dim",
-            }.get(m.status, "white")
-            table.add_row(f"  Module {m.id}", f"[{style}]{m.status.value}[/{style}]")
+    def _provision_project_dir(self) -> str:
+        """Create (if needed) and return a project folder under ~/Desktop.
 
-        return table
+        The folder name is derived from ``config.project.name`` when set, or
+        falls back to the first epic title from the requirements file, or
+        finally to ``agent-os-project``.  Collision-safe: appends ``-2``,
+        ``-3``, … if the preferred name is already taken.
+
+        The resolved path is stored back in ``config.project.root_path`` so
+        subsequent iterations reuse the same folder.
+        """
+        import re
+
+        # Determine a slug for the folder name
+        raw_name = (self.config.project.name or "").strip()
+        if not raw_name:
+            # Try to extract from requirements file
+            try:
+                import yaml as _yaml
+                req_path = getattr(self.config.requirements, "path", "")
+                if req_path:
+                    raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
+                    epics = (raw or {}).get("epics", [])
+                    if epics:
+                        raw_name = epics[0].get("title", "").strip()
+            except Exception:
+                pass
+        if not raw_name:
+            raw_name = "agent-os-project"
+
+        # Sanitise to a filesystem-safe slug
+        slug = re.sub(r"[^a-zA-Z0-9_\-]", "-", raw_name).strip("-")
+        slug = re.sub(r"-{2,}", "-", slug)[:60] or "agent-os-project"
+
+        desktop = Path.home() / "Desktop"
+        desktop.mkdir(parents=True, exist_ok=True)
+
+        # Collision-safe: find an unused name
+        candidate = desktop / slug
+        counter = 2
+        while candidate.exists():
+            candidate = desktop / f"{slug}-{counter}"
+            counter += 1
+
+        candidate.mkdir(parents=True, exist_ok=True)
+        # Ensure owner has full read/write/execute on the directory so Codex
+        # (and any spawned process) can create files inside it.
+        import stat as _stat
+        candidate.chmod(
+            _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH
+        )
+        logger.info("Project directory provisioned: %s", candidate)
+
+        # Persist so subsequent steps (code review, iteration 2+, …) reuse it
+        self.config.project.root_path = str(candidate)
+        if not self.config.project.name:
+            self.config.project.name = slug
+        return str(candidate)
+
+    def _close_ado_work_items(self) -> None:
+        """Transition ADO work items from Active to Closed on pipeline completion."""
+        meta = self.state_mgr.state.metadata
+        work_item_ids = meta.get("ado_work_item_ids", [])
+        ado_org = meta.get("ado_org", "")
+        ado_token = meta.get("ado_token", "")
+        if not work_item_ids or not ado_org or not ado_token:
+            return
+        try:
+            import asyncio
+            import base64
+            import httpx
+            from urllib.parse import quote
+
+            token_b64 = base64.b64encode(f":{ado_token}".encode()).decode()
+            headers = {
+                "Authorization": f"Basic {token_b64}",
+                "Content-Type": "application/json-patch+json",
+            }
+            org_enc = quote(ado_org, safe="")
+            patch_body = [{"op": "replace", "path": "/fields/System.State", "value": "Closed"}]
+
+            async def _update_all() -> None:
+                async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=False) as client:
+                    for wi_id in work_item_ids:
+                        try:
+                            await client.patch(
+                                f"https://dev.azure.com/{org_enc}/_apis/wit/workitems/{wi_id}?api-version=7.1",
+                                json=patch_body,
+                            )
+                        except Exception:
+                            logger.debug("Failed to close ADO work item %d", wi_id, exc_info=True)
+
+            # Run in existing event loop or create one
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_update_all())
+            except RuntimeError:
+                asyncio.run(_update_all())
+
+            logger.info("Queued ADO work item state update to Closed for %d items", len(work_item_ids))
+        except Exception:
+            logger.warning("Failed to close ADO work items", exc_info=True)
+
+    def approve_gate(self, gate: Optional[str] = None) -> bool:
+        """Generic gate approval — kept for backward compat with old pipeline routes."""
+        status = self.state_mgr.current_status
+        if gate:
+            try:
+                expected = PipelineStatus(gate)
+                if status != expected:
+                    return False
+            except ValueError:
+                return False
+        if status == PipelineStatus.HITL_PROMPT_REVIEW:
+            return self.approve_prompt()
+        if status == PipelineStatus.HITL_REVIEW_DECISION:
+            return self.approve_review()
+        return False
+
+    def _resume_in_thread(self) -> None:
+        """Re-start the run loop in a daemon thread (called after HITL approval)."""
+        self._stop_event.clear()
+        self._pause_event.clear()
+        t = threading.Thread(target=self._loop, daemon=True, name="orchestrator-loop")
+        t.start()
+
+    # ── Status helpers ────────────────────────────────────────────────────────
+
+    @property
+    def current_iteration(self) -> int:
+        return self.state_mgr.state.current_iteration
+
+    def get_iterations(self) -> list[dict[str, Any]]:
+        """Return all iteration records from the DB for the API /iterations endpoint."""
+        rows = self.db.conn.execute(
+            """SELECT id, iteration_number, status, prompt_path, prompt_content,
+                      review_json_path, review_json_content, token_usage,
+                      cli_tool_used, ci_result, ci_output, started_at, completed_at
+               FROM iterations ORDER BY iteration_number ASC"""
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_current_prompt(self) -> str:
+        """Return content of the current prompt file, or empty string."""
+        prompt_path = getattr(self.config.project, "prompt_file_path", "")
+        if prompt_path:
+            p = Path(prompt_path)
+            if p.exists():
+                return p.read_text(encoding="utf-8")
+        # Fallback: last iteration's prompt_content
+        row = self.db.conn.execute(
+            "SELECT prompt_content FROM iterations ORDER BY iteration_number DESC LIMIT 1"
+        ).fetchone()
+        return row["prompt_content"] if row else ""
+
+    def get_current_review(self) -> str:
+        """Return content of the latest review JSON, or empty string."""
+        row = self.db.conn.execute(
+            "SELECT review_json_content FROM iterations ORDER BY iteration_number DESC LIMIT 1"
+        ).fetchone()
+        return row["review_json_content"] if row else ""
 
     def shutdown(self) -> None:
+        """Cleanup — stop the loop and close the DB connection."""
+        self._stop_event.set()
         self.db.close()

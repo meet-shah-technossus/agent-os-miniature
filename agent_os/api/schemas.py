@@ -8,41 +8,53 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
-class PipelineStatusResponse(BaseModel):
+class OrchestratorStatusResponse(BaseModel):
     pipeline_status: str
-    current_module_id: Optional[str] = None
     current_iteration: int = 0
     last_checkpoint: datetime
     metadata: dict[str, Any] = {}
     is_hitl_gate: bool = False
-    total_modules: int = 0
 
 
-class ModuleResponse(BaseModel):
-    id: str
-    name: str
-    feature_name: str
-    status: str
-    dependency_ids: list[str] = []
-    version: int = 1
-    execution_order: int = 0
-    created_at: datetime
-    updated_at: datetime
-    pr_number: Optional[int] = None
-    pr_url: str = ""
+# Backward-compat alias
+PipelineStatusResponse = OrchestratorStatusResponse
 
 
 class IterationResponse(BaseModel):
     id: Optional[int] = None
-    module_id: str
     iteration_number: int
     status: str
     prompt_path: str = ""
+    prompt_content: str = ""
     review_json_path: str = ""
-    summary_path: str = ""
+    review_json_content: str = ""
     token_usage: int = 0
+    cli_tool_used: str = ""
+    ci_result: str = ""
+    ci_output: str = ""
     started_at: datetime
     completed_at: Optional[datetime] = None
+
+
+class IterationListResponse(BaseModel):
+    iterations: list[IterationResponse] = []
+
+
+class CurrentPromptResponse(BaseModel):
+    iteration: int = 0
+    content: str = ""
+    path: str = ""
+
+
+class CurrentReviewResponse(BaseModel):
+    iteration: int = 0
+    content: str = ""
+    path: str = ""
+
+
+class ApprovePromptRequest(BaseModel):
+    prompt_content: Optional[str] = None
+    cli_tool: Optional[str] = None
 
 
 class RequirementResponse(BaseModel):
@@ -74,14 +86,10 @@ class BusMessageResponse(BaseModel):
 
 
 class MetricsResponse(BaseModel):
-    total_modules: int = 0
-    completed_modules: int = 0
-    failed_modules: int = 0
     total_iterations: int = 0
     total_token_usage: int = 0
     pipeline_status: str = "idle"
     total_cost: float = 0.0
-    budget_per_module: int = 0
 
 
 class ModuleBudgetResponse(BaseModel):
@@ -112,12 +120,74 @@ class ProjectSettingsResponse(BaseModel):
     name: str = ""
     root_path: str = ""
     language: str = "python"
+    repo_name: str = ""
+    feature_branch: str = "dev"
+    prompt_file_path: str = ""
 
 
 class PipelineSettingsResponse(BaseModel):
-    max_iterations_per_module: int = 5
+    max_iterations: int = 5
     convergence_rule: str = "no_high_severity"
     auto_approve_hitl: bool = False
+
+
+class CliRoutingSettingsResponse(BaseModel):
+    """Per-agent CLI tool selection (e.g. codex, aider, claude)."""
+    PROMPT_GENERATOR: str = "codex"
+    CODE_GENERATOR: str = "codex"
+    CODE_REVIEWER: str = "codex"
+
+
+class RequirementsSettingsResponse(BaseModel):
+    """Requirements ingestion configuration."""
+    path: str = "requirements.yaml"
+    source: str = "device"          # "device" | "jira" | "asana" | "ado"
+    # JIRA
+    jira_url: str = ""
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_project_key: str = ""
+    # Asana
+    asana_token: str = ""
+    asana_project_id: str = ""
+    # Azure DevOps
+    ado_org: str = ""
+    ado_token: str = ""
+    ado_project: str = ""
+
+
+class GitHubReviewSettingsResponse(BaseModel):
+    """GitHub Review mode configuration (Phase 2 Mode C)."""
+    source_repo_url: str = ""
+    requirements_path: str = ""
+    fork_repo_name: str = ""
+    branch_name: str = "agent-os-fixes"
+
+
+class AIToolCredentialResponse(BaseModel):
+    """Serialisable form of a single AI tool's auth config (API key masked)."""
+    enabled: bool = False
+    auth_method: str = ""
+    api_key: str = ""        # masked on GET ("***" when set)
+    email: str = ""
+    account_id: str = ""
+    endpoint: str = ""
+    extra: dict = {}
+
+
+class AIToolsSettingsResponse(BaseModel):
+    codex: AIToolCredentialResponse = AIToolCredentialResponse()
+    claude: AIToolCredentialResponse = AIToolCredentialResponse()
+    gemini: AIToolCredentialResponse = AIToolCredentialResponse()
+    qwen: AIToolCredentialResponse = AIToolCredentialResponse()
+    deepseek: AIToolCredentialResponse = AIToolCredentialResponse()
+    cursor: AIToolCredentialResponse = AIToolCredentialResponse()
+    copilot: AIToolCredentialResponse = AIToolCredentialResponse()
+
+
+class VCSSettingsResponse(BaseModel):
+    """VCS target provider — independent of requirements source."""
+    provider: str = "github"  # "github" | "ado"
 
 
 class SettingsResponse(BaseModel):
@@ -125,6 +195,12 @@ class SettingsResponse(BaseModel):
     github: GitHubSettingsResponse = GitHubSettingsResponse()
     project: ProjectSettingsResponse = ProjectSettingsResponse()
     pipeline: PipelineSettingsResponse = PipelineSettingsResponse()
+    cli_routing: CliRoutingSettingsResponse = CliRoutingSettingsResponse()
+    requirements: RequirementsSettingsResponse = RequirementsSettingsResponse()
+    github_review: GitHubReviewSettingsResponse = GitHubReviewSettingsResponse()
+    pipeline_mode: str = "standard"
+    ai_tools: AIToolsSettingsResponse = AIToolsSettingsResponse()
+    vcs: VCSSettingsResponse = VCSSettingsResponse()
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -132,6 +208,12 @@ class SettingsUpdateRequest(BaseModel):
     github: Optional[GitHubSettingsResponse] = None
     project: Optional[ProjectSettingsResponse] = None
     pipeline: Optional[PipelineSettingsResponse] = None
+    cli_routing: Optional[CliRoutingSettingsResponse] = None
+    requirements: Optional[RequirementsSettingsResponse] = None
+    github_review: Optional[GitHubReviewSettingsResponse] = None
+    pipeline_mode: Optional[str] = None
+    ai_tools: Optional[AIToolsSettingsResponse] = None
+    vcs: Optional[VCSSettingsResponse] = None
 
 
 class TestGitHubResponse(BaseModel):

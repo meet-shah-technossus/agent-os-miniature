@@ -157,7 +157,7 @@ export default function TerminalPanel({ state, onExpand, compact = false }: Prop
 
   return (
     <div
-      className={`flex flex-col rounded-xl border bg-[#0a0e1a] overflow-hidden transition-colors ${
+      className={`flex flex-col h-full rounded-xl border bg-[#0a0e1a] overflow-hidden transition-colors ${
         isRunning
           ? 'border-green-500/50 shadow-[0_0_16px_rgba(34,197,94,0.08)]'
           : status === 'error'

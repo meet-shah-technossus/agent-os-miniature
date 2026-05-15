@@ -2,46 +2,25 @@
 
 export interface PipelineStatus {
   pipeline_status: string;
-  current_module_id: string | null;
   current_iteration: number;
   last_checkpoint: string;
   metadata: Record<string, unknown>;
   is_hitl_gate: boolean;
-  total_modules: number;
-}
-
-export interface Module {
-  id: string;
-  name: string;
-  feature_name: string;
-  status: string;
-  dependency_ids: string[];
-  version: number;
-  execution_order: number;
-  created_at: string;
-  updated_at: string;
-  pr_number?: number | null;
-  pr_url?: string;
-}
-
-/** Full blueprint for a module (read from mod-N.json) */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type ModuleDefinition = Record<string, any>;
-
-export interface ModuleDefinitionsPayload {
-  modules: ModuleDefinition[];
-  project_folder_structure: string[];
 }
 
 export interface Iteration {
   id: number | null;
-  module_id: string;
   iteration_number: number;
   status: string;
   prompt_path: string;
+  prompt_content: string;
   review_json_path: string;
+  review_json_content: string;
   summary_path: string;
   token_usage: number;
+  cli_tool_used: string;
+  ci_result: string;
+  ci_output: string;
   started_at: string;
   completed_at: string | null;
 }
@@ -56,14 +35,12 @@ export interface Requirement {
 }
 
 export interface CurrentPrompt {
-  module_id: string;
   iteration: number;
   content: string;
   path: string;
 }
 
 export interface CurrentReview {
-  module_id: string;
   iteration: number;
   content: string;
   path: string;
@@ -73,19 +50,25 @@ export interface BusMessage {
   channel: string;
   sender: string;
   timestamp: string;
-  module_id: string | null;
-  iteration: number;
-  correlation_id: string;
-  payload: Record<string, unknown>;
+  // Orchestrator pipeline events use 'event' for the event type name
+  event?: string;
+  // Pipeline state snapshot included on every orchestrator event
+  pipeline_status?: string;
+  current_iteration?: number;
+  // Legacy bus fields (still used by some routes)
+  module_id?: string | null;
+  iteration?: number;
+  correlation_id?: string;
+  payload?: Record<string, unknown>;
+  // Allow any additional fields from the backend
+  [key: string]: unknown;
 }
 
 export interface Metrics {
-  total_modules: number;
-  completed_modules: number;
-  failed_modules: number;
   total_iterations: number;
   total_token_usage: number;
   pipeline_status: string;
+  total_cost?: number;
 }
 
 export interface ApproveGateResponse {
@@ -109,12 +92,66 @@ export interface ProjectSettings {
   name: string;
   root_path: string;
   language: string;
+  repo_name: string;
+  feature_branch: string;
+  prompt_file_path: string;
 }
 
 export interface PipelineSettings {
-  max_iterations_per_module: number;
+  max_iterations: number;
   convergence_rule: string;
   auto_approve_hitl: boolean;
+}
+
+export interface CliRoutingSettings {
+  PROMPT_GENERATOR: string;
+  CODE_GENERATOR: string;
+  CODE_REVIEWER: string;
+}
+
+export interface GitHubReviewSettings {
+  source_repo_url: string;
+  requirements_path: string;
+  fork_repo_name: string;
+  branch_name: string;
+}
+
+export interface RequirementsSettings {
+  path: string;
+  source: 'device' | 'jira' | 'asana' | 'ado';
+  jira_url?: string;
+  jira_email?: string;
+  jira_api_token?: string;
+  jira_project_key?: string;
+  asana_token?: string;
+  asana_project_id?: string;
+  ado_org?: string;
+  ado_token?: string;
+  ado_project?: string;
+}
+
+export interface AIToolCredential {
+  enabled: boolean;
+  auth_method: string;
+  api_key?: string;
+  email?: string;
+  account_id?: string;
+  endpoint?: string;
+  extra?: Record<string, unknown>;
+}
+
+export interface AIToolsSettings {
+  codex: AIToolCredential;
+  claude: AIToolCredential;
+  gemini: AIToolCredential;
+  qwen: AIToolCredential;
+  deepseek: AIToolCredential;
+  cursor: AIToolCredential;
+  copilot: AIToolCredential;
+}
+
+export interface VCSSettings {
+  provider: 'github' | 'ado';
 }
 
 export interface Settings {
@@ -122,6 +159,12 @@ export interface Settings {
   github: GitHubSettings;
   project: ProjectSettings;
   pipeline: PipelineSettings;
+  cli_routing: CliRoutingSettings;
+  requirements: RequirementsSettings;
+  github_review: GitHubReviewSettings;
+  pipeline_mode: string;
+  ai_tools?: AIToolsSettings;
+  vcs?: VCSSettings;
 }
 
 export interface TestGitHubResponse {
@@ -141,12 +184,19 @@ export interface ReviewEntry {
   content: Record<string, any>;
 }
 
-export interface ModuleDetail {
-  module: Module;
-  definition: ModuleDefinition | null;
-  prompts: PromptEntry[];
-  reviews: ReviewEntry[];
-  iterations: Iteration[];
+// ---------------------------------------------------------------------------
+// Module (pipeline work unit)
+// ---------------------------------------------------------------------------
+
+export interface Module {
+  id: string;
+  name: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  execution_order: number;
+  feature_name?: string;
+  dependency_ids: string[];
+  pr_url?: string;
+  pr_number?: number;
 }
 
 export interface FileNode {
@@ -200,13 +250,38 @@ export type AgentFile = 'soul' | 'skills' | 'tools' | 'ceiling' | 'brain';
 export const AGENT_FILES: AgentFile[] = ['soul', 'skills', 'tools', 'ceiling', 'brain'];
 
 export const PIPELINE_POSTS = [
-  'MODULE_MAKER',
   'PROMPT_GENERATOR',
   'CODE_GENERATOR',
   'CODE_REVIEWER',
 ] as const;
 
 export type PipelinePost = (typeof PIPELINE_POSTS)[number];
+
+// ---------------------------------------------------------------------------
+// CLI Tool Management
+// ---------------------------------------------------------------------------
+
+export interface CliToolStatus {
+  key: string;
+  display_name: string;
+  installed: boolean;
+  install_cmd: string;
+  docs_url: string;
+  authenticated: boolean;
+  auth_user: string;
+  auth_method: string;
+  env_configured: boolean;
+  available: boolean;
+  error: string;
+}
+
+export interface CliToolActionResponse {
+  success: boolean;
+  message: string;
+  auth_user?: string;
+  requires_browser?: boolean;
+  browser_url?: string;
+}
 
 // ---------------------------------------------------------------------------
 // Terminal output (Phase 7)
@@ -218,7 +293,7 @@ export interface TerminalLine {
   /** Monotonically increasing ID used as React key. */
   id: number;
   timestamp: string;
-  eventType: 'line' | 'session_start' | 'session_end';
+  eventType: 'line' | 'token' | 'session_start' | 'session_end';
   text: string;
   stream: 'stdout' | 'stderr' | null;
   style: TerminalLineStyle;
@@ -245,4 +320,6 @@ export interface AgentTerminalState {
   lastExitCode: number | null;
   /** Total sessions processed since page load. */
   sessionCount: number;
+  /** The specific CLI tool running (e.g. 'codex', 'claude'). Only set for CODE_GENERATOR. */
+  activeTool: string | null;
 }

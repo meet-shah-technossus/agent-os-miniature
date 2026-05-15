@@ -7,6 +7,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+# Serialises schema initialisation across all threads to prevent
+# concurrent DDL/INSERT races that produce "database is locked" errors.
+_schema_init_lock = threading.Lock()
+# Tracks which DB paths have already been fully initialised.
+_initialised_db_paths: set[str] = set()
+
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS modules (
     id TEXT PRIMARY KEY,
@@ -23,19 +29,18 @@ CREATE TABLE IF NOT EXISTS modules (
 
 CREATE TABLE IF NOT EXISTS iterations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    module_id TEXT NOT NULL,
     iteration_number INTEGER NOT NULL,
     status TEXT DEFAULT 'in_progress',
     prompt_path TEXT DEFAULT '',
     prompt_content TEXT DEFAULT '',
     review_json_path TEXT DEFAULT '',
-    review_content TEXT DEFAULT '',
+    review_json_content TEXT DEFAULT '',
     summary_path TEXT DEFAULT '',
     token_usage INTEGER DEFAULT 0,
+    cli_tool_used TEXT DEFAULT '',
+    ci_result TEXT DEFAULT '',
     started_at TEXT NOT NULL,
-    completed_at TEXT,
-    FOREIGN KEY (module_id) REFERENCES modules(id),
-    UNIQUE(module_id, iteration_number)
+    completed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS requirements (
@@ -49,7 +54,6 @@ CREATE TABLE IF NOT EXISTS requirements (
 
 CREATE TABLE IF NOT EXISTS pipeline_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    current_module_id TEXT,
     current_iteration INTEGER DEFAULT 0,
     pipeline_status TEXT DEFAULT 'IDLE',
     last_checkpoint TEXT NOT NULL,
@@ -88,10 +92,12 @@ class Database:
 
     def _new_conn(self) -> sqlite3.Connection:
         """Create a new SQLite connection for the calling thread."""
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # Tell SQLite to retry busy/locked writes for up to 30 s before raising.
+        conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
     def connect(self) -> None:
@@ -115,17 +121,29 @@ class Database:
         return conn
 
     def _init_schema(self) -> None:
-        self.conn.executescript(_SCHEMA_SQL)
-        # Migrate existing DBs: add columns if missing
-        self._migrate_add_column("modules", "definition_json", "TEXT DEFAULT ''")
-        self._migrate_add_column("iterations", "prompt_content", "TEXT DEFAULT ''")
-        self._migrate_add_column("iterations", "review_content", "TEXT DEFAULT ''")
-        self.conn.execute(
-            """INSERT OR IGNORE INTO pipeline_state (id, current_module_id, current_iteration,
-               pipeline_status, last_checkpoint, metadata) VALUES (1, NULL, 0, 'IDLE', ?, '{}')""",
-            (datetime.utcnow().isoformat(),),
-        )
-        self.conn.commit()
+        path_key = str(self._db_path)
+        # Fast path: already initialised in a previous call from this process.
+        if path_key in _initialised_db_paths:
+            return
+        with _schema_init_lock:
+            # Double-checked: another thread may have finished while we waited.
+            if path_key in _initialised_db_paths:
+                return
+            self.conn.executescript(_SCHEMA_SQL)
+            # Migrate existing DBs: add columns if missing
+            self._migrate_add_column("modules", "definition_json", "TEXT DEFAULT ''")
+            self._migrate_add_column("iterations", "prompt_content", "TEXT DEFAULT ''")
+            self._migrate_add_column("iterations", "review_json_content", "TEXT DEFAULT ''")
+            self._migrate_add_column("iterations", "cli_tool_used", "TEXT DEFAULT ''")
+            self._migrate_add_column("iterations", "ci_result", "TEXT DEFAULT ''")
+            self._migrate_add_column("iterations", "ci_output", "TEXT DEFAULT ''")
+            self.conn.execute(
+                """INSERT OR IGNORE INTO pipeline_state (id, current_iteration,
+                   pipeline_status, last_checkpoint, metadata) VALUES (1, 0, 'IDLE', ?, '{}')""",
+                (datetime.utcnow().isoformat(),),
+            )
+            self.conn.commit()
+            _initialised_db_paths.add(path_key)
 
     def _migrate_add_column(self, table: str, column: str, col_type: str) -> None:
         """Add a column if it doesn't already exist (safe migration)."""
@@ -144,18 +162,20 @@ class Database:
         from .pipeline_repo import PipelineRepository
         PipelineRepository(self.conn).save_state(state)
 
-    def get_all_modules(self):
-        from .module_repo import ModuleRepository
-        return ModuleRepository(self.conn).get_all()
+    def clear_run_data(self) -> None:
+        """Delete all iteration rows and reset pipeline_state to IDLE.
 
-    def get_module(self, module_id: str):
-        from .module_repo import ModuleRepository
-        return ModuleRepository(self.conn).get(module_id)
+        Called by the orchestrator reset() so that Projects, Code Insights,
+        and Git History pages reflect a clean slate for the next run.
+        """
+        with self.conn:
+            self.conn.execute("DELETE FROM iterations")
+            self.conn.execute(
+                "UPDATE pipeline_state SET "
+                "current_iteration = 0, pipeline_status = 'IDLE', "
+                "last_checkpoint = ?, metadata = '{}' "
+                "WHERE id = 1",
+                (datetime.utcnow().isoformat(),),
+            )
 
-    def upsert_module(self, module):
-        from .module_repo import ModuleRepository
-        ModuleRepository(self.conn).upsert(module)
-
-    def update_module_status(self, module_id: str, status):
-        from .module_repo import ModuleRepository
-        ModuleRepository(self.conn).update_status(module_id, status)
+    # module_repo methods removed in Phase 1 (module_maker deleted)

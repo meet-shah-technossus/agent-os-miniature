@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 import subprocess
 from typing import Callable, Optional
@@ -26,6 +27,60 @@ def stream_pipe(
                     pass  # Don't let callback errors break streaming
     except (ValueError, OSError):
         pass  # Pipe closed
+
+
+def stream_pty(
+    master_fd: int,
+    line_buffer: list[str],
+    callback: Optional[Callable[[str], None]],
+) -> None:
+    """Read from a PTY master file descriptor, store lines, invoke callback.
+
+    Unlike ``stream_pipe``, this reads raw bytes from a pseudo-terminal and
+    decodes them, capturing the full terminal experience including ANSI codes.
+    The caller is responsible for *not* closing ``master_fd`` before this
+    function finishes — it is closed here on exit.
+    """
+    partial = ""
+    try:
+        while True:
+            try:
+                data = os.read(master_fd, 8192)
+            except OSError:
+                break
+            if not data:
+                break
+
+            text = partial + data.decode("utf-8", errors="replace")
+            # Split on newlines; handle \r\n and standalone \n
+            *lines, partial = text.split("\n")
+
+            for line in lines:
+                stripped = line.rstrip("\r")
+                line_buffer.append(stripped)
+                if callback:
+                    try:
+                        callback(stripped)
+                    except Exception:
+                        pass
+
+        # Flush any remaining partial line
+        if partial:
+            stripped = partial.rstrip("\r")
+            if stripped:
+                line_buffer.append(stripped)
+                if callback:
+                    try:
+                        callback(stripped)
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
 
 
 def kill_process(proc: subprocess.Popen) -> None:
