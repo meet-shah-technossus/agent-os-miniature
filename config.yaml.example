@@ -1,0 +1,75 @@
+project:
+  name: My Project
+  root_path: ''
+  language: python
+  repo_name: ''
+  feature_branch: dev
+  prompt_file_path: ''
+orchestrator:
+  max_iterations: 4
+  auto_approve_hitl: false
+  hitl_timeout_seconds: 0
+  convergence_rule: all_accepted
+codex:
+  model: codex
+  timeout_seconds: 500
+  max_retries: 2
+  model_routing:
+    PROMPT_GENERATOR: gpt-5-mini
+    CODE_GENERATOR: gpt-5.1-codex-mini
+    CODE_REVIEWER: gpt-5-mini
+  cli_routing:
+    PROMPT_GENERATOR: codex
+    CODE_GENERATOR: codex
+    CODE_REVIEWER: codex
+prompt_framework: RCTCF
+git:
+  enabled: true
+  remote: origin
+  main_branch: main
+  dev_branch: dev
+  auto_create_feature_branches: false
+validation:
+  lint: true
+  type_check: true
+  tests: true
+  security_scan: true
+requirements:
+  path: /path/to/your/requirements.yaml
+  ado_org: your-ado-org
+  ado_token: YOUR_ADO_PERSONAL_ACCESS_TOKEN_HERE
+  ado_project: Your ADO Project Name
+storage:
+  db_path: data/agent_os.db
+api:
+  host: 0.0.0.0
+  port: 8000
+budget:
+  token_budget_per_module: 20000
+  alert_threshold_pct: 80
+  pause_at_limit: true
+  cost_per_1k_tokens: 0.01
+dependencies:
+  auto_create_venv: true
+  auto_install: true
+  venv_name: .venv
+error_handling:
+  max_json_retries: 2
+  retry_backoff_base: 1.0
+  retry_backoff_max: 30.0
+  rollback_on_failure: true
+  skip_failed_validators: true
+github:
+  owner: your-github-username
+  repo: your-repo-name
+  auto_push: true
+  auto_create_pr: false
+secrets:
+  openai_api_key: YOUR_OPENAI_API_KEY_HERE
+  github_token: YOUR_GITHUB_PERSONAL_ACCESS_TOKEN_HERE
+pipeline_mode: standard
+github_review:
+  source_repo_url: https://github.com/your-username/your-repo
+  requirements_path: /path/to/your/requirements.yaml
+  fork_repo_name: your-forked-repo-name
+  branch_name: agent-os-fixes

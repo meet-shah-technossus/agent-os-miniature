@@ -1,25 +1,65 @@
-# Environment / secrets
+# ── Secrets & local config ───────────────────────────────────────────────────
 .env
-.env.*
+.env.local
+.env.*.local
+# Keep .env.example in version control (it has no real secrets)
+!.env.example
 
-# Python
+# config.yaml holds API keys, tokens, and personal paths — never commit it
+config.yaml
+# Keep the sanitised example template
+!config.yaml.example
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .venv/
 *.egg-info/
 dist/
 build/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg
+MANIFEST
 
-# Data
+# ── Data & database ──────────────────────────────────────────────────────────
 data/
+*.db
+*.db-shm
+*.db-wal
 
-# Node
+# ── Requirements / YAML files with personal paths ────────────────────────────
+requirements.yaml
+requirements2.yaml
+requirements3.yaml
+
+# ── Node / Frontend build ────────────────────────────────────────────────────
 node_modules/
 frontend/dist/
+frontend/.env
+frontend/.env.local
 
-# IDE
+# ── Generated project folders ────────────────────────────────────────────────
+project-root/
+
+# ── Playwright / test artifacts ──────────────────────────────────────────────
+.playwright-mcp/
+playwright-report/
+test-results/
+
+# ── Editor & OS ──────────────────────────────────────────────────────────────
 .idea/
 .vscode/
 *.swp
+*.swo
 .DS_Store
+Thumbs.db
+
+# ── Misc scratch files ───────────────────────────────────────────────────────
+hello.txt
+hello2.txt
+hello3.txt
+
