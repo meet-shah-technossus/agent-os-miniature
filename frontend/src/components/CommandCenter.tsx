@@ -391,14 +391,18 @@ interface PromptEditorProps {
   toolStatuses: CliToolStatus[];
   onContentChange: (v: string) => void;
   onApprove: () => void;
+  onRetryPromptGenerator: () => void;
   onToolSelect: (k: CliToolKey) => void;
   onModelSelect: (m: string) => void;
+  promptGenFailed: boolean;
+  promptGenError: string;
 }
 
 function PromptEditor({
   content, isLoading, pipelineStatus, iteration,
   selectedTool, selectedModel, toolStatuses,
-  onContentChange, onApprove, onToolSelect, onModelSelect,
+  onContentChange, onApprove, onRetryPromptGenerator, onToolSelect, onModelSelect,
+  promptGenFailed, promptGenError,
 }: PromptEditorProps) {
   const [editorHeight, setEditorHeight] = useState(320);
   const promptEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -456,6 +460,14 @@ function PromptEditor({
           </span>
         )}
       </div>
+
+      {/* Prompt gen failure banner */}
+      {promptGenFailed && promptGenError && (
+        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] flex items-center gap-1.5">
+          <span>⚠</span>
+          Prompt generation failed: {promptGenError}
+        </div>
+      )}
 
       {/* Monaco editor */}
       <div ref={promptContainerRef} className="rounded-lg overflow-hidden border border-[var(--border-glass)]" style={{ height: `${editorHeight}px` }}>
@@ -529,11 +541,20 @@ function PromptEditor({
 
           <button
             onClick={onApprove}
-            disabled={!isHITLPrompt || isLoading}
+            disabled={!isHITLPrompt || isLoading || promptGenFailed}
             className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Approve &amp; Trigger Code Generator
           </button>
+          {isHITLPrompt && (
+            <button
+              onClick={onRetryPromptGenerator}
+              disabled={isLoading}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Retry Prompt Generator
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -543,8 +564,8 @@ function PromptEditor({
 // ─── Left pane: Review JSON section ───────────────────────────────────────────
 
 interface ReviewViewerProps {
-  content: string;         // editedContent — controlled by parent
-  originalContent: string; // canonical server copy — used for reset + diff
+  content: string;
+  originalContent: string;
   iteration: number;
   pipelineStatus: string;
   isModified: boolean;
@@ -552,13 +573,20 @@ interface ReviewViewerProps {
   onApprove: () => void;
   onReset: () => void;
   onContentChange: (v: string) => void;
+  onRetryPR: () => void;
+  onRetryCodeReviewer: () => void;
   isLoading: boolean;
+  prFailed: boolean;
+  prError: string;
+  codeReviewFailed: boolean;
+  codeReviewError: string;
 }
 
 function ReviewViewer({
   content, originalContent, iteration, pipelineStatus,
   isModified, isValidJson,
-  onApprove, onReset, onContentChange, isLoading,
+  onApprove, onReset, onContentChange, onRetryPR, onRetryCodeReviewer, isLoading,
+  prFailed, prError, codeReviewFailed, codeReviewError,
 }: ReviewViewerProps) {
   const [editorHeight, setEditorHeight] = useState(320);
   const reviewEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -643,7 +671,25 @@ function ReviewViewer({
               Reset
             </button>
           )}
-          {!isEmpty && (
+          {prFailed && isHITLReview && (
+            <button
+              onClick={onRetryPR}
+              disabled={isLoading}
+              className="px-3 py-1 rounded-lg text-xs font-semibold bg-orange-500 text-white hover:bg-orange-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Retry Pull Request
+            </button>
+          )}
+          {isHITLReview && !prFailed && (
+            <button
+              onClick={onRetryCodeReviewer}
+              disabled={isLoading}
+              className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Retry Code Reviewer
+            </button>
+          )}
+          {!isEmpty && !prFailed && !codeReviewFailed && (
             <button
               onClick={onApprove}
               disabled={!isHITLReview || isLoading || !isValidJson}
@@ -654,6 +700,22 @@ function ReviewViewer({
           )}
         </div>
       </div>
+
+      {/* PR failure banner */}
+      {prFailed && prError && (
+        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-400 text-[11px] flex items-center gap-1.5">
+          <span>⚠</span>
+          Pull request creation failed: {prError}
+        </div>
+      )}
+
+      {/* Code review failure banner */}
+      {codeReviewFailed && codeReviewError && (
+        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] flex items-center gap-1.5">
+          <span>⚠</span>
+          Code review failed: {codeReviewError}
+        </div>
+      )}
 
       {/* Verdict-change confirmation banner */}
       {verdictChanged && (
@@ -818,6 +880,14 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
   const [expandedSystemKeys, setExpandedSystemKeys] = useState<Set<SystemTerminalKey>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [prFailed, setPrFailed] = useState(false);
+  const [prError, setPrError] = useState('');
+  const [promptGenFailed, setPromptGenFailed] = useState(false);
+  const [promptGenError, setPromptGenError] = useState('');
+  const [codeGenFailed, setCodeGenFailed] = useState(false);
+  const [codeGenError, setCodeGenError] = useState('');
+  const [codeReviewFailed, setCodeReviewFailed] = useState(false);
+  const [codeReviewError, setCodeReviewError] = useState('');
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reviewUserModifiedRef = useRef(false);
@@ -833,6 +903,14 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
         api.getCurrentReview().catch(() => null),
       ]);
       setPipelineStatus(statusRes.pipeline_status);
+      setPrFailed(!!statusRes.metadata?.pr_failed);
+      setPrError((statusRes.metadata?.pr_error as string) || '');
+      setPromptGenFailed(!!statusRes.metadata?.prompt_gen_failed);
+      setPromptGenError((statusRes.metadata?.prompt_gen_error as string) || '');
+      setCodeGenFailed(statusRes.pipeline_status === 'CODE_GEN_FAILED');
+      setCodeGenError((statusRes.metadata?.code_gen_error as string) || '');
+      setCodeReviewFailed(!!statusRes.metadata?.code_review_failed);
+      setCodeReviewError((statusRes.metadata?.code_review_error as string) || '');
       if (promptRes && promptRes.content) {
         if (!promptUserModifiedRef.current) {
           setPromptContent(promptRes.content);
@@ -896,7 +974,11 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     const hasReviewDone = newMsgs.some(
       (m) => m.channel === 'pipeline' && (m.event === 'code_review_complete' || m.event === 'state_changed'),
     );
-    if (hasPromptDone || hasReviewDone) {
+    const hasComponentFailed = newMsgs.some(
+      (m) => m.channel === 'pipeline' &&
+        ['prompt_gen_failed', 'code_gen_failed', 'code_review_failed'].includes(m.event as string),
+    );
+    if (hasPromptDone || hasReviewDone || hasComponentFailed) {
       refresh();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -993,6 +1075,68 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     }
   };
 
+  const handleRetryPR = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.retryPR();
+      // Don't optimistically clear prFailed here — let refresh() pull the
+      // actual backend state. If the retry succeeded, pr_failed will be false;
+      // if an operational step failed (git push, PR creation, etc.) the updated
+      // pr_error will still be shown and the button remains usable.
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRetryPromptGenerator = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.retryPromptGenerator();
+      setPromptGenFailed(false);
+      setPromptGenError('');
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRetryCodeGenerator = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.retryCodeGenerator();
+      setCodeGenFailed(false);
+      setCodeGenError('');
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRetryCodeReviewer = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.retryCodeReviewer();
+      setCodeReviewFailed(false);
+      setCodeReviewError('');
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleToolSelect = (key: CliToolKey) => {
     const isExpanding = activeTool !== key;
     if (isExpanding) {
@@ -1078,6 +1222,9 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             onApprove={handleApprovePrompt}
             onToolSelect={handleToolSelect}
             onModelSelect={handleModelSelect}
+            promptGenFailed={promptGenFailed}
+            promptGenError={promptGenError}
+            onRetryPromptGenerator={handleRetryPromptGenerator}
           />
 
           {/* Review JSON viewer */}
@@ -1091,7 +1238,13 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             onApprove={handleApproveReview}
             onReset={handleReviewReset}
             onContentChange={handleReviewEdit}
+            onRetryPR={handleRetryPR}
             isLoading={isLoading}
+            prFailed={prFailed}
+            prError={prError}
+            codeReviewFailed={codeReviewFailed}
+            codeReviewError={codeReviewError}
+            onRetryCodeReviewer={handleRetryCodeReviewer}
           />
         </div>
 
@@ -1104,6 +1257,19 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             <h3 className="text-sm font-semibold text-white">CLI Terminals</h3>
             <span className="text-[11px] text-slate-500">click to expand</span>
           </div>
+          {pipelineStatus === 'CODE_GEN_FAILED' && (
+            <div className="mb-2 shrink-0 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+              <span>⚠</span>
+              <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
+              <button
+                onClick={handleRetryCodeGenerator}
+                disabled={isLoading}
+                className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+              >
+                Retry Code Generator
+              </button>
+            </div>
+          )}
           <div className="flex-1 min-h-0 overflow-y-auto">
             <CliGrid
               terminalStates={terminalStates}

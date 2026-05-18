@@ -202,6 +202,10 @@ class Orchestrator:
                 self._emit("failed")
                 break
 
+            if status == PipelineStatus.CODE_GEN_FAILED:
+                logger.warning("Pipeline paused at CODE_GEN_FAILED — awaiting retry or reset")
+                break
+
             if self.state_mgr.is_hitl_gate():
                 if self.config.orchestrator.auto_approve_hitl:
                     logger.info("Auto-approving HITL gate: %s", status.value)
@@ -246,17 +250,59 @@ class Orchestrator:
         stats = parser.load_and_store(req_path)
         logger.info("Requirements loaded: %s", stats)
 
-        # Derive project name from first epic if not already set
-        if not self.config.project.name:
-            try:
-                import yaml as _yaml
-                raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
-                epics = (raw or {}).get("epics", [])
-                if epics:
-                    self.config.project.name = epics[0].get("title", "").strip()
-                    logger.info("Project name set from requirements: %s", self.config.project.name)
-            except Exception:
-                logger.debug("Could not extract project name", exc_info=True)
+        # Always re-derive project name and repo slug from requirements content
+        _GENERIC_TITLES = {"imported requirements", "general", "imported features", ""}
+        try:
+            import re as _re
+            import yaml as _yaml
+            from collections import Counter as _Counter
+
+            raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
+            epics = (raw or {}).get("epics", [])
+            title = ""
+
+            if epics:
+                epic_title = (epics[0].get("title", "") or "").strip()
+                if epic_title.lower() not in _GENERIC_TITLES:
+                    # Epic has a meaningful domain-specific title — use it
+                    title = epic_title
+                else:
+                    # Epic title is a generic placeholder — derive from story titles
+                    _STOP_WORDS = {
+                        "a", "an", "the", "and", "or", "of", "to", "in", "for",
+                        "is", "as", "so", "that", "can", "be", "with", "on", "by",
+                        "i", "my", "we", "our", "from", "its", "it", "at", "all",
+                        "view", "manage", "create", "update", "delete", "get",
+                        "want", "should", "display", "show", "see", "add", "set",
+                        "list", "allow", "able", "user", "system", "using", "use",
+                    }
+                    words: list[str] = []
+                    for ep in epics:
+                        for feat in ep.get("features", []):
+                            for story in feat.get("stories", []):
+                                st = (story.get("title", "") or "").strip()
+                                if st:
+                                    for w in _re.findall(r"[a-zA-Z]{3,}", st):
+                                        wl = w.lower()
+                                        if wl not in _STOP_WORDS:
+                                            words.append(wl)
+
+                    if words:
+                        # Pick up to 3 most frequent domain words
+                        top = [w for w, _ in _Counter(words).most_common(5)][:3]
+                        title = " ".join(w.capitalize() for w in top)
+
+            if not title:
+                title = "Agent OS Project"
+
+            slug = _re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+            self.config.project.name = title
+            self.config.project.repo_name = slug
+            logger.info(
+                "Project name set from requirements: %s (repo=%s)", title, slug
+            )
+        except Exception:
+            logger.debug("Could not extract project name from requirements", exc_info=True)
 
         state = self.state_mgr.state
         self.state_mgr.transition_to(
@@ -323,8 +369,13 @@ class Orchestrator:
         except Exception as exc:
             logger.exception("Prompt generator failed: %s", exc)
             self._emit_terminal("session_end", "PROMPT_GENERATOR", _pg_session, exit_code=1)
-            self.state_mgr.transition_to(PipelineStatus.FAILED)
-            self._emit("error", {"message": f"Prompt generation failed: {exc}"})
+            err_msg = str(exc)
+            self.state_mgr.transition_to(
+                PipelineStatus.HITL_PROMPT_REVIEW,
+                metadata={"prompt_gen_failed": True, "prompt_gen_error": err_msg},
+            )
+            self._emit("prompt_gen_failed", {"iteration": iteration, "error": err_msg})
+            self._emit("hitl_gate", {"gate": PipelineStatus.HITL_PROMPT_REVIEW.value})
             return
 
         # Persist prompt content to DB metadata
@@ -411,8 +462,12 @@ class Orchestrator:
         except Exception as exc:
             logger.exception("Code generator raised: %s", exc)
             self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=1)
-            self.state_mgr.transition_to(PipelineStatus.FAILED)
-            self._emit("error", {"message": f"Code generation failed: {exc}"})
+            err_msg = str(exc)
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": err_msg},
+            )
+            self._emit("code_gen_failed", {"iteration": iteration, "error": err_msg})
             return
 
         # Persist PR metadata for subsequent iterations
@@ -457,9 +512,13 @@ class Orchestrator:
                             exit_code=0 if gen_result.completion.status.value != "failed" else 1)
 
         if gen_result.completion.status.value == "failed":
-            logger.warning("Code generation failed — transitioning to FAILED")
-            self.state_mgr.transition_to(PipelineStatus.FAILED)
-            self._emit("error", {"message": gen_result.completion.reason})
+            err_msg = gen_result.completion.reason or "Code generation failed (timeout or exit)"
+            logger.warning("Code generation failed — transitioning to CODE_GEN_FAILED: %s", err_msg)
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": err_msg},
+            )
+            self._emit("code_gen_failed", {"iteration": iteration, "error": err_msg})
             return
 
         self._emit("code_generation_complete", {
@@ -485,6 +544,16 @@ class Orchestrator:
         state = self.state_mgr.state
         iteration = state.current_iteration
         logger.info("Code review — iteration %d", iteration)
+
+        # Clear any stale failure flags left over from a previous attempt so
+        # that the UI always reflects the *current* step's outcome.
+        self.state_mgr.update_metadata({
+            "code_review_failed": False,
+            "code_review_error": "",
+            "pr_failed": False,
+            "pr_error": "",
+        })
+
         self._emit("code_review_started", {"iteration": iteration})
 
         # Retrieve pr_number stored by _step_code_generation
@@ -498,17 +567,39 @@ class Orchestrator:
 
         feature_branch = self.config.project.feature_branch or "dev"
 
+        # Build a VCS client scoped to the actual project repo (not the
+        # default config.github.repo which may point to an unrelated repo).
+        def _project_vcs():
+            vcs = make_vcs_client(self.config)
+            if vcs is None:
+                return None
+            repo = self.config.project.repo_name or ""
+            if repo and hasattr(vcs, "for_repo") and repo != getattr(vcs, "_repo", ""):
+                return vcs.for_repo(repo)
+            return vcs
+
         # Fallback 1: discover open PR via VCS API
         if pr_number is None:
             logger.info("PR number not in metadata — attempting discovery via VCS API")
             try:
-                vcs = make_vcs_client(self.config)
+                vcs = _project_vcs()
                 if vcs is not None:
+                    _actor = getattr(vcs, "_owner", "unknown")
+                    _actor_repo = getattr(vcs, "_repo", "")
+                    logger.info(
+                        "[actor: %s] Searching for open PR on branch '%s' in %s/%s",
+                        _actor, feature_branch, _actor, _actor_repo,
+                    )
                     discovered = vcs.find_open_pr(feature_branch)
                     if discovered is not None:
                         pr_number = discovered
                         self.state_mgr.update_metadata({"pr_number": pr_number})
-                        logger.info("Discovered PR #%d for branch %s", pr_number, feature_branch)
+                        logger.info(
+                            "[actor: %s] Discovered PR #%d for branch '%s'",
+                            _actor, pr_number, feature_branch,
+                        )
+                    else:
+                        logger.info("[actor: %s] No open PR found for branch '%s'", _actor, feature_branch)
             except Exception:
                 logger.debug("PR discovery failed", exc_info=True)
 
@@ -516,8 +607,14 @@ class Orchestrator:
         if pr_number is None:
             logger.info("PR discovery found nothing — attempting to create PR for review")
             try:
-                vcs = make_vcs_client(self.config)
+                vcs = _project_vcs()
                 if vcs is not None:
+                    _actor = getattr(vcs, "_owner", "unknown")
+                    _actor_repo = getattr(vcs, "_repo", "")
+                    logger.info(
+                        "[actor: %s] Creating fallback PR: '%s' → main in %s/%s",
+                        _actor, feature_branch, _actor, _actor_repo,
+                    )
                     pr_title = f"[Agent OS] Iteration {iteration} — implementation"
                     pr_body = (
                         f"Automated pull request opened by Agent OS (code review fallback).\n\n"
@@ -532,31 +629,33 @@ class Orchestrator:
                     if pr_result.success and pr_result.data:
                         pr_number = pr_result.data.get("number")
                         self.state_mgr.update_metadata({"pr_number": pr_number})
-                        logger.info("Created PR #%d as review fallback", pr_number)
+                        logger.info(
+                            "[actor: %s] Created PR #%d as review fallback in %s/%s",
+                            _actor, pr_number, _actor, _actor_repo,
+                        )
                     else:
-                        logger.warning("Fallback PR creation failed: %s", pr_result.error)
-            except Exception:
+                        logger.warning(
+                            "[actor: %s] Fallback PR creation failed in %s/%s: %s",
+                            _actor, _actor, _actor_repo, pr_result.error,
+                        )
+                        self.state_mgr.update_metadata({"pr_error": pr_result.error or "PR creation returned failure"})
+            except Exception as exc:
                 logger.debug("Fallback PR creation raised", exc_info=True)
+                self.state_mgr.update_metadata({"pr_error": str(exc)})
 
-        # No PR available — skip automated review, go straight to HITL gate
+        # No PR available — pause pipeline and show retry button in UI
         if pr_number is None:
+            pr_err = state.metadata.get("pr_error", "No pull request could be created or discovered.")
             logger.warning(
-                "No PR available for automated review — proceeding to HITL_REVIEW_DECISION"
+                "No PR available for automated review — pausing for manual retry"
             )
             self.state_mgr.update_metadata({
-                "review_overall_status": "needs_work",
-                "review_overall_score": "0",
-                "review_json_content": "{\"overall_status\": \"needs_work\", "
-                    "\"overall_score\": 0, "
-                    "\"summary\": \"Automated review skipped — no pull request available.\"}",
+                "pr_failed": True,
+                "pr_error": pr_err,
             })
-            self._emit("code_review_complete", {
+            self._emit("pr_creation_failed", {
                 "iteration": iteration,
-                "overall_status": "needs_work",
-                "overall_score": 0,
-                "comments_posted": 0,
-                "pr_merged": False,
-                "skipped": True,
+                "error": pr_err,
             })
             self.state_mgr.transition_to(PipelineStatus.HITL_REVIEW_DECISION)
             self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
@@ -574,7 +673,7 @@ class Orchestrator:
                                 line=line, stream="stdout",
                                 iteration=iteration, module_id="")
 
-        runner = CodeReviewerRunner(self.config, vcs_client=make_vcs_client(self.config))
+        runner = CodeReviewerRunner(self.config, vcs_client=_project_vcs())
         try:
             run_result = runner.run(
                 pr_number=pr_number,
@@ -585,8 +684,13 @@ class Orchestrator:
         except Exception as exc:
             logger.exception("Code reviewer raised: %s", exc)
             self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=1)
-            self.state_mgr.transition_to(PipelineStatus.FAILED)
-            self._emit("error", {"message": f"Code review failed: {exc}"})
+            err_msg = str(exc)
+            self.state_mgr.transition_to(
+                PipelineStatus.HITL_REVIEW_DECISION,
+                metadata={"code_review_failed": True, "code_review_error": err_msg},
+            )
+            self._emit("code_review_failed", {"iteration": iteration, "error": err_msg})
+            self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
             return
 
         review = run_result.review
@@ -719,6 +823,273 @@ class Orchestrator:
         logger.info("Pause requested")
         return True
 
+    def retry_pr(self) -> bool:
+        """Retry pull request creation after a failure.
+
+        Called from the HITL_REVIEW_DECISION gate when pr_failed metadata is
+        set. Performs: create repo (if needed) → push code → create PR.
+        Emits progress events for each step. On success, transitions to
+        CODE_REVIEW and resumes the pipeline loop.
+
+        Returns True for all "retry was attempted" outcomes (including
+        operational failures — the updated pr_error in metadata lets the
+        frontend show a meaningful message). Returns False only for pre-condition
+        failures (wrong pipeline state / missing flag), which map to HTTP 409.
+        """
+        if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
+            logger.warning(
+                "retry_pr() called but not at HITL_REVIEW_DECISION (current: %s)",
+                self.state_mgr.current_status.value,
+            )
+            return False
+
+        state = self.state_mgr.state
+        if not state.metadata.get("pr_failed"):
+            logger.warning(
+                "retry_pr() called but pr_failed is not set in metadata: %s",
+                state.metadata,
+            )
+            return False
+
+        from ..git_ops.manager import GitOpsManager
+
+        iteration = state.current_iteration
+        feature_branch = self.config.project.feature_branch or "dev"
+        repo_name = self.config.project.repo_name or ""
+
+        def _persist_error(err: str) -> None:
+            """Store the error message so the UI shows it and the Retry button stays."""
+            self.state_mgr.update_metadata({"pr_error": err})
+
+        working_dir = Path(self.config.project.root_path) if self.config.project.root_path else None
+        if not working_dir or not working_dir.exists():
+            err = f"Project root_path does not exist: {working_dir}"
+            self._emit("pr_retry_progress", {"step": "error", "message": err})
+            _persist_error(err)
+            return True  # precondition for *git*, not for the gate itself
+
+        # Build VCS client — prefer project repo_name directly so the call works
+        # even when config.github.repo is not set as a default.
+        token = getattr(self.config.secrets, "github_token", "") or ""
+        owner = getattr(self.config.github, "owner", "") or ""
+        effective_repo = repo_name or getattr(self.config.github, "repo", "") or ""
+
+        if not token or not owner:
+            # Fall back to the factory which logs a proper warning
+            from ..vcs.factory import make_vcs_client
+            vcs = make_vcs_client(self.config)
+        else:
+            from ..vcs.github_client import GitHubVCSClient
+            vcs = GitHubVCSClient(token=token, owner=owner, repo=effective_repo) if effective_repo else None
+
+        if vcs is None:
+            err = "VCS client not configured (check GitHub token / owner / repo_name in Settings)"
+            self._emit("pr_retry_progress", {"step": "error", "message": err})
+            _persist_error(err)
+            return True  # let the frontend update the error banner
+
+        # Ensure the VCS client targets the project repo
+        if effective_repo and hasattr(vcs, "for_repo") and effective_repo != getattr(vcs, "_repo", ""):
+            vcs = vcs.for_repo(effective_repo)
+
+        # Fast-path: if a PR already exists for the feature branch skip git work
+        try:
+            _existing_pr = vcs.find_open_pr(feature_branch)
+            if _existing_pr is not None:
+                self.state_mgr.update_metadata({
+                    "pr_number": _existing_pr,
+                    "pr_failed": False,
+                    "pr_error": "",
+                })
+                self._emit("pr_retry_progress", {
+                    "step": "create_pr",
+                    "message": f"Found existing pull request #{_existing_pr} — proceeding to review",
+                })
+                self._emit("pr_retry_success", {"pr_number": _existing_pr, "iteration": iteration})
+                self.state_mgr.transition_to(PipelineStatus.CODE_REVIEW)
+                self._resume_in_thread()
+                return True
+        except Exception:
+            pass  # fall through to full git-push path
+
+        # Step 1: Create repo if needed
+        self._emit("pr_retry_progress", {"step": "create_repo", "message": "Creating repository..."})
+        if effective_repo:
+            create_result = vcs.create_repo(effective_repo)
+            if create_result.success:
+                self._emit("pr_retry_progress", {"step": "create_repo", "message": "Repository created successfully"})
+            else:
+                err_lower = (create_result.error or "").lower()
+                if any(kw in err_lower for kw in ("already exists", "name already", "422", "409")):
+                    self._emit("pr_retry_progress", {"step": "create_repo", "message": "Repository already exists"})
+                else:
+                    err = f"Create repo failed: {create_result.error}"
+                    self._emit("pr_retry_progress", {"step": "error", "message": err})
+                    _persist_error(err)
+                    return True
+
+        # Step 2: Push code
+        self._emit("pr_retry_progress", {"step": "push", "message": "Pushing code..."})
+        git = GitOpsManager(working_dir)
+        remote_url = vcs.get_remote_url(effective_repo)
+        _BOT_NAME = "Agent OS"
+        _BOT_EMAIL = "agent-os@automated.dev"
+
+        if not git.is_repo():
+            r = git.init_repo()
+            if not r.success:
+                err = f"git init failed: {r.stderr}"
+                self._emit("pr_retry_progress", {"step": "error", "message": err})
+                _persist_error(err)
+                return True
+            git.set_user(_BOT_NAME, _BOT_EMAIL)
+            git.add_remote("origin", remote_url)
+        else:
+            # Ensure remote URL is correct
+            git.add_remote("origin", remote_url)
+
+        # Commit any uncommitted changes
+        commit_msg = f"Agent OS iteration {iteration}"
+        git.commit_all(commit_msg)  # may fail if nothing to commit — ok
+
+        # Push main
+        r = git.push_upstream("main")
+        if not r.success:
+            r = git.push("main", force=True)
+            if not r.success:
+                err = f"Push main failed: {r.stderr}"
+                self._emit("pr_retry_progress", {"step": "error", "message": err})
+                _persist_error(err)
+                return True
+
+        # Ensure feature branch exists and push
+        r = git.checkout(feature_branch)
+        if not r.success:
+            r = git.create_and_checkout(feature_branch, "main")
+            if not r.success:
+                err = f"Create feature branch failed: {r.stderr}"
+                self._emit("pr_retry_progress", {"step": "error", "message": err})
+                _persist_error(err)
+                return True
+
+        r = git.push_upstream(feature_branch)
+        if not r.success:
+            r = git.push(feature_branch, force=True)
+            if not r.success:
+                err = f"Push feature branch failed: {r.stderr}"
+                self._emit("pr_retry_progress", {"step": "error", "message": err})
+                _persist_error(err)
+                return True
+
+        self._emit("pr_retry_progress", {"step": "push", "message": "Code pushed successfully"})
+
+        # Step 3: Create PR
+        self._emit("pr_retry_progress", {"step": "create_pr", "message": "Creating pull request..."})
+        pr_title = f"[Agent OS] Iteration {iteration} — implementation"
+        pr_body = (
+            "Automated pull request created by Agent OS.\n\n"
+            f"**Iteration:** {iteration}\n"
+        )
+        pr_result = vcs.create_pr(
+            title=pr_title,
+            head=feature_branch,
+            base="main",
+            body=pr_body,
+        )
+        if pr_result.success and pr_result.data:
+            pr_number = pr_result.data.get("number")
+            self.state_mgr.update_metadata({
+                "pr_number": pr_number,
+                "pr_failed": False,
+                "pr_error": "",
+            })
+            self._emit("pr_retry_progress", {"step": "create_pr", "message": f"Pull request #{pr_number} created successfully"})
+            self._emit("pr_retry_success", {"pr_number": pr_number, "iteration": iteration})
+            self.state_mgr.transition_to(PipelineStatus.CODE_REVIEW)
+            self._resume_in_thread()
+            return True
+        else:
+            err = pr_result.error or "Unknown error"
+            # PR might already exist from a previous push — try to discover it
+            err_lower = err.lower()
+            if any(kw in err_lower for kw in ("already exists", "there is already", "pull request already", "422")):
+                try:
+                    existing = vcs.find_open_pr(feature_branch)
+                    if existing is not None:
+                        self.state_mgr.update_metadata({
+                            "pr_number": existing,
+                            "pr_failed": False,
+                            "pr_error": "",
+                        })
+                        self._emit("pr_retry_progress", {"step": "create_pr", "message": f"Pull request #{existing} already exists — proceeding to review"})
+                        self._emit("pr_retry_success", {"pr_number": existing, "iteration": iteration})
+                        self.state_mgr.transition_to(PipelineStatus.CODE_REVIEW)
+                        self._resume_in_thread()
+                        return True
+                except Exception:
+                    pass
+            err_full = f"PR creation failed: {err}"
+            self._emit("pr_retry_progress", {"step": "error", "message": err_full})
+            _persist_error(err_full)
+            return True  # attempted but failed — 200 so frontend refreshes
+
+    def retry_prompt_generator(self) -> bool:
+        """Retry prompt generation after a failure.
+
+        Only callable when at HITL_PROMPT_REVIEW with prompt_gen_failed metadata.
+        Clears the failure flag and resumes from PROMPT_GENERATION.
+        """
+        if self.state_mgr.current_status != PipelineStatus.HITL_PROMPT_REVIEW:
+            logger.warning("retry_prompt_generator() called but not at HITL_PROMPT_REVIEW")
+            return False
+        if not self.state_mgr.state.metadata.get("prompt_gen_failed"):
+            logger.warning("retry_prompt_generator() called but prompt_gen_failed not set")
+            return False
+        self.state_mgr.transition_to(
+            PipelineStatus.PROMPT_GENERATION,
+            metadata={"prompt_gen_failed": False, "prompt_gen_error": ""},
+        )
+        self._emit("state_changed", {"retry": "prompt_generator"})
+        self._resume_in_thread()
+        return True
+
+    def retry_code_generator(self) -> bool:
+        """Retry code generation after a failure.
+
+        Only callable when at CODE_GEN_FAILED.
+        Clears the failure flag and resumes from CODE_GENERATION.
+        """
+        if self.state_mgr.current_status != PipelineStatus.CODE_GEN_FAILED:
+            logger.warning("retry_code_generator() called but not at CODE_GEN_FAILED")
+            return False
+        self.state_mgr.transition_to(
+            PipelineStatus.CODE_GENERATION,
+            metadata={"code_gen_failed": False, "code_gen_error": ""},
+        )
+        self._emit("state_changed", {"retry": "code_generator"})
+        self._resume_in_thread()
+        return True
+
+    def retry_code_reviewer(self) -> bool:
+        """Retry code review after a failure.
+
+        Only callable when at HITL_REVIEW_DECISION with code_review_failed metadata.
+        Clears the failure flag and resumes from CODE_REVIEW.
+        """
+        if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
+            logger.warning("retry_code_reviewer() called but not at HITL_REVIEW_DECISION")
+            return False
+        if not self.state_mgr.state.metadata.get("code_review_failed"):
+            logger.warning("retry_code_reviewer() called but code_review_failed not set")
+            return False
+        self.state_mgr.transition_to(
+            PipelineStatus.CODE_REVIEW,
+            metadata={"code_review_failed": False, "code_review_error": ""},
+        )
+        self._emit("state_changed", {"retry": "code_reviewer"})
+        self._resume_in_thread()
+        return True
+
     def reset(self) -> None:
         """Reset the pipeline to IDLE, discarding all in-progress state.
 
@@ -731,9 +1102,10 @@ class Orchestrator:
         self._pause_event.set()
         # Wipe iteration rows + reset pipeline_state in one transaction
         self.db.clear_run_data()
-        # Clear project name + root_path so next run derives them fresh
+        # Clear project name + root_path + repo_name so next run derives them fresh
         self.config.project.name = ""
         self.config.project.root_path = ""
+        self.config.project.repo_name = ""
         # Re-initialize StateManager from the now-clean DB
         self.state_mgr.reset()
         logger.info("Pipeline reset to IDLE — iteration history cleared")

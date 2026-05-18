@@ -111,6 +111,54 @@ def pause_pipeline(orch: Orchestrator = Depends(get_orchestrator)):
     return ApproveGateResponse(approved=True, message="Pause requested")
 
 
+@router.post("/retry-pr", response_model=ApproveGateResponse)
+def retry_pr(orch: Orchestrator = Depends(get_orchestrator)):
+    """Retry pull request creation after a failure."""
+    ok = orch.retry_pr()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot retry PR — pipeline is not in the expected state or retry failed.",
+        )
+    return ApproveGateResponse(approved=True, message="PR retry initiated — pipeline resuming")
+
+
+@router.post("/retry-prompt-generator", response_model=ApproveGateResponse)
+def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)):
+    """Retry prompt generation after a failure."""
+    ok = orch.retry_prompt_generator()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot retry prompt generator — not at HITL_PROMPT_REVIEW with a failure.",
+        )
+    return ApproveGateResponse(approved=True, message="Prompt generator retry started")
+
+
+@router.post("/retry-code-generator", response_model=ApproveGateResponse)
+def retry_code_generator(orch: Orchestrator = Depends(get_orchestrator)):
+    """Retry code generation after a failure."""
+    ok = orch.retry_code_generator()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot retry code generator — not at CODE_GEN_FAILED state.",
+        )
+    return ApproveGateResponse(approved=True, message="Code generator retry started")
+
+
+@router.post("/retry-code-reviewer", response_model=ApproveGateResponse)
+def retry_code_reviewer(orch: Orchestrator = Depends(get_orchestrator)):
+    """Retry code review after a failure."""
+    ok = orch.retry_code_reviewer()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot retry code reviewer — not at HITL_REVIEW_DECISION with a failure.",
+        )
+    return ApproveGateResponse(approved=True, message="Code reviewer retry started")
+
+
 @router.post("/reset", response_model=ApproveGateResponse)
 def reset_pipeline(orch: Orchestrator = Depends(get_orchestrator)):
     """Reset the pipeline to IDLE, discarding in-progress state.

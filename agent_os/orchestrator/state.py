@@ -32,16 +32,23 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.CODE_GENERATION: [
         PipelineStatus.CODE_REVIEW,
+        PipelineStatus.CODE_GEN_FAILED,
         PipelineStatus.FAILED,
+    ],
+    PipelineStatus.CODE_GEN_FAILED: [
+        PipelineStatus.CODE_GENERATION,
+        PipelineStatus.IDLE,
     ],
     PipelineStatus.CODE_REVIEW: [
         PipelineStatus.HITL_REVIEW_DECISION,
         PipelineStatus.CODE_GENERATION,
+        PipelineStatus.PIPELINE_COMPLETE,
         PipelineStatus.FAILED,
     ],
     PipelineStatus.HITL_REVIEW_DECISION: [
         PipelineStatus.PROMPT_GENERATION,
         PipelineStatus.PIPELINE_COMPLETE,
+        PipelineStatus.CODE_REVIEW,
         PipelineStatus.FAILED,
     ],
     # --- stub entries for removed states kept here temporarily ---
@@ -128,9 +135,10 @@ class StateManager:
         return new_state
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:
-        """Update pipeline metadata without changing state."""
+        """Merge metadata updates into the current pipeline state (non-destructive)."""
         current = self.state
-        new_state = current.model_copy(update={"metadata": metadata})
+        merged = {**current.metadata, **metadata}
+        new_state = current.model_copy(update={"metadata": merged})
         self._db.save_pipeline_state(new_state)
 
     def is_hitl_gate(self) -> bool:

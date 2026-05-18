@@ -29,6 +29,7 @@ function toStation(status: string): StationId {
     case 'PROMPT_GENERATION':
     case 'HITL_PROMPT_REVIEW':   return 'prompt_generator';
     case 'CODE_GENERATION':      return 'code_generator';
+    case 'CODE_GEN_FAILED':       return 'code_generator';
     case 'CODE_REVIEW':
     case 'HITL_REVIEW_DECISION':
     case 'PIPELINE_COMPLETE':    return 'code_reviewer';
@@ -72,7 +73,8 @@ function channelIcon(event: string): string {
   return '●';
 }
 
-function toEventText(sender: string, event: string): string {
+function toEventText(sender: string, event: string, msg?: Record<string, unknown>): string {
+  if (event === 'loading_requirements')      return `${sender}: Loading requirements…`;
   if (event === 'prompt_generation_started')  return `${sender}: Generating prompt…`;
   if (event === 'prompt_generation_complete') return `${sender}: Prompt ready for review`;
   if (event === 'code_generation_started')    return `${sender}: Code generation started`;
@@ -81,10 +83,43 @@ function toEventText(sender: string, event: string): string {
   if (event === 'code_review_complete')       return `${sender}: Code review finished`;
   if (event === 'hitl_gate')                  return `${sender}: Awaiting your approval`;
   if (event === 'pipeline_complete')          return 'Pipeline completed successfully 🎉';
+  if (event === 'failed')                     return `${sender}: Pipeline failed`;
+  if (event === 'paused')                     return `${sender}: Pipeline paused`;
   if (event === 'error')                      return `${sender}: Error occurred`;
   if (event === 'stopped' || event === 'reset') return `${sender}: Pipeline stopped`;
+  if (event === 'pr_creation_failed')         return `${sender}: Pull request creation failed — click Retry`;
+  if (event === 'pr_retry_progress')          return `${sender}: ${(msg?.message as string) || 'PR retry in progress…'}`;
+  if (event === 'pr_retry_success')           return `${sender}: Pull request created successfully`;
+  if (event === 'prompt_gen_failed')          return `${sender}: Prompt generation failed — click Retry`;
+  if (event === 'code_gen_failed')            return `${sender}: Code generation failed — click Retry`;
+  if (event === 'code_review_failed')         return `${sender}: Code review failed — click Retry`;
   return `${sender}: ${event}`;
 }
+
+// Only these events are surfaced in the event feed — everything else (codex_stdout,
+// reviewer_stdout, terminal:*, state_changed polling noise, etc.) is discarded.
+const FEED_EVENTS = new Set([
+  'loading_requirements',
+  'prompt_generation_started',
+  'prompt_generation_complete',
+  'code_generation_started',
+  'code_generation_complete',
+  'code_review_started',
+  'code_review_complete',
+  'hitl_gate',
+  'pipeline_complete',
+  'failed',
+  'paused',
+  'stopped',
+  'reset',
+  'error',
+  'pr_creation_failed',
+  'pr_retry_progress',
+  'pr_retry_success',
+  'prompt_gen_failed',
+  'code_gen_failed',
+  'code_review_failed',
+]);
 
 const TRANSFERRING_STATUSES = new Set([
   'LOADING_REQUIREMENTS',
@@ -147,9 +182,18 @@ export function usePipelineFlow() {
   const prevMsgLenRef = useRef(0);
 
   useEffect(() => {
-    const newMessages = messages.slice(prevMsgLenRef.current);
+    if (messages.length === 0) return;
+
+    // useWebSocket caps messages at 500 (ring buffer). When older items are
+    // evicted from the front, prevMsgLenRef can exceed messages.length — fall
+    // back to processing just the last message. seenIdsRef prevents duplicates.
+    const start =
+      prevMsgLenRef.current >= messages.length
+        ? Math.max(messages.length - 1, 0)
+        : prevMsgLenRef.current;
     prevMsgLenRef.current = messages.length;
 
+    const newMessages = messages.slice(start);
     if (newMessages.length === 0) return;
 
     const newEvents: FeedEvent[] = [];
@@ -174,13 +218,13 @@ export function usePipelineFlow() {
       if (seenIdsRef.current.has(key)) continue;
       seenIdsRef.current.add(key);
 
-      // Only surface meaningful pipeline events in the feed
-      if (!eventName || eventName === 'run_started') continue;
+      // Only surface meaningful pipeline events — skip noisy stdout/terminal events
+      if (!eventName || !FEED_EVENTS.has(eventName)) continue;
 
       newEvents.push({
         id: key,
         icon: channelIcon(eventName),
-        text: toEventText(msg.sender || 'orchestrator', eventName),
+        text: toEventText(msg.sender || 'orchestrator', eventName, msg as Record<string, unknown>),
         timestamp: msg.timestamp ?? new Date().toISOString(),
       });
     }

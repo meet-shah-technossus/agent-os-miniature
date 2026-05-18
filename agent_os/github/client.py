@@ -76,6 +76,17 @@ class GitHubClient:
                     # Validation error — don't retry
                     data = response.json() if response.content else {}
                     msg = data.get("message", response.text[:200])
+                    api_errors = data.get("errors", [])
+                    if api_errors:
+                        details = "; ".join(
+                            e.get("message", str(e)) if isinstance(e, dict) else str(e)
+                            for e in api_errors
+                        )
+                        msg = f"{msg} — {details}"
+                    logger.warning(
+                        "GitHub 422 Validation Failed on %s %s [owner: %s, repo: %s]: %s",
+                        method, path, self._owner, self._repo, msg,
+                    )
                     return GitHubResult(
                         success=False, status_code=422,
                         data=data, error=msg,
@@ -136,7 +147,10 @@ class GitHubClient:
         Returns:
             GitHubResult with data containing PR number in data["number"].
         """
-        logger.info("Creating PR: %s (%s → %s)", title, head, base)
+        logger.info(
+            "Creating PR: %s (%s → %s) [actor: %s, repo: %s/%s]",
+            title, head, base, self._owner, self._owner, self._repo,
+        )
         return self._request("POST", "/pulls", {
             "title": title,
             "head": head,
@@ -160,6 +174,10 @@ class GitHubClient:
                 head = f"{self._owner}:{head}"
             params["head"] = head
         qs = "&".join(f"{k}={v}" for k, v in params.items())
+        logger.debug(
+            "Listing PRs (head=%s, state=%s) [actor: %s, repo: %s/%s]",
+            head, state, self._owner, self._owner, self._repo,
+        )
         return self._request("GET", f"/pulls?{qs}")
 
     def merge_pr(
@@ -207,7 +225,7 @@ class GitHubClient:
         Returns:
             GitHubResult with data containing clone_url, html_url, full_name.
         """
-        logger.info("Creating GitHub repo: %s", name)
+        logger.info("Creating GitHub repo: %s [actor: %s]", name, self._owner)
         return self._request(
             "POST", "", json_body={
                 "name": name,

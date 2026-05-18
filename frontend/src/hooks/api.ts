@@ -122,6 +122,18 @@ export const api = {
   approveReview: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/approve-review', { method: 'POST' }),
 
+  retryPR: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/retry-pr', { method: 'POST' }),
+
+  retryPromptGenerator: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/retry-prompt-generator', { method: 'POST' }),
+
+  retryCodeGenerator: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/retry-code-generator', { method: 'POST' }),
+
+  retryCodeReviewer: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/retry-code-reviewer', { method: 'POST' }),
+
   getIterations: () =>
     fetchJson<{ iterations: Iteration[] }>('/orchestrator/iterations'),
 

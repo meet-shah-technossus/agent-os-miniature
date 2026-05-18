@@ -27,30 +27,53 @@ _config_path: str | None = None
 def _sync_project_config(config, config_path) -> None:
     """Populate project.name and project.root_path from requirements.yaml on startup."""
     import re
+    from collections import Counter as _Counter
     from pathlib import Path as _Path
+
+    _GENERIC_TITLES = {"imported requirements", "general", "imported features", ""}
+
     try:
         import yaml as _yaml
-        # Derive project name from requirements.yaml if not already set
-        if not config.project.name:
-            req_path = _Path(config.requirements.path)
-            if req_path.exists():
-                raw = _yaml.safe_load(req_path.read_text(encoding="utf-8")) or {}
-                epics = raw.get("epics", [])
-                # Build a descriptive name from all epic titles, falling back to first epic
-                if epics:
-                    titles = [e.get("title", "").strip() for e in epics if e.get("title", "").strip()]
-                    if len(titles) == 1:
-                        name = titles[0]
-                    elif len(titles) > 1:
-                        # Use the first title but append count for clarity
-                        name = titles[0]
-                    else:
-                        name = ""
-                    # If the file was ingested from a remote source, prefer the filename hint
-                    req_filename = req_path.stem  # e.g. "requirements_from_ado"
-                    if name:
-                        config.project.name = name
-                        logger.info("Project name set from requirements: %s", name)
+        req_path = _Path(config.requirements.path)
+        if req_path.exists():
+            raw = _yaml.safe_load(req_path.read_text(encoding="utf-8")) or {}
+            epics = raw.get("epics", [])
+
+            name = ""
+            if epics:
+                epic_title = (epics[0].get("title", "") or "").strip()
+                if epic_title.lower() not in _GENERIC_TITLES:
+                    name = epic_title
+                else:
+                    # Derive a domain-relevant name from story titles
+                    _STOP_WORDS = {
+                        "a", "an", "the", "and", "or", "of", "to", "in", "for",
+                        "is", "as", "so", "that", "can", "be", "with", "on", "by",
+                        "i", "my", "we", "our", "from", "its", "it", "at", "all",
+                        "view", "manage", "create", "update", "delete", "get",
+                        "want", "should", "display", "show", "see", "add", "set",
+                        "list", "allow", "able", "user", "system", "using", "use",
+                    }
+                    words: list[str] = []
+                    for ep in epics:
+                        for feat in ep.get("features", []):
+                            for story in feat.get("stories", []):
+                                st = (story.get("title", "") or "").strip()
+                                if st:
+                                    for w in re.findall(r"[a-zA-Z]{3,}", st):
+                                        wl = w.lower()
+                                        if wl not in _STOP_WORDS:
+                                            words.append(wl)
+                    if words:
+                        top = [w for w, _ in _Counter(words).most_common(5)][:3]
+                        name = " ".join(w.capitalize() for w in top)
+
+            if name:
+                config.project.name = name
+                slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+                if not config.project.repo_name or config.project.repo_name.lower().startswith("imported"):
+                    config.project.repo_name = slug
+                logger.info("Project name set from requirements: %s", name)
 
         # Auto-provision project folder on Desktop if name is known but root_path is not
         if config.project.name and not config.project.root_path:

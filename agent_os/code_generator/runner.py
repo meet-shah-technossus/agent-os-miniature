@@ -164,9 +164,23 @@ class CodeGeneratorRunner:
         )
         repo_name = (
             getattr(cfg.project, "repo_name", None)
-            or getattr(getattr(cfg, "github", None), "repo", None)
             or ""
         )
+        # Auto-derive repo slug from project name when repo_name is not set
+        if not repo_name:
+            import re as _re
+            project_name = getattr(cfg.project, "name", "") or ""
+            if project_name:
+                repo_name = _re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")
+                # Persist so subsequent iterations use the same repo
+                try:
+                    cfg.project.repo_name = repo_name
+                except Exception:
+                    pass
+            else:
+                repo_name = (
+                    getattr(getattr(cfg, "github", None), "repo", None) or ""
+                )
 
         # Resolve VCS client: use injected one, or build via factory
         gh: VCSClient | None = self._vcs_client
@@ -177,6 +191,11 @@ class CodeGeneratorRunner:
         if gh is None:
             logger.info("VCS credentials not configured — skipping git operations")
             return []
+
+        # Re-bind VCS client to the actual project repo so create_pr targets
+        # the right repository (not the default config.github.repo value).
+        if repo_name and hasattr(gh, "for_repo") and repo_name != getattr(gh, "_repo", ""):
+            gh = gh.for_repo(repo_name)
 
         errors: list[str] = []
         git = GitOpsManager(working_dir)
@@ -192,23 +211,36 @@ class CodeGeneratorRunner:
 
         if iteration == 1:
             # ── Iteration 1: create remote repo (if needed), init local repo,
-            #    commit on main, push main + feature branch, open PR
+            #    push an EMPTY baseline commit to main, commit all generated
+            #    files on the feature branch, then open PR (feature → main).
+            #
+            #    IMPORTANT: generated files must NOT land on main here.
+            #    If main and the feature branch share the same commit GitHub
+            #    raises 422 "Validation Failed" (no diff) when creating the PR.
 
-            # Create the remote repository first — idempotent: if it already
-            # exists the VCS client will return an error we can safely ignore.
+            _actor = getattr(gh, "_owner", "unknown")
+            _actor_repo = getattr(gh, "_repo", repo_name) or repo_name
+
+            # Create the remote repository first — idempotent.
             if repo_name:
                 create_result = gh.create_repo(repo_name)
                 if create_result.success:
-                    logger.info("Remote repo created: %s", repo_name)
+                    logger.info(
+                        "[actor: %s] Remote repo created: %s/%s",
+                        _actor, _actor, repo_name,
+                    )
                 else:
                     err_lower = (create_result.error or "").lower()
                     if any(kw in err_lower for kw in ("already exists", "name already", "422", "409")):
-                        logger.info("Remote repo already exists — continuing: %s", repo_name)
+                        logger.info(
+                            "[actor: %s] Remote repo already exists — continuing: %s/%s",
+                            _actor, _actor, repo_name,
+                        )
                     else:
                         errors.append(f"create_repo failed: {create_result.error}")
-                        # non-fatal: attempt push anyway, the remote may still be reachable
+                        # non-fatal: attempt push anyway
             else:
-                logger.warning("repo_name not configured — skipping create_repo")
+                logger.warning("[actor: %s] repo_name not configured — skipping create_repo", _actor)
 
             if not git.is_repo():
                 r = git.init_repo()
@@ -217,36 +249,116 @@ class CodeGeneratorRunner:
                     return errors
 
             git.set_user(_BOT_NAME, _BOT_EMAIL)
+            logger.info("[actor: %s] Git identity set to '%s <%s>'", _actor, _BOT_NAME, _BOT_EMAIL)
             git.add_remote("origin", remote_url)
 
-            r = git.commit_all(commit_msg)
-            if not r.success:
-                errors.append(f"commit failed: {r.stderr}")
-                return errors
+            # ── Create an ORPHAN baseline commit on main ──────────────────────
+            # Using --orphan guarantees main has no connection to any prior
+            # history.  Without this, if a previous run committed generated
+            # files to main and then branched dev from that commit, dev's
+            # entire history is already reachable from main → zero diff →
+            # GitHub 422 "No commits between main and dev".
+            #
+            # Flow:
+            #   1. checkout --orphan <temp>   (new root, index copied from HEAD)
+            #   2. rm --cached -r .           (clear the index; keep working tree)
+            #   3. commit --allow-empty       (fresh root commit — truly empty)
+            #   4. rename temp → main         (replace any prior main)
+            #   5. force-push main            (GitHub main = clean orphan root)
+            #   6. checkout/create dev from main  (dev starts at orphan root)
+            #   7. reset --mixed main         (re-base dev if it already existed)
+            #   8. commit_all on dev          (all generated files land here)
+            #   9. force-push dev             (dev ahead of main → real diff)
+            #  10. create PR                  (succeeds every time)
 
+            _ORPHAN_TMP = "__agent_os_baseline_tmp__"
+
+            # Step 1: create orphan branch
+            r = git._run("checkout", "--orphan", _ORPHAN_TMP)
+            if not r.success:
+                # git init may have left us in an unborn state — try creating main directly
+                logger.warning("[actor: %s] --orphan failed (%s), falling back to checkout -b main", _actor, r.stderr)
+                git._run("checkout", "-b", "main")
+            else:
+                # Step 2: clear the index (ignore errors on an empty index)
+                git._run("rm", "--cached", "-rq", "--ignore-unmatch", ".")
+                # Step 3: empty root commit
+                r_c = git._run("commit", "--allow-empty", "-m", "chore: initial project baseline [Agent OS]")
+                if r_c.success:
+                    # Step 4: replace main with this fresh orphan
+                    if git.branch_exists("main"):
+                        git._run("branch", "-D", "main")
+                    git._run("branch", "-m", _ORPHAN_TMP, "main")
+                    logger.info("[actor: %s] Created fresh orphan baseline on main", _actor)
+                else:
+                    # Unlikely fallback — clean up and carry on
+                    git._run("checkout", "main" if git.branch_exists("main") else "-b main")
+                    git._run("branch", "-D", _ORPHAN_TMP)
+                    logger.warning("[actor: %s] Orphan commit failed; continuing on existing main: %s", _actor, r_c.stderr)
+
+            # Step 5: push main to GitHub (force required — history replaced)
+            logger.info("[actor: %s] Pushing orphan baseline main to %s/%s", _actor, _actor, _actor_repo)
             r = git.push_upstream("main")
             if not r.success:
-                errors.append(f"push main failed: {r.stderr}")
+                r = git.push("main", force=True)
+                if not r.success:
+                    errors.append(f"push main failed: {r.stderr}")
             result.branch_pushed = "main"
 
-            # Create + push feature branch
+            # Steps 6-9: create/update feature branch then commit all generated files.
             feature_pushed = False
-            r = git.create_and_checkout(feature_branch, "main")
-            if r.success:
-                r2 = git.push_upstream(feature_branch)
-                if not r2.success:
-                    errors.append(f"push feature branch failed: {r2.stderr}")
-                else:
-                    feature_pushed = True
+            if git.branch_exists(feature_branch):
+                # Branch exists from a prior run — just check it out…
+                git.checkout(feature_branch)
+                # …then reset its pointer (and index) to the new orphan main so
+                # dev has no prior commits. Working tree is preserved, so all
+                # Codex-generated files remain on disk as unstaged changes.
+                git._run("reset", "--mixed", "main")
+                logger.info("[actor: %s] Reset existing '%s' to new orphan main baseline", _actor, feature_branch)
             else:
-                errors.append(f"create feature branch failed: {r.stderr}")
+                # Fresh branch — create from the new orphan main
+                r = git._run("checkout", "-b", feature_branch, "main")
+                if not r.success:
+                    errors.append(f"create feature branch failed: {r.stderr}")
 
-            # Open PR (only if feature branch was pushed successfully)
+            if not errors:
+                r_commit = git.commit_all(commit_msg)
+                if not r_commit.success:
+                    errors.append(f"commit on {feature_branch} failed: {r_commit.stderr}")
+                elif r_commit.stdout == "nothing to commit":
+                    # Extremely unusual: Codex generated no files or all were gitignored
+                    errors.append(
+                        f"commit on {feature_branch} produced no changes — "
+                        "Codex may not have written any files to disk"
+                    )
+                else:
+                    logger.info(
+                        "[actor: %s] Pushing feature branch '%s' to %s/%s",
+                        _actor, feature_branch, _actor, _actor_repo,
+                    )
+                    r2 = git.push_upstream(feature_branch)
+                    if not r2.success:
+                        # Remote branch has diverged — force-overwrite with new history
+                        logger.warning(
+                            "[actor: %s] Normal push of '%s' failed (%s) — retrying with --force",
+                            _actor, feature_branch, r2.stderr,
+                        )
+                        r2 = git.push(feature_branch, force=True)
+                    if not r2.success:
+                        errors.append(f"push feature branch failed: {r2.stderr}")
+                    else:
+                        feature_pushed = True
+
+            # Open PR (only if feature branch was pushed and has a diff from main)
             if feature_pushed:
                 pr_title = f"[Agent OS] Iteration {iteration} — initial implementation"
                 pr_body = (
                     "Automated pull request created by Agent OS.\n\n"
                     f"**Iteration:** {iteration}\n"
+                )
+                logger.info(
+                    "[actor: %s] Creating PR: '%s' → main in %s/%s",
+                    _actor, feature_branch, _actor, _actor_repo,
                 )
                 pr_result = gh.create_pr(
                     title=pr_title,
@@ -257,7 +369,10 @@ class CodeGeneratorRunner:
                 if pr_result.success and pr_result.data:
                     result.pr_number = pr_result.data.get("number")
                     result.pr_url = pr_result.data.get("html_url", "")
-                    logger.info("PR #%d created: %s", result.pr_number, result.pr_url)
+                    logger.info(
+                        "[actor: %s] PR #%d created: %s",
+                        _actor, result.pr_number, result.pr_url,
+                    )
                 else:
                     errors.append(f"create_pr failed: {pr_result.error}")
 

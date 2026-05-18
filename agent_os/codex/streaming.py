@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 from typing import Callable, Optional
+
+# Regex to strip ANSI escape sequences (CSI codes, charset selectors, OSC)
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][A-Za-z]|\x1b\][^\x07]*\x07')
 
 
 def stream_pipe(
@@ -56,7 +60,7 @@ def stream_pty(
             *lines, partial = text.split("\n")
 
             for line in lines:
-                stripped = line.rstrip("\r")
+                stripped = _ANSI_RE.sub("", line.rstrip("\r"))
                 line_buffer.append(stripped)
                 if callback:
                     try:
@@ -66,7 +70,7 @@ def stream_pty(
 
         # Flush any remaining partial line
         if partial:
-            stripped = partial.rstrip("\r")
+            stripped = _ANSI_RE.sub("", partial.rstrip("\r"))
             if stripped:
                 line_buffer.append(stripped)
                 if callback:

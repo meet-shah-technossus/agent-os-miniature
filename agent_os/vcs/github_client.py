@@ -53,6 +53,14 @@ class GitHubVCSClient(VCSClient):
         self._owner = owner
         self._repo = repo
 
+    def for_repo(self, repo_name: str) -> "GitHubVCSClient":
+        """Return a new client targeting *repo_name* (same owner and token).
+
+        Use this when the project repo is derived at runtime (e.g. from the
+        requirements content) and differs from ``config.github.repo``.
+        """
+        return GitHubVCSClient(token=self._token, owner=self._owner, repo=repo_name)
+
     # ── Repository ──────────────────────────────────────────────────────────
 
     def get_remote_url(self, repo_name: str) -> str:

@@ -96,6 +96,17 @@ class RequirementsConfig(BaseModel):
     ado_token: str = ""
     ado_project: str = ""
 
+    @field_validator(
+        "path", "source", "jira_url", "jira_email", "jira_api_token",
+        "jira_project_key", "asana_token", "asana_project_id",
+        "ado_org", "ado_token", "ado_project",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty(cls, v: object) -> object:
+        """Convert YAML null (None) to empty string so str validation passes."""
+        return "" if v is None else v
+
 
 class ApiConfig(BaseModel):
     host: str = "0.0.0.0"
@@ -133,6 +144,11 @@ class GitHubConfig(BaseModel):
 class SecretsConfig(BaseModel):
     openai_api_key: str = ""
     github_token: str = ""
+
+    @field_validator("openai_api_key", "github_token", mode="before")
+    @classmethod
+    def _none_to_empty(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class GitHubInputConfig(BaseModel):
@@ -179,6 +195,14 @@ class AIToolCredential(BaseModel):
     account_id: str = ""    # org/workspace ID where applicable
     endpoint: str = ""      # custom base URL / region override
     extra: dict = {}        # catch-all for tool-specific fields (e.g. ADC project, workspace)
+
+    @field_validator(
+        "auth_method", "api_key", "email", "password", "account_id", "endpoint",
+        mode="before",
+    )
+    @classmethod
+    def _none_to_empty(cls, v: object) -> object:
+        return "" if v is None else v
 
 
 class AIToolsConfig(BaseModel):

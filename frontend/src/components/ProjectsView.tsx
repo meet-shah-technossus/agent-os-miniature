@@ -303,7 +303,7 @@ export default function ProjectsView() {
   const language    = projectInfo?.language  || settings?.project?.language  || '';
   const rootPath    = projectInfo?.root_path || settings?.project?.root_path || '';
   const ghOwner     = settings?.github?.owner;
-  const ghRepo      = settings?.github?.repo;
+  const ghRepo      = settings?.project?.repo_name || settings?.github?.repo;
   const ghUrl       = ghOwner && ghRepo ? `https://github.com/${ghOwner}/${ghRepo}` : null;
 
   const pipelineSt  = pipStatus?.pipeline_status ?? 'IDLE';

@@ -91,12 +91,26 @@ class Database:
         self._local = threading.local()
 
     def _new_conn(self) -> sqlite3.Connection:
-        """Create a new SQLite connection for the calling thread."""
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False, timeout=30)
+        """Create a new SQLite connection for the calling thread.
+
+        isolation_level=None disables Python sqlite3's implicit transaction
+        management.  Each statement becomes its own auto-committed transaction,
+        which eliminates SQLITE_LOCKED / SQLITE_BUSY_SNAPSHOT errors caused by
+        Python holding a deferred BEGIN open across await points or between
+        unrelated statements.  Callers that need multi-statement atomicity can
+        still issue explicit BEGIN / COMMIT via execute().
+        """
+        conn = sqlite3.connect(
+            str(self._db_path),
+            check_same_thread=False,
+            timeout=30,
+            isolation_level=None,  # autocommit — no implicit Python transactions
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        # Tell SQLite to retry busy/locked writes for up to 30 s before raising.
+        # SQLite-level busy-wait for concurrent writers (belt-and-suspenders).
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
 
