@@ -1,5 +1,3 @@
-# Editable install with no version control (agent-os==0.1.0)
--e /Users/technossus/Documents/Technossus Projects/Agent_OS
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.12.1

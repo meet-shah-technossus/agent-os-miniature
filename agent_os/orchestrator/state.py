@@ -19,6 +19,7 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.LOADING_REQUIREMENTS: [
         PipelineStatus.PROMPT_GENERATION,
+        PipelineStatus.ANALYSING_DEPENDENCIES,   # github_review mode
         PipelineStatus.FAILED,
     ],
     PipelineStatus.PROMPT_GENERATION: [
@@ -27,7 +28,9 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.HITL_PROMPT_REVIEW: [
         PipelineStatus.CODE_GENERATION,
+        PipelineStatus.STORY_CODE_GENERATION,      # GHR mode approve
         PipelineStatus.PROMPT_GENERATION,
+        PipelineStatus.STORY_PROMPT_GENERATION,    # GHR mode loop-back
         PipelineStatus.FAILED,
     ],
     PipelineStatus.CODE_GENERATION: [
@@ -59,6 +62,36 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
         PipelineStatus.PROMPT_GENERATION,
         PipelineStatus.CODE_GENERATION,
         PipelineStatus.CODE_REVIEW,
+    ],
+    # --- GitHub Review mode state transitions ---
+    PipelineStatus.ANALYSING_DEPENDENCIES: [
+        PipelineStatus.QUEUE_READY,
+        PipelineStatus.FAILED,
+    ],
+    PipelineStatus.QUEUE_READY: [
+        PipelineStatus.STORY_PROMPT_GENERATION,
+        PipelineStatus.PIPELINE_COMPLETE,
+        PipelineStatus.FAILED,
+    ],
+    PipelineStatus.STORY_PROMPT_GENERATION: [
+        PipelineStatus.HITL_PROMPT_REVIEW,         # pause for user review
+        PipelineStatus.STORY_CODE_GENERATION,      # auto-approve path
+        PipelineStatus.FAILED,
+    ],
+    PipelineStatus.STORY_CODE_GENERATION: [
+        PipelineStatus.STORY_CODE_REVIEW,
+        PipelineStatus.CODE_GEN_FAILED,
+        PipelineStatus.FAILED,
+    ],
+    PipelineStatus.STORY_CODE_REVIEW: [
+        PipelineStatus.STORY_COMPLETE,
+        PipelineStatus.STORY_PROMPT_GENERATION,   # loop back on rejection
+        PipelineStatus.HITL_REVIEW_DECISION,      # manual HITL gate
+        PipelineStatus.FAILED,
+    ],
+    PipelineStatus.STORY_COMPLETE: [
+        PipelineStatus.QUEUE_READY,
+        PipelineStatus.PIPELINE_COMPLETE,
     ],
 }
 
@@ -113,6 +146,9 @@ class StateManager:
             pipeline_status=new_status,
             last_checkpoint=datetime.utcnow(),
             metadata={**current.metadata, **(metadata or {}), **extra_meta},
+            current_story_id=current.current_story_id,
+            stories_completed=current.stories_completed,
+            stories_total=current.stories_total,
         )
 
         self._db.save_pipeline_state(new_state)
@@ -139,6 +175,28 @@ class StateManager:
         current = self.state
         merged = {**current.metadata, **metadata}
         new_state = current.model_copy(update={"metadata": merged})
+        self._db.save_pipeline_state(new_state)
+
+    def update_story_context(
+        self,
+        *,
+        current_story_id: str | None = None,
+        stories_completed: int | None = None,
+        stories_total: int | None = None,
+    ) -> None:
+        """Update story-level progress fields (GitHub Review mode only)."""
+        current = self.state
+        new_state = current.model_copy(
+            update={
+                k: v
+                for k, v in {
+                    "current_story_id": current_story_id,
+                    "stories_completed": stories_completed,
+                    "stories_total": stories_total,
+                }.items()
+                if v is not None
+            }
+        )
         self._db.save_pipeline_state(new_state)
 
     def is_hitl_gate(self) -> bool:

@@ -111,6 +111,10 @@ class ReviewJSON(BaseModel):
     architecture_issues: list[ArchitectureIssue] = Field(default_factory=list)
     file_size_violations: list[FileSizeViolation] = Field(default_factory=list)
     summary: str = ""
+    # ── GitHub Review mode fields (Phase 4) ──────────────────────────────────
+    pr_number: Optional[int] = None       # which PR was reviewed
+    pr_url: str = ""                      # full PR HTML URL
+    story_id: str = ""                    # which story this review belongs to
 
     @property
     def has_blocking_issues(self) -> bool:

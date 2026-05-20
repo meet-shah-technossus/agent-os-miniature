@@ -87,6 +87,7 @@ class CodeGeneratorRunner:
         pr_number: Optional[int] = None,
         on_stdout: Optional[Callable[[str], None]] = None,
         on_stderr: Optional[Callable[[str], None]] = None,
+        story_context: Optional[dict] = None,
     ) -> CodeGenResult:
         """Execute code generation with one automatic retry on partial completion.
 
@@ -98,6 +99,9 @@ class CodeGeneratorRunner:
                          iteration >= 2 to resolve review comments).
             on_stdout:   Optional callback for Codex stdout lines.
             on_stderr:   Optional callback for Codex stderr lines.
+            story_context: Optional dict with story metadata for GitHub Review
+                         mode (``story_id``, ``title``, ``acceptance_criteria``).
+                         Ignored in standard mode.
 
         Returns:
             CodeGenResult with completion, CI, and git/PR metadata.
@@ -138,10 +142,174 @@ class CodeGeneratorRunner:
 
         # Only run git ops when Codex succeeded
         if completion.status == CompletionStatus.COMPLETE:
-            git_errors = self._git_operations(working_dir, iteration, pr_number, result)
+            if getattr(self._config, "pipeline_mode", "standard") == "github_review":
+                git_errors = self._git_operations_fork_mode(
+                    working_dir, iteration, pr_number, result,
+                    story_context=story_context or {},
+                )
+            else:
+                git_errors = self._git_operations(working_dir, iteration, pr_number, result)
             result.git_errors = git_errors
 
         return result
+
+    # ── Git / GitHub operations (fork mode — GitHub Review) ───────────────────
+
+    def _git_operations_fork_mode(
+        self,
+        working_dir: Path,
+        iteration: int,
+        pr_number: Optional[int],
+        result: CodeGenResult,
+        story_context: dict | None = None,
+    ) -> list[str]:
+        """Fork-aware git ops for GitHub Review mode.
+
+        Assumes *working_dir* is already a cloned fork set up by the
+        orchestrator's fork+clone step.  Does NOT create a new remote repo.
+
+        Iteration 1:
+          1. Update remote URL to authenticated version.
+          2. Fetch + reset to latest main.
+          3. Create / checkout story branch.
+          4. Commit all generated changes.
+          5. Push story branch.
+          6. Open PR: story branch → main.
+
+        Iteration 2+:
+          1. Checkout story branch, commit fixes, push.
+          2. Resolve all existing PR review comments.
+        """
+        ctx = story_context or {}
+        story_id = ctx.get("story_id", "")
+        story_title = ctx.get("title", "")
+        story_acs: list[str] = ctx.get("acceptance_criteria", [])
+
+        cfg = self._config
+        feature_branch = (
+            getattr(cfg.project, "feature_branch", None) or f"story-{story_id or 'unknown'}"
+        )
+        repo_name = getattr(cfg.project, "repo_name", None) or ""
+
+        gh: VCSClient | None = self._vcs_client
+        if gh is None:
+            from ..vcs.factory import make_vcs_client
+            gh = make_vcs_client(cfg)
+        if gh is None:
+            logger.info("[GHR] VCS credentials not configured — skipping git ops")
+            return []
+        if repo_name and hasattr(gh, "for_repo") and repo_name != getattr(gh, "_repo", ""):
+            gh = gh.for_repo(repo_name)
+
+        errors: list[str] = []
+        git = GitOpsManager(working_dir)
+        remote_url = gh.get_remote_url(repo_name)
+
+        # Ensure remote URL is authenticated
+        git.add_remote("origin", remote_url)
+        git.set_user(_BOT_NAME, _BOT_EMAIL)
+
+        if iteration == 1:
+            # Fetch + reset to latest main so branch starts from a clean base
+            git.fetch("origin", "main")
+            if git.branch_exists("main"):
+                r = git.checkout("main")
+                git._run("reset", "--hard", "origin/main")
+            else:
+                r = git._run("checkout", "-b", "main", "origin/main")
+                if not r.success:
+                    errors.append(f"checkout main failed: {r.stderr}")
+                    return errors
+
+            # Create / checkout story branch
+            if git.branch_exists(feature_branch):
+                git.checkout(feature_branch)
+                # Rebase on main to pick up any new commits
+                git._run("rebase", "main")
+            else:
+                r = git.create_and_checkout(feature_branch, "main")
+                if not r.success:
+                    errors.append(f"create branch {feature_branch} failed: {r.stderr}")
+                    return errors
+
+            # Commit all changes
+            commit_msg = (
+                f"feat({feature_branch}): AI-generated implementation"
+                if not story_id
+                else f"feat({story_id}): {story_title or 'AI-generated implementation'}"
+            )
+            git.commit_all(commit_msg)
+
+            # Push story branch
+            r = git.push_upstream(feature_branch)
+            if not r.success:
+                r = git.push(feature_branch, force=True)
+            if not r.success:
+                errors.append(f"push {feature_branch} failed: {r.stderr}")
+                return errors
+            result.branch_pushed = feature_branch
+
+            # Build PR body from acceptance criteria
+            acs_lines = "\n".join(f"- [ ] {ac}" for ac in story_acs) if story_acs else ""
+            pr_title = (
+                f"[Story {story_id}] {story_title}"
+                if story_id and story_title
+                else f"[Agent OS] {feature_branch}"
+            )
+            pr_body = (
+                f"## {story_title}\n\n"
+                f"Automated pull request generated by Agent OS.\n\n"
+                + (f"### Acceptance Criteria\n{acs_lines}\n" if acs_lines else "")
+            )
+            pr_res = gh.create_pr(
+                title=pr_title,
+                head=feature_branch,
+                base="main",
+                body=pr_body,
+            )
+            if pr_res.success and pr_res.data:
+                result.pr_number = pr_res.data.get("number")
+                result.pr_url = pr_res.data.get("html_url", "")
+                logger.info("[GHR] Created PR #%d for story %s", result.pr_number, story_id)
+            else:
+                # PR may already exist from a previous attempt
+                existing = gh.find_open_pr(feature_branch)
+                if existing:
+                    result.pr_number = existing
+                    logger.info("[GHR] Reusing existing PR #%d for %s", existing, feature_branch)
+                else:
+                    errors.append(f"create PR failed: {pr_res.error}")
+
+        else:
+            # Iteration 2+: checkout story branch, commit fixes, push
+            git.fetch("origin", feature_branch)
+            r = git.checkout(feature_branch)
+            if not r.success:
+                errors.append(f"checkout {feature_branch} failed: {r.stderr}")
+                return errors
+
+            commit_msg = (
+                f"fix({story_id or feature_branch}): address review comments (iter {iteration})"
+            )
+            git.commit_all(commit_msg)
+
+            r = git.push(feature_branch)
+            if not r.success:
+                r = git.push(feature_branch, force=True)
+            if not r.success:
+                errors.append(f"push {feature_branch} iter{iteration} failed: {r.stderr}")
+            result.branch_pushed = feature_branch
+            result.pr_number = pr_number
+
+            # Resolve all existing PR review comments so reviewer sees a clean slate
+            if pr_number:
+                try:
+                    gh.resolve_all_pr_review_comments(pr_number)
+                    logger.info("[GHR] Resolved review comments on PR #%d", pr_number)
+                except Exception:
+                    logger.debug("[GHR] resolve_all_pr_review_comments raised", exc_info=True)
+
+        return errors
 
     # ── Git / GitHub operations ────────────────────────────────────────────
 

@@ -133,3 +133,39 @@ class GitHubVCSClient(VCSClient):
 
     def delete_branch(self, branch: str) -> VCSResult:
         return _wrap(self._gh.delete_branch(branch))
+
+    # ── Fork operations ──────────────────────────────────────────────────────
+
+    def fork_repo(self, source_owner: str, source_repo: str, *, name: str = "") -> VCSResult:
+        """Fork *source_owner*/*source_repo* to the authenticated user's account.
+
+        GitHub forks are asynchronous (202 Accepted). Use :meth:`wait_for_fork`
+        to confirm the fork is accessible before attempting a clone.
+        """
+        return _wrap(self._gh.fork_repo(source_owner, source_repo, name=name))
+
+    def wait_for_fork(
+        self,
+        fork_owner: str,
+        fork_repo: str,
+        max_wait_seconds: int = 30,
+    ) -> bool:
+        """Poll until the fork exists and is accessible.
+
+        Args:
+            fork_owner: GitHub user/org that owns the fork.
+            fork_repo:  Name of the forked repository.
+            max_wait_seconds: Give up after this many seconds.
+
+        Returns:
+            True if fork is accessible within the timeout, False otherwise.
+        """
+        import time
+        from ..github.client import GitHubClient
+
+        checker = GitHubClient(token=self._token, owner=fork_owner, repo=fork_repo)
+        for _ in range(max_wait_seconds):
+            if checker.repo_exists():
+                return True
+            time.sleep(1)
+        return False

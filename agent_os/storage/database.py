@@ -73,6 +73,24 @@ CREATE TABLE IF NOT EXISTS agent_files (
     updated_at TEXT NOT NULL,
     PRIMARY KEY (agent_name, file_name)
 );
+
+CREATE TABLE IF NOT EXISTS story_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    story_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    acceptance_criteria TEXT DEFAULT '[]',
+    position INTEGER NOT NULL DEFAULT 0,
+    status TEXT DEFAULT 'queued',
+    branch_name TEXT DEFAULT '',
+    pr_number INTEGER,
+    pr_url TEXT DEFAULT '',
+    story_iteration INTEGER DEFAULT 0,
+    depends_on TEXT DEFAULT '[]',
+    dependency_reason TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
 """
 
 
@@ -177,13 +195,15 @@ class Database:
         PipelineRepository(self.conn).save_state(state)
 
     def clear_run_data(self) -> None:
-        """Delete all iteration rows and reset pipeline_state to IDLE.
+        """Delete all iteration rows, story queue, and requirements; reset pipeline_state to IDLE.
 
         Called by the orchestrator reset() so that Projects, Code Insights,
         and Git History pages reflect a clean slate for the next run.
         """
         with self.conn:
             self.conn.execute("DELETE FROM iterations")
+            self.conn.execute("DELETE FROM story_queue")
+            self.conn.execute("DELETE FROM requirements")
             self.conn.execute(
                 "UPDATE pipeline_state SET "
                 "current_iteration = 0, pipeline_status = 'IDLE', "

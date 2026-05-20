@@ -36,7 +36,12 @@ def _sync_project_config(config, config_path) -> None:
         import yaml as _yaml
         req_path = _Path(config.requirements.path)
         if req_path.exists():
-            raw = _yaml.safe_load(req_path.read_text(encoding="utf-8")) or {}
+            raw_text = req_path.read_text(encoding="utf-8")
+            if req_path.suffix.lower() == ".md":
+                _md_match = re.search(r"```yaml\s*\n(.*?)\n```", raw_text, re.DOTALL)
+                raw = _yaml.safe_load(_md_match.group(1)) if _md_match else {}
+            else:
+                raw = _yaml.safe_load(raw_text) or {}
             epics = raw.get("epics", [])
 
             name = ""
@@ -74,24 +79,6 @@ def _sync_project_config(config, config_path) -> None:
                 if not config.project.repo_name or config.project.repo_name.lower().startswith("imported"):
                     config.project.repo_name = slug
                 logger.info("Project name set from requirements: %s", name)
-
-        # Auto-provision project folder on Desktop if name is known but root_path is not
-        if config.project.name and not config.project.root_path:
-            slug = re.sub(r"[^\w\s-]", "", config.project.name).strip().replace(" ", "-").lower()
-            # Truncate long slugs to keep folder names reasonable
-            if len(slug) > 60:
-                slug = slug[:60].rstrip("-")
-            if slug:
-                desktop = _Path.home() / "Desktop" / slug
-                # If folder already exists, append a numeric suffix to avoid collisions
-                if desktop.exists():
-                    counter = 2
-                    while (_Path.home() / "Desktop" / f"{slug}-{counter}").exists():
-                        counter += 1
-                    desktop = _Path.home() / "Desktop" / f"{slug}-{counter}"
-                desktop.mkdir(parents=True, exist_ok=True)
-                config.project.root_path = str(desktop)
-                logger.info("Auto-provisioned project folder: %s", desktop)
 
         # Persist any changes back to config.yaml
         if config_path:

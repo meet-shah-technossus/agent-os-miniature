@@ -289,6 +289,10 @@ export default function SettingsView() {
   const [adoOrg, setAdoOrg]               = useState('');
   const [adoToken, setAdoToken]           = useState('');
   const [adoProject, setAdoProject]       = useState('');
+  const [adoProjects, setAdoProjects]     = useState<string[]>([]);
+  const [adoProjectsLoading, setAdoProjectsLoading] = useState(false);
+  const [adoProjectsFetchError, setAdoProjectsFetchError] = useState('');
+  const [adoMcpOpen, setAdoMcpOpen]       = useState<Record<string, boolean>>({});
 
   /* ── Pipeline mode ──────────────────────────────────────────────────────── */
   const [pipelineMode, setPipelineMode]   = useState<'standard' | 'github_review'>('standard');
@@ -297,7 +301,7 @@ export default function SettingsView() {
   const [ghReviewReqUploading, setGhReviewReqUploading] = useState(false);
   const ghReviewFileInputRef = useRef<HTMLInputElement>(null);
   const [ghReviewForkName, setGhReviewForkName] = useState('');
-  const [ghReviewBranch, setGhReviewBranch]     = useState('agent-os-fixes');
+  const [ghReviewBranch, setGhReviewBranch]     = useState('story-');
 
   /* ── Load settings ──────────────────────────────────────────────────────── */
   useEffect(() => {
@@ -349,7 +353,7 @@ export default function SettingsView() {
         setGhReviewUrl(s.github_review.source_repo_url ?? '');
         setGhReviewReqPath(s.github_review.requirements_path ?? '');
         setGhReviewForkName(s.github_review.fork_repo_name ?? '');
-        setGhReviewBranch(s.github_review.branch_name || 'agent-os-fixes');
+        setGhReviewBranch(s.github_review.branch_name || 'story-');
       }
     }).catch(() => {});
   }, []);
@@ -405,9 +409,9 @@ export default function SettingsView() {
         vcs: { provider: vcsProvider },
         github_review: {
           source_repo_url: ghReviewUrl,
-          requirements_path: ghReviewReqPath,
+          requirements_path: reqPath,
           fork_repo_name: ghReviewForkName,
-          branch_name: ghReviewBranch || 'agent-os-fixes',
+          branch_name: ghReviewBranch || 'story-',
         },
         requirements: {
           path: reqPath, source: reqSource,
@@ -438,6 +442,26 @@ export default function SettingsView() {
       setGhTest(r);
     } catch {
       setGhTest({ valid: false, user: '', message: 'Request failed' });
+    }
+  };
+
+  const fetchAdoProjects = async (org: string, token: string) => {
+    if (!org || !token || token.startsWith('***')) return;
+    setAdoProjectsLoading(true);
+    setAdoProjectsFetchError('');
+    try {
+      const res = await api.getAdoProjects(org, token);
+      setAdoProjects(res.projects);
+      // If the currently stored project isn't in the fetched list, auto-select the first
+      // available project so the controlled <select> value always matches an option.
+      if (res.projects.length > 0 && !res.projects.includes(adoProject)) {
+        setAdoProject(res.projects[0]);
+      }
+    } catch (err) {
+      setAdoProjectsFetchError(err instanceof Error ? err.message : 'Failed to fetch projects');
+      setAdoProjects([]);
+    } finally {
+      setAdoProjectsLoading(false);
     }
   };
 
@@ -599,6 +623,189 @@ export default function SettingsView() {
   /* ═══════════════════════════════════════════════════════════════════════════ */
 
   function renderAITools() {
+    const adoOrgUrl = adoOrg ? `https://dev.azure.com/${adoOrg}` : 'https://dev.azure.com/{your-org}';
+    const orgName = adoOrg || '{your-org}';
+    // Full JSON structure to paste into the config file.
+    // Uses cmd /c npx for Windows compatibility (npx is a .cmd script on Windows,
+    // not a binary, so MCP clients must go through cmd.exe to launch it).
+    // Package: @azure-devops/mcp (correct package — NOT @azure/azure-devops-mcp).
+    // Org is a positional CLI arg; --authentication azcli uses the az login token.
+    const mcpJsonFull = (org: string) => JSON.stringify({
+      mcpServers: {
+        'azure-devops': {
+          command: 'cmd',
+          args: ['/c', 'npx', '-y', '@azure-devops/mcp', org, '--authentication', 'azcli'],
+        },
+      },
+    }, null, 2);
+
+    type StepEntry = { label: string; content: string; isRunnable: boolean; isJson?: boolean; note?: string };
+    type McpEntry = { steps: StepEntry[] };
+
+    // Shared step reused by all CLIs
+    const pathRefreshStep: StepEntry = {
+      label: 'Step 2 — Refresh PATH (if az is still not recognised after install)',
+      content: '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")',
+      isRunnable: true,
+      note: 'Run this in the same terminal. It loads the new PATH immediately — no need to restart VS Code.',
+    };
+
+    const ADO_MCP_SETUP: Partial<Record<ToolKey, McpEntry>> = {
+      codex: {
+        steps: [
+          {
+            label: 'Step 1 — Install Azure CLI',
+            content: 'winget install Microsoft.AzureCLI',
+            isRunnable: true,
+            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
+          },
+          pathRefreshStep,
+          {
+            label: 'Step 3 — Authenticate with Microsoft (opens browser)',
+            content: 'az login',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 4 — Remove any previously broken config (safe to skip if first time)',
+            content: 'codex mcp remove azure-devops',
+            isRunnable: true,
+            note: 'Clears the old incorrect config. Ignore any "not found" error — it just means there was nothing to remove.',
+          },
+          {
+            label: 'Step 5 — Register ADO MCP server with Codex CLI (Windows-compatible)',
+            content: `codex mcp add azure-devops -- cmd /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`,
+            isRunnable: true,
+            note: 'Saves to ~/.codex/config.toml. Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.',
+          },
+          {
+            label: 'Step 6 — Start Codex CLI',
+            content: 'codex',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 7 — Verify MCP connection (run this inside the Codex session)',
+            content: '/mcp',
+            isRunnable: false,
+            note: 'Lists active MCP servers. You should see "azure-devops" in the output.',
+          },
+        ],
+      },
+      claude: {
+        steps: [
+          {
+            label: 'Step 1 — Install Azure CLI',
+            content: 'winget install Microsoft.AzureCLI',
+            isRunnable: true,
+            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
+          },
+          pathRefreshStep,
+          {
+            label: 'Step 3 — Authenticate with Microsoft (opens browser)',
+            content: 'az login',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 4 — Register ADO MCP server with Claude Code (Windows-compatible)',
+            content: `claude mcp add azure-devops cmd -- /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`,
+            isRunnable: true,
+            note: 'Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.',
+          },
+          {
+            label: 'Step 5 — Start Claude Code',
+            content: 'claude',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 6 — Verify MCP connection (run this inside the Claude session)',
+            content: '/mcp',
+            isRunnable: false,
+            note: 'Lists active MCP servers. You should see "azure-devops" in the output.',
+          },
+        ],
+      },
+      gemini: {
+        steps: [
+          {
+            label: 'Step 1 — Install Azure CLI',
+            content: 'winget install Microsoft.AzureCLI',
+            isRunnable: true,
+            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
+          },
+          pathRefreshStep,
+          {
+            label: 'Step 3 — Authenticate with Microsoft (opens browser)',
+            content: 'az login',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 4 — Open (or create) the Gemini config file',
+            content: 'New-Item -Path "$env:USERPROFILE\\.gemini" -ItemType Directory -Force | Out-Null; notepad "$env:USERPROFILE\\.gemini\\settings.json"',
+            isRunnable: true,
+            note: 'Windows path: C:\\Users\\<YourName>\\.gemini\\settings.json — If Notepad asks to create a new file, click Yes.',
+          },
+          {
+            label: 'Step 5 — Paste this into the file (replace entire contents if file is new):',
+            content: mcpJsonFull(orgName),
+            isRunnable: false,
+            isJson: true,
+            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest. On macOS/Linux replace "cmd" with "npx" and remove the "/c" arg.',
+          },
+          {
+            label: 'Step 6 — Start Gemini CLI',
+            content: 'gemini',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 7 — Verify MCP connection (run this inside the Gemini session)',
+            content: '/mcp',
+            isRunnable: false,
+            note: 'Lists active MCP servers. You should see "azure-devops" in the output.',
+          },
+        ],
+      },
+      cursor: {
+        steps: [
+          {
+            label: 'Step 1 — Install Azure CLI',
+            content: 'winget install Microsoft.AzureCLI',
+            isRunnable: true,
+            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
+          },
+          pathRefreshStep,
+          {
+            label: 'Step 3 — Authenticate with Microsoft (opens browser)',
+            content: 'az login',
+            isRunnable: true,
+          },
+          {
+            label: 'Step 4 — Open (or create) .cursor/mcp.json in your project root',
+            content: 'New-Item -Path ".cursor" -ItemType Directory -Force | Out-Null; notepad ".cursor\\mcp.json"',
+            isRunnable: true,
+            note: 'Run this from your project root. If Notepad asks to create a new file, click Yes.',
+          },
+          {
+            label: 'Step 5 — Paste this into the file (replace entire contents if file is new):',
+            content: mcpJsonFull(orgName),
+            isRunnable: false,
+            isJson: true,
+            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest. On macOS/Linux replace "cmd" with "npx" and remove the "/c" arg.',
+          },
+          {
+            label: 'Step 6 — Reopen Cursor to load the new MCP configuration',
+            content: 'cursor .',
+            isRunnable: true,
+            note: 'Or use Cursor → Settings → MCP to reload without fully restarting.',
+          },
+          {
+            label: 'Step 7 — Verify: Cursor → Settings → MCP',
+            content: '',
+            isRunnable: false,
+            note: 'Open Cursor Settings and navigate to the MCP section. You should see "azure-devops" listed as an active server.',
+          },
+        ],
+      },
+    };
+
     return (
       <div className="space-y-6">
         {/* Tool cards */}
@@ -958,6 +1165,88 @@ export default function SettingsView() {
                                 Documentation →
                               </a>
                             )}
+
+                            {/* ADO MCP Integration */}
+                            {ADO_MCP_SETUP[tool.key] && (() => {
+                              const mcpCfg = ADO_MCP_SETUP[tool.key]!;
+                              const mcpKey = `${tool.key}-mcp`;
+                              return (
+                                <div className="mt-3 pt-3 border-t border-white/[0.04]">
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); setAdoMcpOpen(p => ({ ...p, [tool.key]: !p[tool.key] })); }}
+                                    className="flex items-center gap-2 w-full text-left text-xs text-white/50 hover:text-white/70 transition-colors"
+                                  >
+                                    <svg className="w-3.5 h-3.5 text-blue-400/70 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                                    </svg>
+                                    <span>Azure DevOps MCP</span>
+                                    <span className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400/70 font-medium">Connect</span>
+                                    <svg className={`w-3 h-3 ml-auto transition-transform ${adoMcpOpen[tool.key] ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                  </button>
+
+                                  {adoMcpOpen[tool.key] && (
+                                    <div className="mt-3 space-y-4">
+                                      <p className="text-xs text-white/40">
+                                        Connect {tool.name} to the Azure DevOps MCP server so the agent can update work item
+                                        states during code generation. Authenticate via your Microsoft account — no PAT stored in config.
+                                      </p>
+
+                                      {mcpCfg.steps.map((step, idx) => (
+                                        <div key={idx}>
+                                          <p className="text-[10px] text-white/40 mb-1.5 font-semibold uppercase tracking-wider">
+                                            {step.label}
+                                          </p>
+                                          {step.content && (
+                                            <div className="flex items-start gap-2">
+                                              {step.isJson ? (
+                                                <pre className="flex-1 min-w-0 rounded-lg bg-black/40 border border-white/[0.06] px-3 py-2.5 text-xs font-mono text-green-300/90 overflow-x-auto whitespace-pre-wrap break-all">
+                                                  {step.content}
+                                                </pre>
+                                              ) : (
+                                                <code className="flex-1 min-w-0 block rounded-lg bg-black/40 border border-white/[0.06] px-3 py-2 text-xs font-mono text-blue-300/90 break-all">
+                                                  {step.content}
+                                                </code>
+                                              )}
+                                              <div className="flex flex-col gap-1 shrink-0">
+                                                <button
+                                                  title={copiedCmd[`${mcpKey}-${idx}`] ? 'Copied!' : 'Copy'}
+                                                  onClick={(e) => { e.stopPropagation(); copyCommand(`${mcpKey}-${idx}`, step.content); }}
+                                                  className="p-1.5 rounded-md text-white/30 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
+                                                >
+                                                  {copiedCmd[`${mcpKey}-${idx}`]
+                                                    ? <svg className="w-3.5 h-3.5 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" /></svg>
+                                                    : <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                                                  }
+                                                </button>
+                                                {step.isRunnable && (
+                                                  <button
+                                                    title="Run in Terminal"
+                                                    onClick={(e) => { e.stopPropagation(); api.runInMcpTerminal(`ado-mcp-${tool.key}`, step.content).catch(() => {}); }}
+                                                    className="p-1.5 rounded-md text-white/30 hover:text-white/70 hover:bg-white/[0.06] transition-colors"
+                                                  >
+                                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                          )}
+                                          {step.note && (
+                                            <p className="text-[10px] text-amber-400/60 mt-1.5">{step.note}</p>
+                                          )}
+                                          {step.isJson && !adoOrg && (
+                                            <p className="text-[10px] text-amber-400/60 mt-1">
+                                              ⚠ Set your ADO organisation in the Requirements tab to pre-fill the org URL.
+                                            </p>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
 
@@ -1109,11 +1398,43 @@ export default function SettingsView() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className={label}>Organization</label>
-                <input className={input} value={adoOrg} onChange={(e) => setAdoOrg(e.target.value)} placeholder="my-ado-org" />
+                <input
+                  className={input}
+                  value={adoOrg}
+                  onChange={(e) => { setAdoOrg(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
+                  placeholder="my-ado-org"
+                />
               </div>
               <div>
                 <label className={label}>Project</label>
-                <input className={input} value={adoProject} onChange={(e) => setAdoProject(e.target.value)} placeholder="my-project" />
+                <div className="flex gap-2">
+                  <select
+                    className={`${input} flex-1`}
+                    value={adoProject}
+                    onChange={(e) => setAdoProject(e.target.value)}
+                    disabled={adoProjectsLoading}
+                  >
+                    {adoProjects.length === 0 ? (
+                      <option value="">{adoProjectsLoading ? 'Loading…' : '— fetch projects —'}</option>
+                    ) : (
+                      <>
+                        <option value="">— select a project —</option>
+                        {adoProjects.map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={adoProjectsLoading || !adoOrg || !adoToken || adoToken.startsWith('***')}
+                    onClick={() => fetchAdoProjects(adoOrg, adoToken)}
+                    className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
+                  >
+                    {adoProjectsLoading ? '…' : 'Fetch'}
+                  </button>
+                </div>
+                {adoProjectsFetchError && <p className="text-[10px] text-red-400/80 mt-1">{adoProjectsFetchError}</p>}
               </div>
             </div>
             <div className="mt-4">
@@ -1288,6 +1609,8 @@ export default function SettingsView() {
 
           {pipelineMode === 'github_review' && (
             <div className="mt-4 pt-4 border-t border-white/[0.04] space-y-4">
+
+              {/* Source Repository URL */}
               <div>
                 <label className={label}>Source Repository URL</label>
                 <input
@@ -1297,50 +1620,250 @@ export default function SettingsView() {
                   placeholder="https://github.com/owner/repo"
                 />
               </div>
+
+              {/* Requirements Source — shares state with the Requirements tab */}
               <div>
-                <label className={label}>Requirements File</label>
-                <input
-                  ref={ghReviewFileInputRef}
-                  type="file" accept=".yaml,.yml"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    if (!file) return;
-                    setGhReviewReqUploading(true);
-                    try {
-                      const res: RequirementsUploadResponse = await api.uploadRequirements(file);
-                      setGhReviewReqPath(res.path);
-                    } catch (err) {
-                      setReqError(err instanceof Error ? err.message : 'Upload failed');
-                    } finally {
-                      setGhReviewReqUploading(false);
-                      if (ghReviewFileInputRef.current) ghReviewFileInputRef.current.value = '';
-                    }
-                  }}
-                />
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => ghReviewFileInputRef.current?.click()}
-                    disabled={ghReviewReqUploading}
-                    className={btnSecondary}
-                  >
-                    {ghReviewReqUploading ? 'Uploading…' : 'Browse…'}
-                  </button>
-                  {ghReviewReqPath ? (
-                    <span className="text-xs font-mono text-indigo-300/80 truncate max-w-xs">{ghReviewReqPath.split('/').pop()}</span>
-                  ) : (
-                    <span className="text-xs text-white/25">No file chosen</span>
-                  )}
+                <p className={label}>Requirements Source</p>
+                <div className="grid grid-cols-4 gap-2 mb-3">
+                  {([
+                    ['device', '📁', 'From Device'],
+                    ['jira',   '🟦', 'JIRA'],
+                    ['asana',  '🟧', 'Asana'],
+                    ['ado',    '🟦', 'Azure DevOps'],
+                  ] as [typeof reqSource, string, string][]).map(([val, icon, name]) => (
+                    <button
+                      key={val}
+                      onClick={() => { setReqSource(val); setReqError(''); setReqStats(null); }}
+                      className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-xs font-medium transition-colors ${
+                        reqSource === val
+                          ? 'border-indigo-500/40 bg-indigo-500/10 text-white'
+                          : 'border-white/[0.06] text-white/50 hover:border-white/[0.12]'
+                      }`}
+                    >
+                      <span>{icon}</span> {name}
+                    </button>
+                  ))}
                 </div>
+
+                {/* Device */}
+                {reqSource === 'device' && (
+                  <div className="space-y-2">
+                    <input
+                      ref={fileInputRef} type="file"
+                      accept=".xlsx,.csv,.txt,.yaml,.yml"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        setReqError(''); setReqStats(null); setReqUploading(true);
+                        try {
+                          const res: RequirementsUploadResponse = await api.uploadRequirements(file);
+                          setReqPath(res.path);
+                          const s = res.stats;
+                          setReqStats({
+                            epics:    s?.epics    ?? (res as any).epics    ?? 0,
+                            features: s?.features ?? (res as any).features ?? 0,
+                            stories:  s?.stories  ?? (res as any).tasks    ?? 0,
+                          });
+                        } catch (err) {
+                          setReqError(err instanceof Error ? err.message : 'Upload failed');
+                        } finally {
+                          setReqUploading(false);
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                        }
+                      }}
+                    />
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => fileInputRef.current?.click()} disabled={reqUploading} className={btnSecondary}>
+                        {reqUploading ? 'Uploading…' : 'Browse & Upload…'}
+                      </button>
+                      {reqPath ? (
+                        <span className="text-xs font-mono text-indigo-300/80 truncate max-w-xs">{reqPath.split('/').pop()}</span>
+                      ) : (
+                        <span className="text-xs text-white/25">No file chosen</span>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* JIRA */}
+                {reqSource === 'jira' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className={label}>JIRA Base URL</label>
+                      <input className={input} value={jiraUrl} onChange={(e) => setJiraUrl(e.target.value)} placeholder="https://yourorg.atlassian.net" />
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className={label}>Email</label>
+                        <input className={input} type="email" value={jiraEmail} onChange={(e) => setJiraEmail(e.target.value)} placeholder="you@example.com" />
+                      </div>
+                      <div>
+                        <label className={label}>Project Key</label>
+                        <input className={input} value={jiraProject} onChange={(e) => setJiraProject(e.target.value.toUpperCase())} placeholder="PROJ" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className={label}>API Token</label>
+                      <input className={input} type="password" value={jiraToken} onChange={(e) => setJiraToken(e.target.value)} placeholder="Atlassian API token" />
+                    </div>
+                    <button
+                      disabled={reqIngesting || !jiraUrl || !jiraEmail || !jiraToken || !jiraProject}
+                      onClick={async () => {
+                        setReqError(''); setReqStats(null); setReqIngesting(true); setReqValidationResult(null);
+                        try {
+                          const res = await api.ingestRemoteRequirements({
+                            source: 'jira', jira_url: jiraUrl, jira_email: jiraEmail,
+                            jira_api_token: jiraToken.startsWith('***') ? '' : jiraToken,
+                            jira_project_key: jiraProject,
+                          });
+                          setReqPath(res.path);
+                          const s = res.stats;
+                          setReqStats({ epics: s?.epics ?? 0, features: s?.features ?? 0, stories: s?.stories ?? 0 });
+                        } catch (err) {
+                          setReqError(err instanceof Error ? err.message : 'Ingestion failed');
+                        } finally { setReqIngesting(false); }
+                      }}
+                      className={btnPrimary}
+                    >
+                      {reqIngesting ? 'Importing…' : 'Import from JIRA'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Asana */}
+                {reqSource === 'asana' && (
+                  <div className="space-y-3">
+                    <div>
+                      <label className={label}>Personal Access Token</label>
+                      <input className={input} type="password" value={asanaToken} onChange={(e) => setAsanaToken(e.target.value)} placeholder="Asana PAT" />
+                    </div>
+                    <div>
+                      <label className={label}>Project GID</label>
+                      <input className={input} value={asanaProjectId} onChange={(e) => setAsanaProjectId(e.target.value)} placeholder="1234567890123456" />
+                    </div>
+                    <button
+                      disabled={reqIngesting || !asanaToken || !asanaProjectId}
+                      onClick={async () => {
+                        setReqError(''); setReqStats(null); setReqIngesting(true); setReqValidationResult(null);
+                        try {
+                          const res = await api.ingestRemoteRequirements({
+                            source: 'asana',
+                            asana_token: asanaToken.startsWith('***') ? '' : asanaToken,
+                            asana_project_id: asanaProjectId,
+                          });
+                          setReqPath(res.path);
+                          const s = res.stats;
+                          setReqStats({ epics: s?.epics ?? 0, features: s?.features ?? 0, stories: s?.stories ?? 0 });
+                        } catch (err) {
+                          setReqError(err instanceof Error ? err.message : 'Ingestion failed');
+                        } finally { setReqIngesting(false); }
+                      }}
+                      className={btnPrimary}
+                    >
+                      {reqIngesting ? 'Importing…' : 'Import from Asana'}
+                    </button>
+                  </div>
+                )}
+
+                {/* ADO */}
+                {reqSource === 'ado' && (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className={label}>Organisation</label>
+                        <input
+                          className={input}
+                          value={adoOrg}
+                          onChange={(e) => { setAdoOrg(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
+                          placeholder="my-org"
+                        />
+                      </div>
+                      <div>
+                        <label className={label}>Project</label>
+                        <div className="flex gap-2">
+                          <select
+                            className={`${input} flex-1`}
+                            value={adoProject}
+                            onChange={(e) => setAdoProject(e.target.value)}
+                            disabled={adoProjectsLoading}
+                          >
+                            {adoProjects.length === 0 ? (
+                              <option value="">{adoProjectsLoading ? 'Loading…' : '— fetch projects —'}</option>
+                            ) : (
+                              <>
+                                <option value="">— select a project —</option>
+                                {adoProjects.map((p) => (
+                                  <option key={p} value={p}>{p}</option>
+                                ))}
+                              </>
+                            )}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={adoProjectsLoading || !adoOrg || !adoToken || adoToken.startsWith('***')}
+                            onClick={() => fetchAdoProjects(adoOrg, adoToken)}
+                            className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
+                          >
+                            {adoProjectsLoading ? '…' : 'Fetch'}
+                          </button>
+                        </div>
+                        {adoProjectsFetchError && <p className="text-[10px] text-red-400/80 mt-1">{adoProjectsFetchError}</p>}
+                      </div>
+                    </div>
+                    <div>
+                      <label className={label}>Personal Access Token</label>
+                      <input
+                        className={input}
+                        type="password"
+                        value={adoToken}
+                        onChange={(e) => { setAdoToken(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
+                        placeholder="ADO PAT"
+                      />
+                    </div>
+                    <button
+                      disabled={reqIngesting || !adoOrg || !adoToken || !adoProject}
+                      onClick={async () => {
+                        setReqError(''); setReqStats(null); setReqIngesting(true); setReqValidationResult(null);
+                        try {
+                          const res = await api.ingestRemoteRequirements({
+                            source: 'ado', ado_org: adoOrg,
+                            ado_token: adoToken.startsWith('***') ? '' : adoToken,
+                            ado_project: adoProject,
+                          });
+                          setReqPath(res.path);
+                          const s = res.stats;
+                          setReqStats({ epics: s?.epics ?? 0, features: s?.features ?? 0, stories: s?.stories ?? 0 });
+                        } catch (err) {
+                          setReqError(err instanceof Error ? err.message : 'Ingestion failed');
+                        } finally { setReqIngesting(false); }
+                      }}
+                      className={btnPrimary}
+                    >
+                      {reqIngesting ? 'Importing…' : 'Import from ADO'}
+                    </button>
+                  </div>
+                )}
+
+                {/* Ingestion feedback */}
+                {reqStats && (
+                  <p className="text-xs text-green-400/80 mt-2">
+                    Loaded: {reqStats.epics} epics · {reqStats.features} features · {reqStats.stories} stories
+                  </p>
+                )}
+                {reqError && <p className="text-xs text-red-400/80 mt-2">{reqError}</p>}
               </div>
+
+              {/* Fork Name Override + Branch Name Prefix */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className={label}>Fork Name Override</label>
                   <input className={input} value={ghReviewForkName} onChange={(e) => setGhReviewForkName(e.target.value)} placeholder="my-repo" />
                 </div>
                 <div>
-                  <label className={label}>Branch Name</label>
-                  <input className={input} value={ghReviewBranch} onChange={(e) => setGhReviewBranch(e.target.value)} placeholder="agent-os-fixes" />
+                  <label className={label}>Branch Name Prefix</label>
+                  <input className={input} value={ghReviewBranch} onChange={(e) => setGhReviewBranch(e.target.value)} placeholder="story-" />
+                  <p className="text-[10px] text-white/25 mt-1">Branches are auto-named: prefix + story-id (e.g. story-42-auth)</p>
                 </div>
               </div>
             </div>
@@ -1562,16 +2085,54 @@ export default function SettingsView() {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className={label}>Organisation</label>
-                <input className={input} value={adoOrg} onChange={(e) => setAdoOrg(e.target.value)} placeholder="my-org" />
+                <input
+                  className={input}
+                  value={adoOrg}
+                  onChange={(e) => { setAdoOrg(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
+                  placeholder="my-org"
+                />
               </div>
               <div>
                 <label className={label}>Project</label>
-                <input className={input} value={adoProject} onChange={(e) => setAdoProject(e.target.value)} placeholder="MyProject" />
+                <div className="flex gap-2">
+                  <select
+                    className={`${input} flex-1`}
+                    value={adoProject}
+                    onChange={(e) => setAdoProject(e.target.value)}
+                    disabled={adoProjectsLoading}
+                  >
+                    {adoProjects.length === 0 ? (
+                      <option value="">{adoProjectsLoading ? 'Loading…' : '— fetch projects —'}</option>
+                    ) : (
+                      <>
+                        <option value="">— select a project —</option>
+                        {adoProjects.map((p) => (
+                          <option key={p} value={p}>{p}</option>
+                        ))}
+                      </>
+                    )}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={adoProjectsLoading || !adoOrg || !adoToken || adoToken.startsWith('***')}
+                    onClick={() => fetchAdoProjects(adoOrg, adoToken)}
+                    className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
+                  >
+                    {adoProjectsLoading ? '…' : 'Fetch'}
+                  </button>
+                </div>
+                {adoProjectsFetchError && <p className="text-[10px] text-red-400/80 mt-1">{adoProjectsFetchError}</p>}
               </div>
             </div>
             <div>
               <label className={label}>Personal Access Token</label>
-              <input className={input} type="password" value={adoToken} onChange={(e) => setAdoToken(e.target.value)} placeholder="ADO PAT" />
+              <input
+                className={input}
+                type="password"
+                value={adoToken}
+                onChange={(e) => { setAdoToken(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
+                placeholder="ADO PAT"
+              />
               <p className="text-[10px] text-white/25 mt-1">Generate at: dev.azure.com → User settings → Personal access tokens</p>
             </div>
             <div className="flex gap-2">

@@ -83,6 +83,7 @@ writing the final fix prompt."""
         requirements_text: Optional[str] = None,
         review_json: Optional[str] = None,
         on_stdout: Optional[Callable[[str], None]] = None,
+        story_context: Optional[dict] = None,
     ) -> str:
         """Generate a prompt and write it to the configured output path.
 
@@ -101,12 +102,14 @@ writing the final fix prompt."""
             if not requirements_text:
                 raise ValueError("requirements_text is required for iteration 1")
             prompt_text = self._generate_implementation_prompt(
-                requirements_text, iteration, on_stdout
+                requirements_text, iteration, on_stdout, story_context=story_context
             )
         else:
             if not review_json:
                 raise ValueError("review_json is required for iteration 2+")
-            prompt_text = self._generate_fix_prompt(review_json, iteration, on_stdout)
+            prompt_text = self._generate_fix_prompt(
+                review_json, iteration, on_stdout, story_context=story_context
+            )
 
         self._write_prompt(prompt_text, iteration)
         return prompt_text
@@ -118,10 +121,28 @@ writing the final fix prompt."""
         requirements_text: str,
         iteration: int,
         on_stdout: Optional[Callable[[str], None]],
+        story_context: Optional[dict] = None,
     ) -> str:
         """Call OpenAI to produce a full implementation prompt from requirements."""
         project_name = self._config.project.name or "the project"
         language = self._config.project.language or "python"
+
+        # Build system prompt — append fork-mode addendum when in GitHub Review mode
+        system_prompt = self._SYSTEM_IMPLEMENTATION
+        if story_context and story_context.get("is_fork_mode"):
+            story_id_str = story_context.get("story_id", "")
+            story_title = story_context.get("title", "")
+            story_label = f"{story_id_str}: {story_title}" if story_id_str else (story_title or "this story")
+            system_prompt = system_prompt + (
+                "\n\nIMPORTANT — FORK/STORY MODE:\n"
+                f"You are generating a prompt for **{story_label}** on an already-forked repository.\n"
+                "The repository has been forked and cloned. Existing code is in place.\n"
+                "The generated prompt MUST instruct the coding agent to:\n"
+                "  1. Make ONLY the changes required for this story.\n"
+                "  2. Do NOT delete, recreate, or rewrite files unrelated to this story.\n"
+                "  3. Follow the existing code style, patterns, and directory structure.\n"
+                "  4. Run ci_check.py after all changes to validate nothing is broken.\n"
+            )
 
         user_prompt = (
             f"Generate a comprehensive implementation prompt for **{project_name}** "
@@ -135,11 +156,13 @@ writing the final fix prompt."""
             "then write the complete implementation prompt."
         )
 
-        fallback = self._fallback_implementation_prompt(requirements_text, project_name, language)
+        fallback = self._fallback_implementation_prompt(
+            requirements_text, project_name, language, story_context=story_context
+        )
         model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
         return self._stream_openai(
-            system_prompt=self._SYSTEM_IMPLEMENTATION,
+            system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=model,
             label=f"iter-{iteration}-impl",
@@ -152,14 +175,33 @@ writing the final fix prompt."""
         review_json: str,
         iteration: int,
         on_stdout: Optional[Callable[[str], None]],
+        story_context: Optional[dict] = None,
     ) -> str:
         """Call OpenAI to produce a targeted fix prompt from a review JSON."""
         project_name = self._config.project.name or "the project"
         language = self._config.project.language or "python"
 
+        # Build PR/story context note for GitHub Review mode
+        pr_note = ""
+        if story_context:
+            pr_number = story_context.get("pr_number")
+            story_id_str = story_context.get("story_id", "")
+            story_title = story_context.get("title", "")
+            parts: list[str] = []
+            if story_id_str or story_title:
+                parts.append(f"Story: {story_id_str} — {story_title}".strip(" —"))
+            if pr_number:
+                parts.append(
+                    f"PR #{pr_number} — push fixes to the same branch so the PR is "
+                    "updated automatically for re-review."
+                )
+            if parts:
+                pr_note = "\n\n> **CONTEXT**: " + "  \n> ".join(parts)
+
         user_prompt = (
             f"Generate a fix prompt for **{project_name}** "
-            f"(language: {language}, fixing iteration {iteration - 1} → {iteration}).\n\n"
+            f"(language: {language}, fixing iteration {iteration - 1} → {iteration})."
+            + pr_note + "\n\n"
             "Here is the structured review JSON from the code reviewer:\n\n"
             "---\n"
             f"{review_json}\n"
@@ -168,7 +210,9 @@ writing the final fix prompt."""
             "then produce the complete, actionable fix prompt."
         )
 
-        fallback = self._fallback_fix_prompt(review_json, project_name, iteration)
+        fallback = self._fallback_fix_prompt(
+            review_json, project_name, iteration, story_context=story_context
+        )
         model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
         return self._stream_openai(
@@ -286,10 +330,23 @@ writing the final fix prompt."""
 
     @staticmethod
     def _fallback_implementation_prompt(
-        requirements: str, project_name: str, language: str
+        requirements: str, project_name: str, language: str,
+        story_context: Optional[dict] = None,
     ) -> str:
+        fork_note = ""
+        if story_context and story_context.get("is_fork_mode"):
+            story_id_str = story_context.get("story_id", "")
+            story_title = story_context.get("title", "")
+            story_label = (f"{story_id_str} — {story_title}".strip(" —")) or "this story"
+            fork_note = (
+                f"> **FORK MODE** — Story: {story_label}\n"
+                "> You are working on an already-forked repository. "
+                "Make ONLY the changes required for this story. "
+                "Do NOT recreate or rewrite existing unrelated files.\n\n"
+            )
         return (
             f"# Implementation Prompt — {project_name}\n\n"
+            f"{fork_note}"
             f"**Language / Stack**: {language}\n\n"
             "## Requirements\n\n"
             f"{requirements}\n\n"
@@ -306,9 +363,28 @@ writing the final fix prompt."""
         )
 
     @staticmethod
-    def _fallback_fix_prompt(review_json: str, project_name: str, iteration: int) -> str:
+    def _fallback_fix_prompt(
+        review_json: str, project_name: str, iteration: int,
+        story_context: Optional[dict] = None,
+    ) -> str:
+        pr_note = ""
+        if story_context:
+            pr_number = story_context.get("pr_number")
+            story_id_str = story_context.get("story_id", "")
+            story_title = story_context.get("title", "")
+            story_label = (f"{story_id_str} — {story_title}".strip(" —")) or ""
+            if story_label:
+                pr_note += f"> **Story**: {story_label}\n"
+            if pr_number:
+                pr_note += (
+                    f"> **PR #{pr_number}** — push fixes to the same branch so the PR "
+                    "is updated automatically for re-review.\n"
+                )
+            if pr_note:
+                pr_note += "\n"
         return (
             f"# Fix Prompt — {project_name} (Iteration {iteration})\n\n"
+            f"{pr_note}"
             "You are fixing an **existing implementation**. "
             "Do NOT rewrite the project from scratch.\n\n"
             "## Review Findings\n\n"

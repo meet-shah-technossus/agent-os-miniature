@@ -22,6 +22,8 @@ from ..schemas import (
     IterationListResponse,
     IterationResponse,
     OrchestratorStatusResponse,
+    StoryQueueDetailResponse,
+    StoryQueueReorderRequest,
 )
 from ...orchestrator.engine import Orchestrator
 
@@ -39,6 +41,10 @@ def get_status(orch: Orchestrator = Depends(get_orchestrator)):
         last_checkpoint=state.last_checkpoint,
         metadata=state.metadata,
         is_hitl_gate=orch.state_mgr.is_hitl_gate(),
+        mode=getattr(orch.config, "pipeline_mode", "standard") or "standard",
+        current_story_id=getattr(state, "current_story_id", None),
+        stories_completed=getattr(state, "stories_completed", 0),
+        stories_total=getattr(state, "stories_total", 0),
     )
 
 
@@ -306,6 +312,78 @@ def get_bus_history(
             })
 
     return messages
+
+
+@router.get("/story-queue")
+def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)):
+    """Return the current story queue state (GitHub Review mode).
+
+    Returns an empty stories list when not in github_review mode.
+    """
+    from ...orchestrator.story_queue import StoryQueueManager
+
+    mgr = StoryQueueManager(orch.db)
+    stories = mgr.get_queue_state()
+    state = orch.state_mgr.state
+    return {
+        "mode": getattr(orch.config, "pipeline_mode", "standard") or "standard",
+        "current_story_id": getattr(state, "current_story_id", None),
+        "stories_completed": getattr(state, "stories_completed", 0),
+        "stories_total": getattr(state, "stories_total", 0),
+        "stories": stories,
+    }
+
+
+@router.get("/story-queue/{story_id}", response_model=StoryQueueDetailResponse)
+def get_story_queue_item(
+    story_id: str,
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    """Return a single story-queue item by story_id."""
+    from ...orchestrator.story_queue import StoryQueueManager
+
+    mgr = StoryQueueManager(orch.db)
+    item = mgr.get_item(story_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Story '{story_id}' not found in queue.")
+    # mode='json' converts enums→strings and datetimes→ISO strings
+    return StoryQueueDetailResponse(**item.model_dump(mode="json"))
+
+
+@router.post("/story-queue/reorder", response_model=ApproveGateResponse)
+def reorder_story_queue(
+    body: StoryQueueReorderRequest,
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    """Manually reorder the story queue.
+
+    Accepts a list of story_ids in the desired order; the first element
+    becomes position 0. Only QUEUED stories may be reordered — IN_PROGRESS,
+    COMPLETED, and FAILED stories are not moved.
+    """
+    from ...orchestrator.story_queue import StoryQueueManager
+
+    mgr = StoryQueueManager(orch.db)
+    queue = mgr.get_queue_state()
+
+    # Build new position map from the requested ordering
+    id_to_pos = {sid: idx for idx, sid in enumerate(body.story_ids)}
+
+    conn = orch.db.conn
+    updated = 0
+    for row in queue:
+        sid = row["story_id"]
+        if sid in id_to_pos and row["status"] == "queued":
+            conn.execute(
+                "UPDATE story_queue SET position = ? WHERE story_id = ?",
+                (id_to_pos[sid], sid),
+            )
+            updated += 1
+    conn.commit()
+    return ApproveGateResponse(
+        approved=True,
+        message=f"Reordered {updated} queued stories.",
+    )
 
 
 # ---------------------------------------------------------------------------

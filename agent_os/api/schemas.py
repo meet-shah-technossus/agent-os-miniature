@@ -14,6 +14,11 @@ class OrchestratorStatusResponse(BaseModel):
     last_checkpoint: datetime
     metadata: dict[str, Any] = {}
     is_hitl_gate: bool = False
+    # ── GitHub Review mode fields (Phase 8) ──────────────────────────────────
+    mode: str = "standard"
+    current_story_id: Optional[str] = None
+    stories_completed: int = 0
+    stories_total: int = 0
 
 
 # Backward-compat alias
@@ -68,6 +73,31 @@ class RequirementResponse(BaseModel):
 
 class ApproveGateRequest(BaseModel):
     gate: Optional[str] = None
+
+
+class StoryQueueDetailResponse(BaseModel):
+    """Single story-queue item returned by GET /story-queue/{story_id}."""
+
+    story_id: str
+    title: str
+    description: str = ""
+    acceptance_criteria: list[str] = []
+    position: int = 0
+    status: str = "queued"
+    branch_name: str = ""
+    pr_number: Optional[int] = None
+    pr_url: str = ""
+    story_iteration: int = 0
+    depends_on: list[str] = []
+    dependency_reason: str = ""
+    created_at: str = ""
+    completed_at: Optional[str] = None
+
+
+class StoryQueueReorderRequest(BaseModel):
+    """Body for POST /story-queue/reorder."""
+
+    story_ids: list[str]  # desired order, first element = position 0
 
 
 class ApproveGateResponse(BaseModel):

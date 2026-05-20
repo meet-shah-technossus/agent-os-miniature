@@ -58,8 +58,20 @@ class RequirementsParser:
         p = Path(path)
         if not p.exists():
             raise FileNotFoundError(f"Requirements file not found: {path}")
-        with p.open("r", encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+
+        if p.suffix.lower() == ".md":
+            import re as _re
+            text = p.read_text(encoding="utf-8")
+            match = _re.search(r"```yaml\s*\n(.*?)\n```", text, _re.DOTALL)
+            if not match:
+                raise ValueError(
+                    f"No YAML code block found in requirements file: {path}"
+                )
+            data = yaml.safe_load(match.group(1))
+        else:
+            with p.open("r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+
         if not isinstance(data, dict):
             raise ValueError(f"Requirements file must be a YAML mapping, got {type(data).__name__}")
         return data

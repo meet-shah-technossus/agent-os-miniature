@@ -6,6 +6,11 @@ export interface PipelineStatus {
   last_checkpoint: string;
   metadata: Record<string, unknown>;
   is_hitl_gate: boolean;
+  // GitHub Review mode fields (Phase 8)
+  mode: string;
+  current_story_id: string | null;
+  stories_completed: number;
+  stories_total: number;
 }
 
 export interface Iteration {

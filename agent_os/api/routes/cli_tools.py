@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64 as _b64
 import logging
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -217,11 +220,15 @@ def _open_in_terminal(cmd: str) -> None:
 
     elif sys.platform == "win32":
         full_cmd = cmd  # Windows: no bash profile sourcing
-        # Try Windows Terminal first (modern), fall back to cmd.exe
+        # Encode the command as Base64 UTF-16LE so all inner quotes/special chars
+        # survive subprocess argument passing without any escaping issues.
+        import base64 as _b64
+        encoded = _b64.b64encode(full_cmd.encode("utf-16-le")).decode("ascii")
+        ps_args = ["powershell.exe", "-NoExit", "-EncodedCommand", encoded]
         if _which("wt"):
-            subprocess.Popen(["wt", "--", "cmd.exe", "/k", full_cmd], shell=False)
+            subprocess.Popen(["wt", "--"] + ps_args, shell=False)
         else:
-            subprocess.Popen(["cmd.exe", "/c", "start", "cmd.exe", "/k", full_cmd], shell=True)
+            subprocess.Popen(ps_args, shell=False)
 
     elif sys.platform.startswith("linux"):
         full_cmd = shell_init + cmd
@@ -444,6 +451,95 @@ def open_in_terminal_route(body: OpenTerminalRequest):
     """Open any shell command in the user's native terminal emulator."""
     _open_in_terminal(body.command)
     return {"opened": True}
+
+
+# ── Persistent MCP-setup terminal sessions ───────────────────────────────────
+# Each session keeps ONE terminal window open and relays subsequent commands
+# via a polling temp-file, so all MCP setup steps for the same CLI tool share
+# one window instead of spawning a new window per step.
+
+_mcp_sessions: dict[str, dict] = {}  # session_key -> {proc, cmd_file, session_dir}
+
+
+def _start_mcp_session(session_key: str, first_cmd: str) -> None:
+    """Spawn a new persistent PowerShell window for the given session key."""
+    session_dir = Path(tempfile.mkdtemp(prefix=f"agtos_{session_key}_"))
+    cmd_file = session_dir / "cmd.txt"
+
+    # Escape backslashes for embedding inside a PowerShell single-quoted string
+    cmd_file_ps = str(cmd_file).replace("\\", "\\\\")
+
+    # Bootstrap: run the first command, then poll cmd_file for subsequent ones.
+    bootstrap = (
+        f"$_cmdFile = '{cmd_file_ps}'\n"
+        f"# --- initial command ---\n"
+        f"{first_cmd}\n"
+        f"# --- poll for subsequent commands ---\n"
+        f"while ($true) {{\n"
+        f"    if (Test-Path $_cmdFile) {{\n"
+        f"        $nextCmd = Get-Content $_cmdFile -Raw\n"
+        f"        Remove-Item $_cmdFile -Force\n"
+        f"        try {{ Invoke-Expression $nextCmd }}\n"
+        f"        catch {{ Write-Host \"Command error: $_\" -ForegroundColor Red }}\n"
+        f"    }}\n"
+        f"    Start-Sleep -Milliseconds 300\n"
+        f"}}\n"
+    )
+    encoded = _b64.b64encode(bootstrap.encode("utf-16-le")).decode("ascii")
+    ps_args = ["powershell.exe", "-NoExit", "-EncodedCommand", encoded]
+
+    if sys.platform == "win32":
+        proc = (
+            subprocess.Popen(["wt", "--"] + ps_args, shell=False)
+            if _which("wt")
+            else subprocess.Popen(ps_args, shell=False)
+        )
+    else:
+        # macOS / Linux: use the same logic as _open_in_terminal but with bash
+        shell_init = "source ~/.zshrc 2>/dev/null; source ~/.bashrc 2>/dev/null; "
+        full = shell_init + first_cmd + "\n# poll not applicable on non-Windows"
+        if sys.platform == "darwin":
+            safe = full.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+            script = f'tell application "Terminal"\n  do script "{safe}"\n  activate\nend tell'
+            proc = subprocess.Popen(["osascript", "-e", script])
+        else:
+            for term in ["gnome-terminal", "xterm", "konsole", "xfce4-terminal"]:
+                if _which(term):
+                    proc = subprocess.Popen([term, "-e", f"bash -c '{full}; exec bash'"])
+                    break
+            else:
+                proc = subprocess.Popen(["bash", "-c", full])
+
+    _mcp_sessions[session_key] = {"proc": proc, "cmd_file": cmd_file, "session_dir": session_dir}
+
+
+def _send_to_mcp_session(session_key: str, cmd: str) -> bool:
+    """Write cmd to an existing session's polling file. Returns False if session is dead."""
+    session = _mcp_sessions.get(session_key)
+    if not session:
+        return False
+    if session["proc"].poll() is not None:
+        # Process exited — remove stale entry
+        shutil.rmtree(str(session["session_dir"]), ignore_errors=True)
+        del _mcp_sessions[session_key]
+        return False
+    session["cmd_file"].write_text(cmd, encoding="utf-8")
+    return True
+
+
+class McpTerminalRequest(BaseModel):
+    session_key: str
+    command: str
+
+
+@router.post("/mcp-terminal")
+def run_in_mcp_terminal(body: McpTerminalRequest):
+    """Run a command in a persistent per-tool terminal session for ADO MCP setup.
+    Reuses the existing window when alive; opens a new one otherwise."""
+    if _send_to_mcp_session(body.session_key, body.command):
+        return {"reused": True}
+    _start_mcp_session(body.session_key, body.command)
+    return {"reused": False}
 
 
 @router.get("", response_model=AllToolsStatusResponse)

@@ -191,6 +191,7 @@ class CodeReviewerRunner:
         iteration: int,
         feature_branch: Optional[str] = None,
         on_stdout: Optional[Callable[[str], None]] = None,
+        story_context: Optional[dict] = None,
     ) -> ReviewRunResult:
         """Run a full PR review.
 
@@ -223,8 +224,9 @@ class CodeReviewerRunner:
         # 1. Fetch PR context
         diff_text, head_sha, pr_info = self._fetch_pr_context(gh, pr_number, _emit)
 
-        # 2. Stream review via OpenAI
-        raw_text = self._stream_review(diff_text, pr_info, iteration, _emit)
+        # 2. Stream review via OpenAI (pass story ACs when in GitHub Review mode)
+        raw_text = self._stream_review(diff_text, pr_info, iteration, _emit,
+                                       story_context=story_context)
         if not raw_text:
             return ReviewRunResult(
                 ReviewJSON(overall_status="needs_work", summary="LLM returned empty response"),
@@ -232,6 +234,12 @@ class CodeReviewerRunner:
 
         # 3. Parse JSON
         review = self._parse_review_json(raw_text, _emit)
+
+        # Populate GitHub Review mode fields on the ReviewJSON
+        review.pr_number = pr_number
+        review.pr_url = (pr_info.get("html_url") or "") if pr_info else ""
+        if story_context:
+            review.story_id = story_context.get("story_id", "")
 
         # 4. Post inline PR comments
         comments_posted = self._post_inline_comments(gh, pr_number, head_sha, review, _emit)
@@ -309,6 +317,7 @@ class CodeReviewerRunner:
         pr_info: dict,
         iteration: int,
         emit: Callable[[str], None],
+        story_context: Optional[dict] = None,
     ) -> str:
         """Stream LLM review of the diff; return the full raw text."""
         api_key = (
@@ -337,6 +346,26 @@ class CodeReviewerRunner:
         system_prompt = (
             (preamble + "\n\n" + _SYSTEM_PROMPT).strip() if preamble else _SYSTEM_PROMPT
         )
+
+        # In GitHub Review mode, append the story's acceptance criteria so the
+        # reviewer validates implementation completeness against them.
+        if story_context:
+            ac_list: list[str] = story_context.get("acceptance_criteria", []) or []
+            story_id = story_context.get("story_id", "")
+            story_title = story_context.get("title", "")
+            if ac_list:
+                ac_section = "\n".join(f"  - {ac}" for ac in ac_list)
+                story_label = f"Story {story_id}: {story_title}" if story_id else "this story"
+                system_prompt += (
+                    f"\n\n════════════════════════════════════════════════════════════════════════\n"
+                    f"STORY ACCEPTANCE CRITERIA (MANDATORY — validate against these):\n"
+                    f"════════════════════════════════════════════════════════════════════════\n"
+                    f"The implementation must satisfy ALL acceptance criteria for {story_label}:\n\n"
+                    f"{ac_section}\n\n"
+                    f"Add a global_comment for each AC that is NOT fully satisfied, with "
+                    f'category=\'general\' and severity=\'high\'. '
+                    f"If all ACs are satisfied, note this in the summary."
+                )
 
         # Cap diff at ~12 000 tokens (~50 KB) to stay within context limits
         _MAX_DIFF = 50_000

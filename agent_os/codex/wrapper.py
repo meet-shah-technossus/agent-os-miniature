@@ -2,27 +2,34 @@
 
 from __future__ import annotations
 
-import fcntl
 import logging
 import os
-import pty
+import platform
 import struct
 import subprocess
-import termios
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
+# Unix-only PTY modules — guarded so the file imports cleanly on Windows.
+_IS_WINDOWS = platform.system() == "Windows"
+if not _IS_WINDOWS:
+    import fcntl
+    import pty
+    import termios
+
 from .session import CodexResult, CodexSession, SessionType
-from .streaming import kill_process, stream_pty
+from .streaming import kill_process, stream_pipe, stream_pty
 from .cli_adapter import build_command, executable_name, UnsupportedToolError
 
 logger = logging.getLogger(__name__)
 
 
 def _set_pty_size(fd: int, rows: int, cols: int) -> None:
-    """Set the terminal size on a PTY file descriptor (TIOCSWINSZ)."""
+    """Set the terminal size on a PTY file descriptor (TIOCSWINSZ). Unix only."""
+    if _IS_WINDOWS:
+        return
     try:
         winsize = struct.pack("HHHH", rows, cols, 0, 0)
         fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
@@ -80,6 +87,10 @@ class CodexWrapper:
                     "Codex exec failed for %s with exit code %d (attempt %d)",
                     session_type.value, result.exit_code, attempt,
                 )
+                # Log the actual output so the error is visible in server logs
+                if result.stdout:
+                    for line in result.stdout.splitlines()[-30:]:
+                        logger.warning("[codex output] %s", line)
 
             if attempt <= self._max_retries:
                 logger.info("Retrying...")
@@ -130,57 +141,111 @@ class CodexWrapper:
         try:
             from ..config.env import build_codex_env
             env = build_codex_env(self._openai_api_key, self._project_root)
-            # Ensure the child sees a proper TERM variable
-            env.setdefault("TERM", "xterm-256color")
 
-            # Allocate a pseudo-terminal pair
-            master_fd, slave_fd = pty.openpty()
+            if _IS_WINDOWS:
+                # On Windows, npm/pip global CLIs are installed as .cmd wrappers.
+                # Popen with shell=False won't resolve them without the extension,
+                # so invoke through cmd.exe which handles PATHEXT transparently.
+                win_cmd = ["cmd", "/c"] + cmd
+                proc = subprocess.Popen(
+                    win_cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    cwd=str(working_dir),
+                    env=env,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+                session.process = proc
+                session.pid = proc.pid
+                self._active_sessions[session_type] = session
 
-            # Set a reasonable terminal size (120 cols × 40 rows)
-            _set_pty_size(master_fd, 40, 120)
-
-            proc = subprocess.Popen(
-                cmd,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                cwd=str(working_dir),
-                env=env,
-                close_fds=True,
-                start_new_session=True,
-            )
-            # Close slave in the parent — only the child needs it.
-            os.close(slave_fd)
-
-            session.process = proc
-            session.pid = proc.pid
-            self._active_sessions[session_type] = session
-
-            logger.info("Started %s CLI (PID %d) via PTY for %s", _exe, proc.pid, session_type.value)
-
-            # Single reader thread for the merged PTY stream
-            pty_thread = threading.Thread(
-                target=stream_pty,
-                args=(master_fd, session.stdout_lines, combined_cb),
-                daemon=True,
-            )
-            pty_thread.start()
-
-            try:
-                proc.wait(timeout=self._timeout)
-            except subprocess.TimeoutExpired:
-                logger.warning("%s CLI (PID %d) timed out after %ds", _exe, proc.pid, self._timeout)
-                kill_process(proc)
-                pty_thread.join(timeout=5)
-                return CodexResult(
-                    exit_code=-1,
-                    stdout="\n".join(session.stdout_lines),
-                    stderr="",
-                    timed_out=True,
-                    duration_seconds=time.monotonic() - start_time,
+                logger.info(
+                    "Started %s CLI (PID %d) via pipe for %s",
+                    _exe, proc.pid, session_type.value,
                 )
 
-            pty_thread.join(timeout=10)
+                reader = threading.Thread(
+                    target=stream_pipe,
+                    args=(proc.stdout, session.stdout_lines, combined_cb),
+                    daemon=True,
+                )
+                reader.start()
+
+                try:
+                    proc.wait(timeout=self._timeout)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "%s CLI (PID %d) timed out after %ds",
+                        _exe, proc.pid, self._timeout,
+                    )
+                    kill_process(proc)
+                    reader.join(timeout=5)
+                    return CodexResult(
+                        exit_code=-1,
+                        stdout="\n".join(session.stdout_lines),
+                        stderr="",
+                        timed_out=True,
+                        duration_seconds=time.monotonic() - start_time,
+                    )
+
+                reader.join(timeout=10)
+
+            else:
+                # Unix: PTY gives the child a real TTY (ANSI output, interactive prompts).
+                env.setdefault("TERM", "xterm-256color")
+                master_fd, slave_fd = pty.openpty()
+                _set_pty_size(master_fd, 40, 120)
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    cwd=str(working_dir),
+                    env=env,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+                os.close(slave_fd)
+
+                session.process = proc
+                session.pid = proc.pid
+                self._active_sessions[session_type] = session
+
+                logger.info(
+                    "Started %s CLI (PID %d) via PTY for %s",
+                    _exe, proc.pid, session_type.value,
+                )
+
+                pty_thread = threading.Thread(
+                    target=stream_pty,
+                    args=(master_fd, session.stdout_lines, combined_cb),
+                    daemon=True,
+                )
+                pty_thread.start()
+
+                try:
+                    proc.wait(timeout=self._timeout)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "%s CLI (PID %d) timed out after %ds",
+                        _exe, proc.pid, self._timeout,
+                    )
+                    kill_process(proc)
+                    pty_thread.join(timeout=5)
+                    return CodexResult(
+                        exit_code=-1,
+                        stdout="\n".join(session.stdout_lines),
+                        stderr="",
+                        timed_out=True,
+                        duration_seconds=time.monotonic() - start_time,
+                    )
+
+                pty_thread.join(timeout=10)
 
             return CodexResult(
                 exit_code=proc.returncode,

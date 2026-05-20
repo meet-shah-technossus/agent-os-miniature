@@ -275,3 +275,34 @@ class GitOpsManager:
         """
         logger.info("Pushing branch '%s' to '%s' with upstream tracking", branch, remote)
         return self._run("push", "-u", remote, branch)
+
+    def fetch(self, remote: str = "origin", ref: str = "") -> GitResult:
+        """Fetch from *remote*, optionally limited to *ref* (branch / tag)."""
+        args = ["fetch", remote]
+        if ref:
+            args.append(ref)
+        return self._run(*args)
+
+    # ── Named clone helpers ───────────────────────────────────────────────────
+
+    @classmethod
+    def clone_and_open(
+        cls,
+        url: str,
+        target_dir: str | Path,
+        depth: int = 0,
+    ) -> tuple["GitResult", Optional["GitOpsManager"]]:
+        """Clone *url* into *target_dir* and return ``(result, manager)``.
+
+        On success the returned :class:`GitOpsManager` is bound to
+        *target_dir* so callers can immediately call branch / commit methods.
+        On failure *manager* is ``None``.
+
+        Args:
+            url:        Authenticated remote URL.
+            target_dir: Local destination path.
+            depth:      Shallow-clone depth (0 = full history).
+        """
+        result = cls.clone(url, str(target_dir), depth=depth)
+        manager: Optional["GitOpsManager"] = cls(str(target_dir)) if result.success else None
+        return result, manager

@@ -241,23 +241,26 @@ class GitHubClient:
         result = self._request("GET", "")
         return result.success
 
-    def fork_repo(self, owner: str, repo: str) -> GitHubResult:
+    def fork_repo(self, owner: str, repo: str, *, name: str = "") -> GitHubResult:
         """Fork a GitHub repository to the authenticated user's account.
 
         Args:
             owner: Owner of the source repository (org or user).
             repo: Name of the source repository.
+            name: Optional name for the fork. If omitted GitHub uses the
+                  source repository name.
 
         Returns:
             GitHubResult with data containing the fork's full name, clone URL,
             and HTML URL.  A 202 response indicates the fork is being created
             asynchronously — it is still treated as success.
         """
-        logger.info("Forking %s/%s", owner, repo)
+        logger.info("Forking %s/%s%s", owner, repo, f" as {name}" if name else "")
+        body: dict = {"name": name} if name else {}
         result = self._request(
             "POST",
             "",
-            json_body={},
+            json_body=body,
             absolute_url=f"{_GITHUB_API}/repos/{owner}/{repo}/forks",
         )
         # GitHub returns 202 Accepted for fork operations (async) — treat as success

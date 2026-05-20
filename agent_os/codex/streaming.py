@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import signal
 import subprocess
 from typing import Callable, Optional
 
@@ -88,9 +87,9 @@ def stream_pty(
 
 
 def kill_process(proc: subprocess.Popen) -> None:
-    """Gracefully terminate, then force-kill a process."""
+    """Gracefully terminate, then force-kill a process (cross-platform)."""
     try:
-        proc.send_signal(signal.SIGTERM)
+        proc.terminate()          # SIGTERM on Unix; TerminateProcess on Windows
         try:
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:

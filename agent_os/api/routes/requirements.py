@@ -122,7 +122,7 @@ def preview_requirements(orch=Depends(get_orchestrator)):
             detail="No requirements file is currently loaded. Upload or ingest one first.",
         )
     try:
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        raw = RequirementsParser._read_yaml(path)
         doc = RequirementsDocument.model_validate(raw)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not parse requirements file: {exc}")
@@ -648,6 +648,33 @@ async def validate_remote_connection(body: RemoteIngestRequest) -> RemoteValidat
     return RemoteValidationResult(valid=len(errors) == 0, errors=errors, warnings=warnings)
 
 
+def _build_requirements_md(yaml_bytes: bytes, source: str, stats: dict) -> str:
+    """Wrap YAML bytes in a Markdown document for human-readable storage."""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    parts = []
+    if stats.get("epics"):
+        parts.append(f"{stats['epics']} epics")
+    if stats.get("features"):
+        parts.append(f"{stats['features']} features")
+    if stats.get("stories"):
+        parts.append(f"{stats['stories']} stories")
+    if stats.get("acceptance_criteria"):
+        parts.append(f"{stats['acceptance_criteria']} ACs")
+    summary = " · ".join(parts) if parts else "no items"
+
+    yaml_text = yaml_bytes.decode("utf-8", errors="replace")
+    return (
+        f"# Agent OS Requirements\n\n"
+        f"> Imported from **{source.upper()}** on {now}  \n"
+        f"> {summary}\n\n"
+        f"## Requirements Data\n\n"
+        f"```yaml\n"
+        f"{yaml_text}"
+        f"```\n"
+    )
+
+
 def _items_to_yaml_and_save(
     items: list[dict],
     source: str,
@@ -660,8 +687,8 @@ def _items_to_yaml_and_save(
     data_dir = orch.config.storage.data_dir
     save_dir = data_dir / "requirements"
     save_dir.mkdir(parents=True, exist_ok=True)
-    dest = save_dir / f"requirements_from_{source}.yaml"
-    dest.write_bytes(yaml_bytes)
+    dest = save_dir / f"requirements_from_{source}.md"
+    dest.write_text(_build_requirements_md(yaml_bytes, source, stats), encoding="utf-8")
     _persist_requirements_path(orch, str(dest))
 
     # Build a human-friendly message that only mentions hierarchy levels
@@ -909,15 +936,6 @@ async def _ingest_ado(body: RemoteIngestRequest, orch: Any) -> RequirementsUploa
             "ado_token": ado_token,
         })
 
-    # Transition work items from "New" to "Active"
-    try:
-        await _update_ado_work_item_states(
-            ado_org, ado_token, work_item_ids, "Active"
-        )
-        logger.info("Updated %d ADO work items to Active", len(work_item_ids))
-    except Exception:
-        logger.warning("Failed to update ADO work item states to Active", exc_info=True)
-
     return result
 
 
@@ -988,6 +1006,60 @@ async def update_ado_work_item_states(
 
     await _update_ado_work_item_states(ado_org, ado_token, work_item_ids, body.target_state)
     return {"updated": len(work_item_ids), "target_state": body.target_state}
+
+
+class AdoProjectsRequest(BaseModel):
+    org: str
+    token: str
+
+
+@router.post("/ado-projects")
+async def get_ado_projects(body: AdoProjectsRequest) -> dict:
+    """Fetch all project names from an Azure DevOps organisation.
+
+    Accepts the ADO organisation name and a Personal Access Token (PAT).
+    Returns a list of project names the PAT has access to.
+    """
+    import base64 as _b64
+    import httpx
+    from urllib.parse import quote
+
+    if not body.org or not body.token:
+        raise HTTPException(status_code=422, detail="Both 'org' and 'token' are required.")
+
+    token_b64 = _b64.b64encode(f":{body.token}".encode()).decode()
+    headers = {
+        "Authorization": f"Basic {token_b64}",
+        "Accept": "application/json",
+    }
+    org_enc = quote(body.org, safe="")
+    url = f"https://dev.azure.com/{org_enc}/_apis/projects?api-version=7.1"
+
+    try:
+        async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=False) as client:
+            resp = await client.get(url)
+    except httpx.ConnectError:
+        raise HTTPException(status_code=502, detail=f"Cannot connect to Azure DevOps for org '{body.org}'.")
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Connection to Azure DevOps timed out.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}")
+
+    if resp.status_code == 401:
+        raise HTTPException(status_code=401, detail="Invalid Personal Access Token or insufficient permissions.")
+    if not resp.is_success:
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=f"Azure DevOps API error: {resp.status_code} {resp.text[:200]}",
+        )
+
+    try:
+        data = resp.json()
+        projects = [p["name"] for p in data.get("value", []) if p.get("name")]
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to parse ADO response: {exc}")
+
+    return {"projects": projects}
 
 
 @router.post("/ingest-remote", response_model=RequirementsUploadResponse)

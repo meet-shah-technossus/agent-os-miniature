@@ -168,14 +168,31 @@ class Orchestrator:
         self._loop()
 
     def _loop(self) -> None:
-        """Execute the linear state machine until paused, complete, HITL, or error."""
-        _DISPATCH = {
+        """Execute the state machine until paused, complete, HITL, or error.
+
+        Dispatches on ``config.pipeline_mode``:
+        - ``"standard"``      → original linear loop (unchanged).
+        - ``"github_review"`` → story-aware queue loop (Phase 2).
+        """
+        _STANDARD_DISPATCH = {
             PipelineStatus.IDLE:                  self._step_idle,
             PipelineStatus.LOADING_REQUIREMENTS:  self._step_load_requirements,
             PipelineStatus.PROMPT_GENERATION:     self._step_prompt_generation,
             PipelineStatus.CODE_GENERATION:       self._step_code_generation,
             PipelineStatus.CODE_REVIEW:           self._step_code_review,
         }
+        _GHR_DISPATCH = {
+            PipelineStatus.IDLE:                      self._step_idle,
+            PipelineStatus.LOADING_REQUIREMENTS:      self._step_load_requirements,
+            PipelineStatus.ANALYSING_DEPENDENCIES:    self._step_analyse_dependencies,
+            PipelineStatus.QUEUE_READY:               self._step_queue_ready,
+            PipelineStatus.STORY_PROMPT_GENERATION:   self._step_story_prompt_generation,
+            PipelineStatus.STORY_CODE_GENERATION:     self._step_story_code_generation,
+            PipelineStatus.STORY_CODE_REVIEW:         self._step_story_code_review,
+            PipelineStatus.STORY_COMPLETE:            self._step_story_complete,
+        }
+        _is_ghr = (self.config.pipeline_mode == "github_review")
+        _DISPATCH = _GHR_DISPATCH if _is_ghr else _STANDARD_DISPATCH
 
         while True:
             if self._stop_event.is_set():
@@ -229,7 +246,7 @@ class Orchestrator:
                 self._emit("error", {"message": str(exc)})
                 break
 
-    # ── Step handlers ──────────────────────────────────────────────────────────
+    # ── Step handlers (standard mode) ─────────────────────────────────────────
 
     def _step_idle(self) -> None:
         """IDLE → LOADING_REQUIREMENTS."""
@@ -257,7 +274,12 @@ class Orchestrator:
             import yaml as _yaml
             from collections import Counter as _Counter
 
-            raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
+            raw_text = Path(req_path).read_text(encoding="utf-8")
+            if Path(req_path).suffix.lower() == ".md":
+                _md_match = _re.search(r"```yaml\s*\n(.*?)\n```", raw_text, _re.DOTALL)
+                raw = _yaml.safe_load(_md_match.group(1)) if _md_match else {}
+            else:
+                raw = _yaml.safe_load(raw_text)
             epics = (raw or {}).get("epics", [])
             title = ""
 
@@ -305,10 +327,16 @@ class Orchestrator:
             logger.debug("Could not extract project name from requirements", exc_info=True)
 
         state = self.state_mgr.state
-        self.state_mgr.transition_to(
-            PipelineStatus.PROMPT_GENERATION,
-            iteration=max(state.current_iteration, 1),
-        )
+        if self.config.pipeline_mode == "github_review":
+            self.state_mgr.transition_to(
+                PipelineStatus.ANALYSING_DEPENDENCIES,
+                iteration=max(state.current_iteration, 1),
+            )
+        else:
+            self.state_mgr.transition_to(
+                PipelineStatus.PROMPT_GENERATION,
+                iteration=max(state.current_iteration, 1),
+            )
         self._emit("state_changed")
 
     def _step_prompt_generation(self) -> None:
@@ -448,6 +476,39 @@ class Orchestrator:
             self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
                                 line=line, stream="stderr",
                                 iteration=iteration, module_id="")
+
+        # On the first iteration, inject an ADO work-item activation instruction
+        # into the prompt file so the code-generator CLI can use its azure-devops
+        # MCP connection to update work item states (New → Active) as its first action.
+        if iteration == 1:
+            meta = self.state_mgr.state.metadata
+            work_item_ids = meta.get("ado_work_item_ids", [])
+            ado_org = meta.get("ado_org", "")
+            ado_project = meta.get("ado_project", "")
+            if work_item_ids and ado_org:
+                try:
+                    prompt_file = Path(prompt_path)
+                    if prompt_file.exists():
+                        original = prompt_file.read_text(encoding="utf-8")
+                        ids_str = ", ".join(str(i) for i in work_item_ids)
+                        preamble = (
+                            f"## Pre-task: Activate Azure DevOps Work Items\n\n"
+                            f"Before starting the main implementation, use the **azure-devops MCP tool** "
+                            f"to update the following work items to **Active** status:\n\n"
+                            f"- Work Item IDs: {ids_str}\n"
+                            f"- Organisation: {ado_org}\n"
+                            f"- Project: {ado_project}\n\n"
+                            f"Use the `update_work_item` tool (or equivalent) from the azure-devops MCP "
+                            f"server to set `System.State` = `Active` for each work item ID listed above.\n\n"
+                            f"---\n\n"
+                        )
+                        prompt_file.write_text(preamble + original, encoding="utf-8")
+                        logger.info(
+                            "Injected ADO work item activation preamble into prompt for %d items",
+                            len(work_item_ids),
+                        )
+                except Exception:
+                    logger.warning("Failed to inject ADO preamble into prompt", exc_info=True)
 
         runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
         try:
@@ -731,12 +792,620 @@ class Orchestrator:
         self.state_mgr.transition_to(PipelineStatus.HITL_REVIEW_DECISION)
         self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
 
+    # ── Step handlers (GitHub Review mode) ────────────────────────────────────
+
+    def _fork_and_clone(self) -> bool:
+        """Fork the source repo and clone it locally (once per pipeline run).
+
+        Called by :meth:`_step_queue_ready` on the first story when
+        ``config.project.root_path`` is not yet set.
+
+        Returns:
+            True on success (or graceful skip when config is incomplete).
+            False on hard failure — the state is already transitioned to FAILED.
+        """
+        import re as _re
+        import time as _time
+
+        cfg = self.config
+        source_url = getattr(cfg.github_review, "source_repo_url", "") or ""
+
+        if not source_url:
+            logger.info("[GHR] No source_repo_url — skipping fork+clone (will use existing root_path)")
+            return True
+
+        # Parse github.com/owner/repo from the URL
+        m = _re.match(
+            r"https?://github\.com/([A-Za-z0-9_.\-]+)/([A-Za-z0-9_.\-]+?)(?:\.git)?/?$",
+            source_url,
+        )
+        if not m:
+            err = f"[GHR] Cannot parse source_repo_url: {source_url!r}"
+            logger.error(err)
+            self.state_mgr.transition_to(PipelineStatus.FAILED, metadata={"error": err})
+            self._emit("error", {"message": err})
+            return False
+
+        source_owner, source_repo = m.groups()
+
+        token = getattr(cfg.secrets, "github_token", "") or ""
+        owner = getattr(cfg.github, "owner", "") or ""
+        if not token or not owner:
+            logger.warning("[GHR] GitHub token or owner not configured — skipping fork+clone")
+            return True
+
+        fork_name = (
+            getattr(cfg.github_review, "fork_repo_name", "") or f"{source_repo}-agent-os"
+        )
+
+        from ..vcs.github_client import GitHubVCSClient
+        from ..git_ops.manager import GitOpsManager
+
+        vcs = GitHubVCSClient(token=token, owner=owner, repo=fork_name)
+
+        # ── Fork (skipped when source_owner == owner — can't fork own repo) ──
+        same_owner = source_owner.lower() == owner.lower()
+        if same_owner:
+            logger.info(
+                "[GHR] source_owner == owner (%s) — skipping fork, cloning source repo directly",
+                owner,
+            )
+            self._emit("fork_skipped", {"reason": "same_owner", "repo": f"{source_owner}/{source_repo}"})
+        else:
+            self._emit("fork_started", {"source": f"{source_owner}/{source_repo}",
+                                        "fork": f"{owner}/{fork_name}"})
+            logger.info("[GHR] Forking %s/%s → %s/%s", source_owner, source_repo, owner, fork_name)
+
+            fork_result = vcs.fork_repo(source_owner, source_repo, name=fork_name)
+            if not fork_result.success:
+                err_lower = (fork_result.error or "").lower()
+                already = any(kw in err_lower for kw in ("already exists", "422", "409"))
+                if not already:
+                    if "not found" in err_lower or fork_result.status_code == 404:
+                        err = (
+                            f"Fork failed: source repo '{source_owner}/{source_repo}' not found "
+                            f"(404). Check that source_repo_url is correct and the GitHub token "
+                            f"has 'repo' scope access."
+                        )
+                    else:
+                        err = f"Fork failed: {fork_result.error}"
+                    logger.error("[GHR] %s", err)
+                    self.state_mgr.transition_to(PipelineStatus.FAILED, metadata={"error": err})
+                    self._emit("error", {"message": err})
+                    return False
+                logger.info("[GHR] Fork already exists — continuing")
+
+            # Wait for fork to become accessible
+            self._emit("fork_waiting", {"fork": f"{owner}/{fork_name}"})
+            if not vcs.wait_for_fork(owner, fork_name, max_wait_seconds=30):
+                logger.warning("[GHR] Fork %s/%s not ready after 30s — proceeding anyway", owner, fork_name)
+
+        # ── Clone ─────────────────────────────────────────────────────────────
+        # When same_owner, clone the source repo directly (no fork was created).
+        clone_repo_owner = source_owner if same_owner else owner
+        clone_repo_name  = source_repo  if same_owner else fork_name
+        clone_target = Path.home() / "Desktop" / clone_repo_name
+
+        if clone_target.exists() and (clone_target / ".git").is_dir():
+            logger.info("[GHR] Fork already cloned at %s — reusing", clone_target)
+        else:
+            clone_vcs = GitHubVCSClient(token=token, owner=clone_repo_owner, repo=clone_repo_name)
+            clone_url = clone_vcs.get_remote_url(clone_repo_name)
+            self._emit("clone_started", {
+                "url": f"github.com/{clone_repo_owner}/{clone_repo_name}",
+                "target": str(clone_target),
+            })
+            logger.info("[GHR] Cloning %s/%s to %s", clone_repo_owner, clone_repo_name, clone_target)
+            clone_result, _ = GitOpsManager.clone_and_open(clone_url, clone_target)
+            if not clone_result.success:
+                err = f"Clone failed: {clone_result.stderr}"
+                logger.error("[GHR] %s", err)
+                self.state_mgr.transition_to(PipelineStatus.FAILED, metadata={"error": err})
+                self._emit("error", {"message": err})
+                return False
+
+        # Set git identity in the cloned directory
+        git = GitOpsManager(str(clone_target))
+        git.set_user("Agent OS Bot", "agent-os@noreply.github.com")
+
+        # Persist into config so all downstream steps (code gen, review) use it
+        self.config.project.root_path = str(clone_target)
+        self.config.project.repo_name = clone_repo_name
+        self.state_mgr.update_metadata({
+            "fork_name": clone_repo_name,
+            "fork_owner": clone_repo_owner,
+            "fork_clone_path": str(clone_target),
+        })
+
+        logger.info("[GHR] Fork+clone complete → %s", clone_target)
+        self._emit("fork_clone_complete", {
+            "repo": f"{clone_repo_owner}/{clone_repo_name}",
+            "local_path": str(clone_target),
+        })
+        return True
+
+    def _step_analyse_dependencies(self) -> None:
+        """ANALYSING_DEPENDENCIES → QUEUE_READY.
+
+        Reads all stories from the requirements DB, calls the LLM-powered
+        dependency analyser, builds the ordered story queue, then transitions.
+        """
+        import asyncio
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        logger.info("[GHR] Analysing story dependencies")
+        self._emit("state_changed", {"step": "analyse_dependencies"})
+
+        # Fetch stories (and their ACs) from the requirements DB
+        conn = self.db.conn
+        story_rows = conn.execute(
+            "SELECT id, title, description FROM requirements WHERE type = 'story'"
+        ).fetchall()
+
+        raw_stories = []
+        for row in story_rows:
+            ac_rows = conn.execute(
+                "SELECT title FROM requirements WHERE parent_id = ? AND type = 'acceptance_criteria'",
+                (row["id"],),
+            ).fetchall()
+            raw_stories.append({
+                "story_id": row["id"],
+                "title": row["title"],
+                "description": row["description"] or "",
+                "acceptance_criteria": [ac["title"] for ac in ac_rows],
+            })
+
+        if not raw_stories:
+            logger.warning("[GHR] No stories found in requirements DB — completing pipeline")
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {"reason": "no_stories"})
+            return
+
+        logger.info("[GHR] Found %d stories — building queue", len(raw_stories))
+        self._emit("analyse_dependencies_started", {"story_count": len(raw_stories)})
+
+        mgr = StoryQueueManager(self.db)
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        items = loop.run_until_complete(mgr.build_queue(
+            raw_stories,
+            api_key=getattr(self.config.secrets, "openai_api_key", "") or "",
+            model=getattr(self.config, "openai_model", "gpt-4o-mini") or "gpt-4o-mini",
+        ))
+
+        self.state_mgr.update_story_context(stories_total=len(items), stories_completed=0)
+        logger.info("[GHR] Queue built — %d stories in execution order", len(items))
+        self._emit("queue_built", {"stories": [
+            {"story_id": it.story_id, "title": it.title, "position": it.position,
+             "depends_on": it.depends_on}
+            for it in items
+        ]})
+        self.state_mgr.transition_to(PipelineStatus.QUEUE_READY)
+        self._emit("state_changed")
+
+    def _step_queue_ready(self) -> None:
+        """QUEUE_READY → STORY_PROMPT_GENERATION (or PIPELINE_COMPLETE if done).
+
+        On the first story: forks + clones the source repo (once).
+        Dequeues the next ready story and sets it as the active story.
+        """
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        # Fork + clone once before the first story
+        if not self.config.project.root_path:
+            if not self._fork_and_clone():
+                return  # _fork_and_clone transitioned to FAILED
+
+        mgr = StoryQueueManager(self.db)
+        next_story = mgr.dequeue()
+
+        if next_story is None:
+            # Queue exhausted (or all remaining stories have unresolved deps from failures)
+            counts = mgr.counts()
+            logger.info("[GHR] Queue exhausted — %s", counts)
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {"reason": "queue_exhausted", "counts": counts})
+            self._close_ado_work_items()
+            return
+
+        logger.info("[GHR] Starting story: %s — %s", next_story.story_id, next_story.title)
+        self.state_mgr.update_story_context(current_story_id=next_story.story_id)
+        self._emit("story_started", {
+            "story_id": next_story.story_id,
+            "title": next_story.title,
+            "position": next_story.position,
+        })
+        # Reset per-story iteration counter in state metadata
+        self.state_mgr.update_metadata({"story_iteration": 1, "story_review_json": None})
+        self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+        self._emit("state_changed")
+
+    def _step_story_prompt_generation(self) -> None:
+        """STORY_PROMPT_GENERATION → STORY_CODE_GENERATION.
+
+        Same as _step_prompt_generation but scoped to the current story's
+        acceptance criteria and (on iteration 2+) the previous ReviewJSON.
+        """
+        import json as _json
+        import uuid as _uuid
+        from ..prompt_generator.runner import PromptGeneratorRunner
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        state = self.state_mgr.state
+        story_id = state.current_story_id
+        story_iter = state.metadata.get("story_iteration", 1)
+
+        logger.info("[GHR] Story prompt generation — story=%s iter=%d", story_id, story_iter)
+        self._emit("prompt_generation_started", {"story_id": story_id, "story_iteration": story_iter})
+
+        # Fetch story details from queue
+        mgr = StoryQueueManager(self.db)
+        item = mgr.get_item(story_id) if story_id else None
+        if item is None:
+            logger.error("[GHR] Could not find story %s in queue — failing", story_id)
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            return
+
+        # Build requirements_text for this story
+        acs_md = "\n".join(f"- {ac}" for ac in item.acceptance_criteria) or "(no acceptance criteria)"
+        requirements_text = (
+            f"## Story: {item.title}\n\n"
+            f"{item.description}\n\n"
+            f"### Acceptance Criteria\n{acs_md}\n"
+        )
+
+        # For iteration 2+ pass the review JSON
+        review_json: dict | None = None
+        if story_iter > 1:
+            review_raw = state.metadata.get("story_review_json")
+            if review_raw:
+                try:
+                    review_json = _json.loads(review_raw) if isinstance(review_raw, str) else review_raw
+                except Exception:
+                    review_json = {"raw": str(review_raw)}
+
+        _pg_session = f"pg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
+        model_pg = self.config.codex.model_routing.get("PROMPT_GENERATOR") or self.config.codex.default_model or ""
+        self._emit_terminal("session_start", "PROMPT_GENERATOR", _pg_session,
+                            story_id=story_id, iteration=story_iter, model=model_pg)
+
+        def _on_stdout(line: str) -> None:
+            self._emit("prompt_token", {"line": line})
+            self._emit_terminal("token", "PROMPT_GENERATOR", _pg_session,
+                                text=line, stream="stdout",
+                                story_id=story_id, iteration=story_iter)
+
+        runner = PromptGeneratorRunner(self.config)
+        try:
+            prompt_text = runner.run(
+                iteration=story_iter,
+                requirements_text=requirements_text,
+                review_json=review_json,
+                on_stdout=_on_stdout,
+                story_context={
+                    "story_id": story_id or "",
+                    "title": item.title,
+                    "pr_number": state.metadata.get("story_pr_number"),
+                    "is_fork_mode": True,
+                },
+            )
+        except Exception as exc:
+            logger.exception("[GHR] Story prompt generator failed: %s", exc)
+            self._emit_terminal("session_end", "PROMPT_GENERATOR", _pg_session, exit_code=1)
+            self.state_mgr.update_metadata({"story_prompt_error": str(exc)})
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": str(exc), "story_id": story_id})
+            return
+
+        self.state_mgr.update_metadata({"prompt_content": prompt_text, "story_prompt_error": ""})
+        self._emit_terminal("session_end", "PROMPT_GENERATOR", _pg_session, exit_code=0)
+        self._emit("prompt_generation_complete", {
+            "story_id": story_id, "story_iteration": story_iter, "char_count": len(prompt_text),
+        })
+        # Pause at HITL gate so the user can review/edit the generated prompt
+        # before code generation starts.
+        self.state_mgr.transition_to(PipelineStatus.HITL_PROMPT_REVIEW)
+        self._emit("hitl_gate", {"gate": PipelineStatus.HITL_PROMPT_REVIEW.value})
+
+    def _step_story_code_generation(self) -> None:
+        """STORY_CODE_GENERATION → STORY_CODE_REVIEW.
+
+        Phase 2 stub — runs the existing CodeGeneratorRunner with a per-story
+        branch name.  Phase 3 will replace this with a full fork-based workflow.
+        """
+        import uuid as _uuid
+        from ..code_generator.runner import CodeGeneratorRunner
+        from ..vcs.factory import make_vcs_client
+        from ..orchestrator.story_queue import StoryQueueManager
+        import re as _re
+
+        state = self.state_mgr.state
+        story_id = state.current_story_id
+        story_iter = state.metadata.get("story_iteration", 1)
+
+        logger.info("[GHR] Story code generation — story=%s iter=%d", story_id, story_iter)
+
+        # Derive branch name from story id + title
+        mgr = StoryQueueManager(self.db)
+        item = mgr.get_item(story_id) if story_id else None
+
+        if item and not item.branch_name:
+            slug = _re.sub(r"[^a-z0-9]+", "-", item.title.lower()).strip("-")[:40]
+            branch_name = f"story-{story_id}-{slug}".lower()
+            mgr.update_branch(story_id, branch_name)
+        else:
+            branch_name = (item.branch_name if item else None) or f"story-{story_id}"
+
+        # Store branch name in config so the code generator uses it
+        self.config.project.feature_branch = branch_name
+        # Remove any stale pr_number so code generator creates a fresh PR for this story
+        if story_iter == 1:
+            self.state_mgr.update_metadata({"pr_number": None, "pr_url": ""})
+
+        prompt_path = getattr(self.config.project, "prompt_file_path", "") or "data/prompts/latest.md"
+        working_dir = getattr(self.config.project, "root_path", "") or ""
+        if not working_dir:
+            working_dir = self._provision_project_dir()
+
+        cli_tool = state.metadata.get("selected_cli_tool")
+        if cli_tool:
+            self.config.codex.cli_routing["CODE_GENERATOR"] = cli_tool
+
+        pr_number: Optional[int] = None
+        if story_iter > 1:
+            pr_raw = state.metadata.get("pr_number")
+            if pr_raw is not None:
+                try:
+                    pr_number = int(pr_raw)
+                except (TypeError, ValueError):
+                    pass
+
+        _cg_session = f"cg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
+        _cg_model = self.config.codex.model_routing.get("CODE_GENERATOR") or self.config.codex.default_model or ""
+        self._emit_terminal("session_start", "CODE_GENERATOR", _cg_session,
+                            story_id=story_id, iteration=story_iter, model=_cg_model)
+        self._emit("code_generation_started", {"story_id": story_id, "story_iteration": story_iter})
+
+        def _on_stdout(line: str) -> None:
+            self._emit("codex_stdout", {"line": line})
+            self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                line=line, stream="stdout", story_id=story_id)
+
+        def _on_stderr(line: str) -> None:
+            self._emit("codex_stderr", {"line": line})
+            self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                line=line, stream="stderr", story_id=story_id)
+
+        runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
+        try:
+            gen_result = runner.run(
+                prompt_path=prompt_path,
+                working_dir=working_dir,
+                iteration=story_iter,
+                pr_number=pr_number,
+                on_stdout=_on_stdout,
+                on_stderr=_on_stderr,
+                story_context={
+                    "story_id": story_id or "",
+                    "title": item.title if item else "",
+                    "acceptance_criteria": item.acceptance_criteria if item else [],
+                } if item else None,
+            )
+        except Exception as exc:
+            logger.exception("[GHR] Story code generator raised: %s", exc)
+            self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=1)
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": str(exc)},
+            )
+            self._emit("code_gen_failed", {"story_id": story_id, "error": str(exc)})
+            return
+
+        meta_update: dict = {"completion_status": gen_result.completion.status.value}
+        if gen_result.pr_number is not None:
+            meta_update["pr_number"] = gen_result.pr_number
+            meta_update["pr_url"] = gen_result.pr_url
+        self.state_mgr.update_metadata(meta_update)
+
+        self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session,
+                            exit_code=0 if gen_result.completion.status.value != "failed" else 1)
+
+        if gen_result.completion.status.value == "failed":
+            err = gen_result.completion.reason or "Code generation failed"
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": err},
+            )
+            self._emit("code_gen_failed", {"story_id": story_id, "error": err})
+            return
+
+        self._emit("code_generation_complete", {
+            "story_id": story_id,
+            "story_iteration": story_iter,
+            "pr_number": gen_result.pr_number,
+            "pr_url": gen_result.pr_url,
+        })
+        self.state_mgr.transition_to(PipelineStatus.STORY_CODE_REVIEW)
+        self._emit("state_changed")
+
+    def _step_story_code_review(self) -> None:
+        """STORY_CODE_REVIEW → STORY_COMPLETE (accepted) or STORY_PROMPT_GENERATION (rejected).
+
+        Phase 2 stub — calls the existing CodeReviewerRunner and passes the
+        story's acceptance criteria as context.  Phase 4 will refine to full
+        PR-based review with comment resolution.
+        """
+        import json as _json
+        import uuid as _uuid
+        from ..code_reviewer.runner import CodeReviewerRunner
+        from ..vcs.factory import make_vcs_client
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        state = self.state_mgr.state
+        story_id = state.current_story_id
+        story_iter = state.metadata.get("story_iteration", 1)
+        max_story_iters = getattr(self.config.orchestrator, "max_story_iterations",
+                                  self.config.orchestrator.max_iterations)
+
+        logger.info("[GHR] Story code review — story=%s iter=%d", story_id, story_iter)
+        self._emit("code_review_started", {"story_id": story_id, "story_iteration": story_iter})
+
+        pr_number: Optional[int] = None
+        pr_raw = state.metadata.get("pr_number")
+        if pr_raw is not None:
+            try:
+                pr_number = int(pr_raw)
+            except (TypeError, ValueError):
+                pass
+
+        feature_branch = self.config.project.feature_branch or f"story-{story_id}"
+
+        def _project_vcs():
+            vcs = make_vcs_client(self.config)
+            if vcs is None:
+                return None
+            repo = self.config.project.repo_name or ""
+            if repo and hasattr(vcs, "for_repo") and repo != getattr(vcs, "_repo", ""):
+                return vcs.for_repo(repo)
+            return vcs
+
+        if pr_number is None:
+            try:
+                vcs = _project_vcs()
+                if vcs:
+                    pr_number = vcs.find_open_pr(feature_branch)
+                    if pr_number:
+                        self.state_mgr.update_metadata({"pr_number": pr_number})
+            except Exception:
+                logger.debug("[GHR] PR discovery failed", exc_info=True)
+
+        if pr_number is None:
+            logger.warning("[GHR] No PR found for story %s — marking story failed", story_id)
+            mgr = StoryQueueManager(self.db)
+            mgr.mark_failed(story_id, reason="No pull request found or created")
+            self.state_mgr.update_story_context(
+                stories_completed=state.stories_completed + 1
+            )
+            self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+            self._emit("story_failed", {"story_id": story_id, "reason": "no_pr"})
+            return
+
+        _cr_session = f"cr-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
+        _cr_model = self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
+        self._emit_terminal("session_start", "CODE_REVIEWER", _cr_session,
+                            story_id=story_id, iteration=story_iter, model=_cr_model)
+
+        def _on_stdout(line: str) -> None:
+            self._emit("reviewer_stdout", {"line": line})
+            self._emit_terminal("line", "CODE_REVIEWER", _cr_session,
+                                line=line, stream="stdout", story_id=story_id)
+
+        runner = CodeReviewerRunner(self.config, vcs_client=_project_vcs())
+        try:
+            run_result = runner.run(
+                pr_number=pr_number,
+                iteration=story_iter,
+                feature_branch=feature_branch,
+                on_stdout=_on_stdout,
+                story_context={
+                    "story_id": story_id or "",
+                    "title": (mgr.get_item(story_id).title if story_id and mgr.get_item(story_id) else ""),
+                    "acceptance_criteria": (mgr.get_item(story_id).acceptance_criteria
+                                            if story_id and mgr.get_item(story_id) else []),
+                },
+            )
+        except Exception as exc:
+            logger.exception("[GHR] Story code reviewer raised: %s", exc)
+            self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=1)
+            self.state_mgr.update_metadata({"code_review_error": str(exc)})
+            self.state_mgr.transition_to(PipelineStatus.FAILED)
+            self._emit("error", {"message": str(exc), "story_id": story_id})
+            return
+
+        review = run_result.review
+        self.state_mgr.update_metadata({
+            "story_review_json": review.model_dump_json(),
+            "review_overall_status": review.overall_status,
+            "pr_merged": str(run_result.pr_merged),
+        })
+
+        # Update pr_url in queue item if the reviewer merged it
+        if run_result.pr_merged:
+            StoryQueueManager(self.db).mark_complete(
+                story_id,
+                pr_number=pr_number,
+                pr_url=state.metadata.get("pr_url", ""),
+            )
+
+        self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=0)
+        self._emit("code_review_complete", {
+            "story_id": story_id,
+            "story_iteration": story_iter,
+            "overall_status": review.overall_status,
+            "overall_score": review.overall_score,
+            "pr_merged": run_result.pr_merged,
+        })
+
+        if review.overall_status == "accepted":
+            logger.info("[GHR] Story %s accepted (iter %d) — moving to STORY_COMPLETE", story_id, story_iter)
+            self.state_mgr.update_story_context(
+                stories_completed=state.stories_completed + 1
+            )
+            self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+            self._emit("story_completed", {"story_id": story_id, "story_iteration": story_iter})
+        elif story_iter >= max_story_iters:
+            logger.warning("[GHR] Story %s hit max iterations (%d) — marking failed", story_id, max_story_iters)
+            StoryQueueManager(self.db).mark_failed(story_id, reason=f"Max iterations ({max_story_iters}) reached")
+            self.state_mgr.update_story_context(
+                stories_completed=state.stories_completed + 1
+            )
+            self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+            self._emit("story_failed", {"story_id": story_id, "reason": "max_iterations"})
+        else:
+            # Loop back: bump story iteration, re-run prompt generation
+            next_iter = story_iter + 1
+            logger.info("[GHR] Story %s rejected — starting iteration %d", story_id, next_iter)
+            self.state_mgr.update_metadata({"story_iteration": next_iter})
+            StoryQueueManager(self.db).increment_iteration(story_id)
+            self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+            self._emit("state_changed", {"story_id": story_id, "next_story_iteration": next_iter})
+
+    def _step_story_complete(self) -> None:
+        """STORY_COMPLETE → QUEUE_READY (next story) or PIPELINE_COMPLETE (queue empty)."""
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        state = self.state_mgr.state
+        story_id = state.current_story_id
+        mgr = StoryQueueManager(self.db)
+
+        logger.info("[GHR] Story complete: %s — checking queue", story_id)
+
+        if mgr.is_complete():
+            counts = mgr.counts()
+            logger.info("[GHR] All stories processed — %s", counts)
+            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self._emit("pipeline_complete", {
+                "reason": "all_stories_processed",
+                "stories_completed": state.stories_completed,
+                "stories_total": state.stories_total,
+                "counts": counts,
+            })
+            self._close_ado_work_items()
+        else:
+            self.state_mgr.transition_to(PipelineStatus.QUEUE_READY)
+            self._emit("state_changed", {"next": "queue_ready"})
+
     # ── HITL gate approvals ───────────────────────────────────────────────────
 
     def _auto_approve(self, status: PipelineStatus) -> None:
         """Auto-approve HITL gate (used when auto_approve_hitl=True)."""
         if status == PipelineStatus.HITL_PROMPT_REVIEW:
-            self.state_mgr.transition_to(PipelineStatus.CODE_GENERATION)
+            is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
+            next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
+            self.state_mgr.transition_to(next_status)
         elif status == PipelineStatus.HITL_REVIEW_DECISION:
             self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
         self._emit("state_changed")
@@ -776,7 +1445,9 @@ class Orchestrator:
         if metadata:
             self.state_mgr.update_metadata(metadata)
 
-        self.state_mgr.transition_to(PipelineStatus.CODE_GENERATION)
+        is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
+        next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
+        self.state_mgr.transition_to(next_status)
         self._emit("state_changed", {"approved": "prompt"})
 
         # Resume the pipeline loop in a background thread
@@ -1129,10 +1800,17 @@ class Orchestrator:
         if not raw_name:
             # Try to extract from requirements file
             try:
+                import re as _re
                 import yaml as _yaml
                 req_path = getattr(self.config.requirements, "path", "")
                 if req_path:
-                    raw = _yaml.safe_load(Path(req_path).read_text(encoding="utf-8"))
+                    req_file = Path(req_path)
+                    text = req_file.read_text(encoding="utf-8")
+                    if req_file.suffix.lower() == ".md":
+                        match = _re.search(r"```yaml\s*\n(.*?)\n```", text, _re.DOTALL)
+                        raw = _yaml.safe_load(match.group(1)) if match else {}
+                    else:
+                        raw = _yaml.safe_load(text)
                     epics = (raw or {}).get("epics", [])
                     if epics:
                         raw_name = epics[0].get("title", "").strip()
@@ -1169,6 +1847,41 @@ class Orchestrator:
         if not self.config.project.name:
             self.config.project.name = slug
         return str(candidate)
+
+    def _activate_ado_work_items(self) -> None:
+        """Transition ADO work items from New to Active when code generation starts (iteration 1 only)."""
+        meta = self.state_mgr.state.metadata
+        work_item_ids = meta.get("ado_work_item_ids", [])
+        ado_org = meta.get("ado_org", "")
+        ado_token = meta.get("ado_token", "")
+        if not work_item_ids or not ado_org or not ado_token:
+            return
+        try:
+            import base64
+            import httpx
+            from urllib.parse import quote
+
+            token_b64 = base64.b64encode(f":{ado_token}".encode()).decode()
+            headers = {
+                "Authorization": f"Basic {token_b64}",
+                "Content-Type": "application/json-patch+json",
+            }
+            org_enc = quote(ado_org, safe="")
+            patch_body = [{"op": "replace", "path": "/fields/System.State", "value": "Active"}]
+
+            with httpx.Client(headers=headers, timeout=15, follow_redirects=False) as client:
+                for wi_id in work_item_ids:
+                    try:
+                        client.patch(
+                            f"https://dev.azure.com/{org_enc}/_apis/wit/workitems/{wi_id}?api-version=7.1",
+                            json=patch_body,
+                        )
+                    except Exception:
+                        logger.debug("Failed to activate ADO work item %d", wi_id, exc_info=True)
+
+            logger.info("Activated %d ADO work items to Active state", len(work_item_ids))
+        except Exception:
+            logger.warning("Failed to activate ADO work items", exc_info=True)
 
     def _close_ado_work_items(self) -> None:
         """Transition ADO work items from Active to Closed on pipeline completion."""

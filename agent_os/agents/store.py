@@ -57,7 +57,7 @@ class AgentIdentityStore:
 
         agents = []
         for path in sorted(self._root.iterdir()):
-            if not path.is_dir() or path.name == "custom":
+            if not path.is_dir() or path.name in {"custom", "__pycache__", ".git", ".mypy_cache"}:
                 continue
             entry = self._build_agent_meta(path, agent_to_post, is_custom=False)
             agents.append(entry)

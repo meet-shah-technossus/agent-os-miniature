@@ -93,12 +93,14 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "") -> 
         return cmd
 
     if tool == "codex":
-        cmd = ["codex", "exec", "--full-auto", "--skip-git-repo-check"]
+        # codex exec --skip-git-repo-check --sandbox danger-full-access
+        #            [-C <working_dir>] [--add-dir <dir>] [-m <model>] <prompt>
+        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "danger-full-access"]
         if working_dir:
-            cmd.extend(["--add-dir", working_dir])
+            cmd.extend(["-C", working_dir])          # set working root
+            cmd.extend(["--add-dir", working_dir])   # grant write access
         if model:
-            cmd.extend(["--model", model])
-        cmd.extend(["-c", "store=true"])
+            cmd.extend(["-m", model])
         cmd.append(prompt)
         return cmd
 

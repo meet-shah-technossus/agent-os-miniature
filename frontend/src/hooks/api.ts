@@ -22,6 +22,34 @@ import type {
   AgentDetail,
 } from '../types';
 
+// ── GitHub Review Mode — Story Queue types ───────────────────────────────────
+
+export interface StoryQueueItem {
+  id: number;
+  story_id: string;
+  title: string;
+  description: string;
+  acceptance_criteria: string[];
+  position: number;
+  status: 'queued' | 'in_progress' | 'completed' | 'failed';
+  branch_name: string;
+  pr_number: number | null;
+  pr_url: string;
+  story_iteration: number;
+  depends_on: string[];
+  dependency_reason: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface StoryQueueResponse {
+  mode: string;
+  current_story_id: string | null;
+  stories_completed: number;
+  stories_total: number;
+  stories: StoryQueueItem[];
+}
+
 export interface RequirementsUploadResponse {
   filename?: string;
   path: string;
@@ -207,8 +235,34 @@ export const api = {
     return res.json() as Promise<{ updated: number; target_state: string }>;
   },
 
+  getAdoProjects: async (org: string, token: string): Promise<{ projects: string[] }> => {
+    const res = await fetch(`${BASE}/requirements/ado-projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ org, token }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error((err as { detail?: string }).detail ?? res.statusText);
+    }
+    return res.json() as Promise<{ projects: string[] }>;
+  },
+
   getBusHistory: (channel: string) =>
     fetchJson<BusMessage[]>(`/orchestrator/bus-history?channel=${encodeURIComponent(channel)}`),
+
+  getStoryQueue: () =>
+    fetchJson<StoryQueueResponse>('/orchestrator/story-queue'),
+
+  getStoryQueueItem: (story_id: string) =>
+    fetchJson<StoryQueueItem>(`/orchestrator/story-queue/${encodeURIComponent(story_id)}`),
+
+  reorderStoryQueue: (story_ids: string[]) =>
+    fetchJson<{ approved: boolean; message: string }>('/orchestrator/story-queue/reorder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ story_ids }),
+    }),
 
   getMetrics: () => fetchJson<Metrics>('/metrics'),
 
@@ -337,6 +391,17 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ command }),
+    }),
+
+  /** Run a command in a persistent terminal session for ADO MCP setup.
+   *  The first call opens a new terminal; subsequent calls for the same
+   *  session_key reuse that existing window (no new window per step).
+   */
+  runInMcpTerminal: (sessionKey: string, command: string) =>
+    fetchJson<{ reused: boolean }>('/cli-tools/mcp-terminal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_key: sessionKey, command }),
     }),
 
   setCliTool: (post: string, tool: string) =>
