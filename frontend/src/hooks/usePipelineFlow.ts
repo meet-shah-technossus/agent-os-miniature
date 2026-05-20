@@ -26,11 +26,17 @@ function toStation(status: string): StationId {
   switch (status) {
     case 'IDLE':                 return 'orchestrator';
     case 'LOADING_REQUIREMENTS':
+    case 'ANALYSING_DEPENDENCIES':
+    case 'QUEUE_READY':
+    case 'STORY_COMPLETE':       return 'orchestrator';
     case 'PROMPT_GENERATION':
-    case 'HITL_PROMPT_REVIEW':   return 'prompt_generator';
-    case 'CODE_GENERATION':      return 'code_generator';
-    case 'CODE_GEN_FAILED':       return 'code_generator';
+    case 'HITL_PROMPT_REVIEW':
+    case 'STORY_PROMPT_GENERATION': return 'prompt_generator';
+    case 'CODE_GENERATION':
+    case 'STORY_CODE_GENERATION':
+    case 'CODE_GEN_FAILED':      return 'code_generator';
     case 'CODE_REVIEW':
+    case 'STORY_CODE_REVIEW':
     case 'HITL_REVIEW_DECISION':
     case 'PIPELINE_COMPLETE':    return 'code_reviewer';
     default:                     return 'idle';
@@ -41,14 +47,27 @@ function toStatusText(status: string): string {
   switch (status) {
     case 'IDLE':
       return 'Pipeline is idle — press Start to begin.';
+    case 'LOADING_REQUIREMENTS':
+      return 'Loading requirements from source…';
+    case 'ANALYSING_DEPENDENCIES':
+      return 'Analysing story dependencies and building the queue…';
+    case 'QUEUE_READY':
+      return 'Story queue ready — picking next story to process.';
     case 'PROMPT_GENERATION':
-      return 'The Writer is generating a prompt for the current iteration…';
+    case 'STORY_PROMPT_GENERATION':
+      return 'The Writer is generating a prompt for the current story…';
     case 'HITL_PROMPT_REVIEW':
       return 'Waiting for your review of the prompt. Check the Prompt tab to approve or edit.';
     case 'CODE_GENERATION':
+    case 'STORY_CODE_GENERATION':
       return 'The Builder is generating code from the approved prompt…';
+    case 'CODE_GEN_FAILED':
+      return 'Code generation failed — click Retry to try again.';
     case 'CODE_REVIEW':
+    case 'STORY_CODE_REVIEW':
       return 'The Inspector is reviewing the generated code…';
+    case 'STORY_COMPLETE':
+      return 'Story complete — moving to next story in the queue.';
     case 'HITL_REVIEW_DECISION':
       return 'Waiting for your decision on the code review. Check the Review tab.';
     case 'PIPELINE_COMPLETE':
@@ -123,9 +142,13 @@ const FEED_EVENTS = new Set([
 
 const TRANSFERRING_STATUSES = new Set([
   'LOADING_REQUIREMENTS',
+  'ANALYSING_DEPENDENCIES',
   'PROMPT_GENERATION',
+  'STORY_PROMPT_GENERATION',
   'CODE_GENERATION',
+  'STORY_CODE_GENERATION',
   'CODE_REVIEW',
+  'STORY_CODE_REVIEW',
 ]);
 
 export function isTransferringStatus(status: string): boolean {

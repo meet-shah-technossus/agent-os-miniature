@@ -109,25 +109,30 @@ export default function TerminalPanel({ state, onExpand, compact = false }: Prop
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollLocked, setScrollLocked] = useState(true);
 
-  // Auto-scroll when locked
+  // Auto-scroll when locked — smooth scroll so it doesn't jump
   useEffect(() => {
     if (!scrollLocked) return;
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
   }, [lines.length, scrollLocked]);
 
-  // Detect manual scroll-up to release lock
+  // Detect manual scroll-up to release lock; re-lock when user scrolls back to bottom
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    if (!atBottom) setScrollLocked(false);
+    if (atBottom) {
+      setScrollLocked(true);
+    } else {
+      setScrollLocked(false);
+    }
   }, []);
 
   const handleScrollLockToggle = () => {
     setScrollLocked((prev) => {
       if (!prev) {
-        // Re-lock → scroll to bottom immediately
+        // Re-lock → instant jump to bottom so user sees latest output
         const el = scrollRef.current;
         if (el) el.scrollTop = el.scrollHeight;
       }

@@ -118,8 +118,11 @@ class CodexWrapper:
         tool = self._cli_routing.get(session_type.value, "codex")
         model = self._model_routing.get(session_type.value) or self._default_model
         start_time = time.monotonic()
+        # On Windows pass the prompt via stdin to avoid the 8191-char cmd-line limit.
+        use_stdin_for_prompt = _IS_WINDOWS and tool.lower() in ("codex",)
         try:
-            cmd = build_command(tool, model, prompt, working_dir=str(working_dir))
+            cmd = build_command(tool, model, prompt, working_dir=str(working_dir),
+                                use_stdin=use_stdin_for_prompt)
         except UnsupportedToolError as exc:
             logger.error("Unsupported tool '%s' for %s: %s", tool, session_type.value, exc)
             return CodexResult(
@@ -147,16 +150,14 @@ class CodexWrapper:
                 # Popen with shell=False won't resolve them without the extension,
                 # so invoke through cmd.exe which handles PATHEXT transparently.
                 win_cmd = ["cmd", "/c"] + cmd
+                prompt_bytes = prompt.encode("utf-8") if use_stdin_for_prompt else None
                 proc = subprocess.Popen(
                     win_cmd,
-                    stdin=subprocess.DEVNULL,
+                    stdin=subprocess.PIPE if use_stdin_for_prompt else subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     cwd=str(working_dir),
                     env=env,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 )
                 session.process = proc
@@ -168,8 +169,36 @@ class CodexWrapper:
                     _exe, proc.pid, session_type.value,
                 )
 
+                # Writer thread: send prompt bytes then close stdin so codex knows EOF
+                if use_stdin_for_prompt and prompt_bytes:
+                    def _write_stdin() -> None:
+                        try:
+                            proc.stdin.write(prompt_bytes)  # type: ignore[union-attr]
+                            proc.stdin.close()              # type: ignore[union-attr]
+                        except (OSError, BrokenPipeError):
+                            pass
+                    threading.Thread(target=_write_stdin, daemon=True).start()
+
+                def _decode(line_bytes) -> str:
+                    if isinstance(line_bytes, bytes):
+                        return line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
+                    return str(line_bytes).rstrip("\r\n")
+
+                def _stream_bytes(pipe, buf, cb):
+                    try:
+                        for raw in pipe:
+                            line = _decode(raw)
+                            buf.append(line)
+                            if cb:
+                                try:
+                                    cb(line)
+                                except Exception:
+                                    pass
+                    except (ValueError, OSError):
+                        pass
+
                 reader = threading.Thread(
-                    target=stream_pipe,
+                    target=_stream_bytes,
                     args=(proc.stdout, session.stdout_lines, combined_cb),
                     daemon=True,
                 )

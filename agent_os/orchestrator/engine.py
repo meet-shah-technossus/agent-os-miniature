@@ -1733,8 +1733,10 @@ class Orchestrator:
         if self.state_mgr.current_status != PipelineStatus.CODE_GEN_FAILED:
             logger.warning("retry_code_generator() called but not at CODE_GEN_FAILED")
             return False
+        is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
+        next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
         self.state_mgr.transition_to(
-            PipelineStatus.CODE_GENERATION,
+            next_status,
             metadata={"code_gen_failed": False, "code_gen_error": ""},
         )
         self._emit("state_changed", {"retry": "code_generator"})

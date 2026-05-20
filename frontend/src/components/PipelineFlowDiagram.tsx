@@ -70,11 +70,14 @@ type EdgeId = 'orch-prompt' | 'orch-gen' | 'orch-review' | 'prompt-orch' | 'revi
 function statusToActiveEdge(status: string): EdgeId | null {
   switch (status) {
     case 'LOADING_REQUIREMENTS':
-    case 'PROMPT_GENERATION':    return 'orch-prompt';
-    case 'HITL_PROMPT_REVIEW':   return 'prompt-orch';
-    case 'CODE_GENERATION':      return 'orch-gen';
-    case 'CODE_REVIEW':          return 'orch-review';
-    case 'HITL_REVIEW_DECISION': return 'review-orch';
+    case 'PROMPT_GENERATION':
+    case 'STORY_PROMPT_GENERATION':   return 'orch-prompt';
+    case 'HITL_PROMPT_REVIEW':        return 'prompt-orch';
+    case 'CODE_GENERATION':
+    case 'STORY_CODE_GENERATION':     return 'orch-gen';
+    case 'CODE_REVIEW':
+    case 'STORY_CODE_REVIEW':         return 'orch-review';
+    case 'HITL_REVIEW_DECISION':      return 'review-orch';
     default: return null;
   }
 }
@@ -83,11 +86,18 @@ function statusToActiveNode(status: string): NodeId | null {
   switch (status) {
     case 'IDLE':                             return 'orchestrator';
     case 'LOADING_REQUIREMENTS':
+    case 'ANALYSING_DEPENDENCIES':
+    case 'QUEUE_READY':                      return 'orchestrator';
     case 'PROMPT_GENERATION':
-    case 'HITL_PROMPT_REVIEW':               return 'prompt_generator';
-    case 'CODE_GENERATION':                  return 'code_generator';
+    case 'HITL_PROMPT_REVIEW':
+    case 'STORY_PROMPT_GENERATION':          return 'prompt_generator';
+    case 'CODE_GENERATION':
+    case 'STORY_CODE_GENERATION':
+    case 'CODE_GEN_FAILED':                  return 'code_generator';
     case 'CODE_REVIEW':
+    case 'STORY_CODE_REVIEW':
     case 'HITL_REVIEW_DECISION':             return 'code_reviewer';
+    case 'STORY_COMPLETE':
     case 'PIPELINE_COMPLETE':                return 'orchestrator';
     default:                                 return null;
   }

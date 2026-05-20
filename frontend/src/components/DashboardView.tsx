@@ -1,4 +1,4 @@
-﻿/* DashboardView â€” Phase 5 / Phase 7 (GitHub Review mode story queue)
+﻿/* DashboardView — Phase 5 / Phase 7 (GitHub Review mode story queue)
    Left: pipeline status card, GHR context, iteration counter, Start/Pause/Approve/Reset controls.
    Right: Story Queue (GHR mode) + PipelineFlowDiagram (compact embed).
 */
@@ -27,7 +27,7 @@ export default function DashboardView() {
         const q = await api.getStoryQueue();
         setStoryQueue(q);
       } catch {
-        // Silently ignore â€” not in GHR mode or endpoint unavailable
+        // Silently ignore — not in GHR mode or endpoint unavailable
       }
     };
     poll();
@@ -215,7 +215,7 @@ export default function DashboardView() {
           </AnimatePresence>
         </div>
 
-        {/* Danger zone â€” directly below Controls */}
+        {/* Danger zone — directly below Controls */}
         <div className="glass-card border-red-500/15">
           <p className="text-[10px] uppercase tracking-widest text-red-400/60 mb-2">Danger Zone</p>
           {!showResetConfirm ? (
@@ -245,7 +245,7 @@ export default function DashboardView() {
       {/* â”€â”€ Right: Story Queue (GHR) + Pipeline flow diagram â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <div className="flex-1 min-w-0 flex flex-col gap-4 min-h-0">
 
-        {/* Story Queue panel â€” GitHub Review mode only */}
+        {/* Story Queue panel — GitHub Review mode only */}
         {isGhrMode && storyQueue && (
           <div className="glass-card flex flex-col overflow-hidden" style={{ maxHeight: 360 }}>
             <div className="flex items-center justify-between mb-3 shrink-0">
@@ -290,7 +290,7 @@ export default function DashboardView() {
                           <span className="text-[10px] text-white/30">iter {story.story_iteration}</span>
                         )}
                         {storyStatusBadge(story.status)}
-                        <span className="text-white/20 text-[10px]">{isExpanded ? 'â–²' : 'â–¼'}</span>
+                        <span className="text-white/20 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                       </div>
                     </div>
 
@@ -303,7 +303,7 @@ export default function DashboardView() {
                             <ul className="space-y-0.5">
                               {story.acceptance_criteria.map((ac, i) => (
                                 <li key={i} className="flex gap-1.5 text-[11px] text-white/50">
-                                  <span className="text-white/20 shrink-0">â€”</span>
+                                  <span className="text-white/20 shrink-0">—</span>
                                   <span>{ac}</span>
                                 </li>
                               ))}
@@ -312,7 +312,7 @@ export default function DashboardView() {
                         )}
                         <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-white/40">
                           {story.branch_name && (
-                            <span>ðŸŒ¿ <span className="font-mono">{story.branch_name}</span></span>
+                            <span>🌿 <span className="font-mono">{story.branch_name}</span></span>
                           )}
                           {story.pr_url ? (
                             <a
@@ -322,15 +322,15 @@ export default function DashboardView() {
                               className="text-indigo-400 hover:text-indigo-300 transition-colors"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              ðŸ”— PR #{story.pr_number}
+                              🔗 PR #{story.pr_number}
                             </a>
                           ) : story.pr_number ? (
-                            <span>ðŸ”— PR #{story.pr_number}</span>
+                            <span>🔗 PR #{story.pr_number}</span>
                           ) : null}
                         </div>
                         {story.depends_on.length > 0 && (
                           <p className="text-[11px] text-white/35">
-                            â›“ Depends on: <span className="font-mono">{story.depends_on.join(', ')}</span>
+                            ⛓ Depends on: <span className="font-mono">{story.depends_on.join(', ')}</span>
                           </p>
                         )}
                       </div>

@@ -56,7 +56,8 @@ class UnsupportedToolError(ValueError):
     """Raised when a tool key is not in SUPPORTED_TOOLS."""
 
 
-def build_command(tool: str, model: str, prompt: str, working_dir: str = "") -> list[str]:
+def build_command(tool: str, model: str, prompt: str, working_dir: str = "",
+                  *, use_stdin: bool = False) -> list[str]:
     """Return the subprocess ``argv`` list for the given CLI tool.
 
     Args:
@@ -101,7 +102,8 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "") -> 
             cmd.extend(["--add-dir", working_dir])   # grant write access
         if model:
             cmd.extend(["-m", model])
-        cmd.append(prompt)
+        # Use '-' to read prompt from stdin (avoids Windows command-line length limit)
+        cmd.append("-" if use_stdin else prompt)
         return cmd
 
     if tool in API_TOOLS:

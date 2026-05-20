@@ -40,6 +40,7 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     ],
     PipelineStatus.CODE_GEN_FAILED: [
         PipelineStatus.CODE_GENERATION,
+        PipelineStatus.STORY_CODE_GENERATION,  # GHR mode retry
         PipelineStatus.IDLE,
     ],
     PipelineStatus.CODE_REVIEW: [
