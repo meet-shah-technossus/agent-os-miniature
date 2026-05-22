@@ -129,6 +129,10 @@ class GitHubVCSClient(VCSClient):
     def resolve_all_pr_review_comments(self, pr_number: int) -> list[VCSResult]:
         return [_wrap(r) for r in self._gh.resolve_all_pr_review_comments(pr_number)]
 
+    def get_pr_files(self, pr_id: int) -> VCSResult:
+        """Fetch the list of changed files in a PR (with per-file patch text)."""
+        return _wrap(self._gh.get_pr_files(pr_id))
+
     # ── Branches ─────────────────────────────────────────────────────────────
 
     def delete_branch(self, branch: str) -> VCSResult:

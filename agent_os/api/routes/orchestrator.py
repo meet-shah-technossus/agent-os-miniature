@@ -53,13 +53,22 @@ def start_pipeline(orch: Orchestrator = Depends(get_orchestrator)):
     """Start (or resume) the pipeline in a background thread.
 
     If the pipeline is in a terminal state (PIPELINE_COMPLETE or FAILED) it is
-    automatically reset to IDLE before starting, so callers don't need a
-    separate reset call after each completed run.
+    automatically reset to IDLE before starting.  If it is stuck at
+    CODE_GEN_FAILED the code-generator retry is triggered instead of spawning
+    a duplicate thread.
     """
     status = orch.state_mgr.current_status
     from ...storage.models import PipelineStatus
     if status in (PipelineStatus.PIPELINE_COMPLETE, PipelineStatus.FAILED):
         orch.reset()
+    elif status == PipelineStatus.CODE_GEN_FAILED:
+        # Resume from a code-gen timeout/failure — retry rather than starting
+        # a new thread that would immediately break at the CODE_GEN_FAILED guard.
+        ok = orch.retry_code_generator()
+        if ok:
+            return ApproveGateResponse(approved=True, message="Code generation retry started")
+        # retry_code_generator returned False (race condition) — fall through
+        # and let the normal thread start path handle it gracefully.
     t = threading.Thread(target=orch.run, daemon=True, name="orchestrator-start")
     t.start()
     return ApproveGateResponse(approved=True, message="Pipeline started")
@@ -93,6 +102,27 @@ def approve_review(orch: Orchestrator = Depends(get_orchestrator)):
             detail="Pipeline is not waiting at HITL_REVIEW_DECISION gate.",
         )
     return ApproveGateResponse(approved=True, message="Review approved — pipeline resumed")
+
+
+@router.post("/move-to-next-story", response_model=ApproveGateResponse)
+def move_to_next_story(orch: Orchestrator = Depends(get_orchestrator)):
+    """Merge the current story's PR, delete its branch, then advance to the next story.
+
+    This action skips the normal approve/reject loop: it force-merges the PR
+    regardless of review score, marks the current story as complete, and resumes
+    the pipeline from the queue.  If the queue is exhausted the pipeline
+    transitions to PIPELINE_COMPLETE.
+
+    Only available when the pipeline is paused at HITL_REVIEW_DECISION (i.e.
+    after the code reviewer has produced a review JSON for the current iteration).
+    """
+    ok = orch.move_to_next_story()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot move to next story — pipeline is not at HITL_REVIEW_DECISION.",
+        )
+    return ApproveGateResponse(approved=True, message="Merging PR and advancing to next story")
 
 
 @router.post("/approve-gate", response_model=ApproveGateResponse)

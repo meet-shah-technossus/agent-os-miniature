@@ -38,12 +38,20 @@ export default function DashboardView() {
   const isGhrMode = storyQueue?.mode === 'github_review';
 
   // â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [pauseRequested, setPauseRequested] = useState(false);
+
+  // Clear the "pause pending" indicator whenever the pipeline status changes
+  useEffect(() => { setPauseRequested(false); }, [pipelineStatus]);
+
   const withError = <T,>(p: Promise<T>) =>
     p.catch((e: unknown) => setActionError(String(e)));
 
-  // â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const handleStart   = () => { setActionError(null); withError(api.startPipeline()); };
-  const handlePause   = () => { setActionError(null); withError(api.pausePipeline()); };
+  const handlePause   = () => {
+    setActionError(null);
+    setPauseRequested(true);
+    withError(api.pausePipeline());
+  };
   const handleApprove = () => { setActionError(null); withError(api.approveGate()); };
   const handleReset = () =>
     api.resetPipeline()
@@ -192,9 +200,16 @@ export default function DashboardView() {
             </button>
             <button
               onClick={handlePause}
-              className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium transition-colors"
+              disabled={pauseRequested}
+              className="px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-sm font-medium transition-colors disabled:opacity-60"
+              title={pauseRequested ? 'Pause pending — current step will finish first' : 'Pause after the current step completes'}
             >
-              Pause
+              {pauseRequested ? (
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+                  Pausing…
+                </span>
+              ) : 'Pause'}
             </button>
           </div>
 

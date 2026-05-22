@@ -571,6 +571,7 @@ interface ReviewViewerProps {
   isModified: boolean;
   isValidJson: boolean;
   onApprove: () => void;
+  onMoveToNextStory: () => void;
   onReset: () => void;
   onContentChange: (v: string) => void;
   onRetryPR: () => void;
@@ -580,13 +581,14 @@ interface ReviewViewerProps {
   prError: string;
   codeReviewFailed: boolean;
   codeReviewError: string;
+  reviewJsonExists: boolean;
 }
 
 function ReviewViewer({
   content, originalContent, iteration, pipelineStatus,
   isModified, isValidJson,
-  onApprove, onReset, onContentChange, onRetryPR, onRetryCodeReviewer, isLoading,
-  prFailed, prError, codeReviewFailed, codeReviewError,
+  onApprove, onMoveToNextStory, onReset, onContentChange, onRetryPR, onRetryCodeReviewer, isLoading,
+  prFailed, prError, codeReviewFailed, codeReviewError, reviewJsonExists,
 }: ReviewViewerProps) {
   const [editorHeight, setEditorHeight] = useState(320);
   const reviewEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
@@ -698,6 +700,14 @@ function ReviewViewer({
               Approve Review
             </button>
           )}
+          <button
+            onClick={onMoveToNextStory}
+            disabled={!isHITLReview || isLoading || !reviewJsonExists}
+            title={!reviewJsonExists ? 'Available after code review completes' : 'Merge PR, delete branch and start next story'}
+            className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Move to Next Story
+          </button>
         </div>
       </div>
 
@@ -1075,6 +1085,19 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     }
   };
 
+  const handleMoveToNextStory = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.moveToNextStory();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleRetryPR = async () => {
     setIsLoading(true);
     setError(null);
@@ -1112,11 +1135,11 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     setError(null);
     try {
       await api.retryCodeGenerator();
-      setCodeGenFailed(false);
-      setCodeGenError('');
       await refresh();
     } catch (e) {
       setError(String(e));
+      // Re-sync state so the button visibility stays accurate
+      await refresh().catch(() => null);
     } finally {
       setIsLoading(false);
     }
@@ -1236,6 +1259,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             isModified={isReviewModified}
             isValidJson={isReviewValidJson}
             onApprove={handleApproveReview}
+            onMoveToNextStory={handleMoveToNextStory}
             onReset={handleReviewReset}
             onContentChange={handleReviewEdit}
             onRetryPR={handleRetryPR}
@@ -1245,6 +1269,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             codeReviewFailed={codeReviewFailed}
             codeReviewError={codeReviewError}
             onRetryCodeReviewer={handleRetryCodeReviewer}
+            reviewJsonExists={!!reviewOriginalContent.trim()}
           />
         </div>
 

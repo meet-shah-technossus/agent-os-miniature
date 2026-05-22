@@ -37,6 +37,16 @@ def _set_pty_size(fd: int, rows: int, cols: int) -> None:
         pass
 
 
+# Patterns that indicate a fatal, unrecoverable codex tool-router error.
+# When seen in stdout the process will never recover — kill it immediately
+# instead of waiting for the full timeout.
+_FATAL_STDOUT_PATTERNS: tuple[str, ...] = (
+    "failed to parse function arguments",
+    "invalid type: sequence, expected a string",
+    "invalid type: map, expected a string",
+)
+
+
 class CodexWrapper:
     """Manages Codex CLI subprocess invocations with streaming output and timeout."""
 
@@ -184,6 +194,8 @@ class CodexWrapper:
                         return line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
                     return str(line_bytes).rstrip("\r\n")
 
+                fatal_event = threading.Event()
+
                 def _stream_bytes(pipe, buf, cb):
                     try:
                         for raw in pipe:
@@ -194,6 +206,19 @@ class CodexWrapper:
                                     cb(line)
                                 except Exception:
                                     pass
+                            # Early abort: kill the process immediately on known
+                            # fatal codex tool-router parse errors so we don't
+                            # hang until the full timeout expires.
+                            if any(p in line for p in _FATAL_STDOUT_PATTERNS):
+                                if not fatal_event.is_set():
+                                    fatal_event.set()
+                                    logger.warning(
+                                        "Codex fatal tool-router error detected — "
+                                        "aborting process %d early: %s",
+                                        proc.pid, line.strip(),
+                                    )
+                                    kill_process(proc)
+                                break
                     except (ValueError, OSError):
                         pass
 
@@ -222,6 +247,15 @@ class CodexWrapper:
                     )
 
                 reader.join(timeout=10)
+
+                if fatal_event.is_set():
+                    return CodexResult(
+                        exit_code=1,
+                        stdout="\n".join(session.stdout_lines),
+                        stderr="",
+                        timed_out=False,
+                        duration_seconds=time.monotonic() - start_time,
+                    )
 
             else:
                 # Unix: PTY gives the child a real TTY (ANSI output, interactive prompts).

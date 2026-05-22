@@ -84,16 +84,19 @@ async def analyse_dependencies(
         client = AsyncOpenAI(api_key=api_key)  # type: ignore[arg-type]
         user_prompt = _build_analysis_prompt(stories)
 
-        response = await client.chat.completions.create(
-            model=model,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _ANALYSIS_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0,
-            max_tokens=2000,
-        )
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": _ANALYSIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0,
+                max_tokens=2000,
+            )
+        finally:
+            await client.aclose()  # prevent "Event loop is closed" on GC
 
         raw = response.choices[0].message.content or "{}"
         # The model wraps the array in an object; accept both forms.

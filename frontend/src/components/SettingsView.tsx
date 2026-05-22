@@ -615,6 +615,9 @@ export default function SettingsView() {
           {activeTab === 'requirements' && renderRequirements()}
         </motion.div>
       </AnimatePresence>
+
+      {/* ── Global Requirements Preview Modal (shared across tabs) ───────── */}
+      {renderReqPreviewModal()}
     </div>
   );
 
@@ -1866,6 +1869,36 @@ export default function SettingsView() {
                   <p className="text-[10px] text-white/25 mt-1">Branches are auto-named: prefix + story-id (e.g. story-42-auth)</p>
                 </div>
               </div>
+
+              {/* View Requirements — same modal used in the Requirements tab */}
+              <div className="pt-2 border-t border-white/[0.04] flex items-center gap-3">
+                <p className="text-xs text-white/30 flex-1">
+                  Preview the requirements that will be used for this GitHub Review run.
+                </p>
+                <button
+                  onClick={async () => {
+                    setReqViewError('');
+                    setReqViewDoc(null);
+                    setReqViewOpen(true);
+                    setReqViewLoading(true);
+                    try {
+                      const doc = await api.previewRequirements();
+                      setReqViewDoc(doc);
+                    } catch (err) {
+                      setReqViewError(err instanceof Error ? err.message : 'Failed to load preview');
+                    } finally {
+                      setReqViewLoading(false);
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-indigo-500/30 bg-indigo-500/10 text-xs font-medium text-indigo-300 hover:bg-indigo-500/20 transition-colors shrink-0"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                  </svg>
+                  View Requirements
+                </button>
+              </div>
             </div>
           )}
         </section>
@@ -2238,13 +2271,20 @@ export default function SettingsView() {
           </div>
         )}
 
-        {/* Requirements Preview Modal */}
-        <AnimatePresence>
-          {reqViewOpen && (
-            <motion.div
-              key="req-preview-overlay"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
+        {/* Requirements Preview Modal is rendered globally — see renderReqPreviewModal() */}
+      </section>
+    );
+  }
+
+  /* ── Requirements preview modal (shared — rendered at root level) ─────── */
+  function renderReqPreviewModal() {
+    return (
+      <AnimatePresence>
+        {reqViewOpen && (
+          <motion.div
+            key="req-preview-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               className="fixed inset-0 z-50 flex items-center justify-center p-4"
               style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(4px)' }}
@@ -2305,7 +2345,6 @@ export default function SettingsView() {
             </motion.div>
           )}
         </AnimatePresence>
-      </section>
     );
   }
 }

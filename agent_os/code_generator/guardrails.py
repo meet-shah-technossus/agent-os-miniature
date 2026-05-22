@@ -13,17 +13,47 @@ GUARDRAIL_PROMPT = """\
 You are generating code for an automated SDLC pipeline managed by Agent OS.
 Follow every rule below strictly — violations will cause the pipeline run to fail.
 
+## TOOL CALL FORMAT — CRITICAL
+All arguments passed to ANY tool / function call MUST be plain **strings**.
+Never pass an array or object where a string is expected.
+
+WRONG (causes a fatal parse error that stalls the entire run):
+  run_command / shell: {"command": ["python", "-m", "pip", "install", "pkg"]}
+  write_file:          {"content": ["line 1", "line 2"]}
+
+CORRECT:
+  run_command / shell: {"command": "python -m pip install pkg"}
+  write_file:          {"content": "line 1\\nline 2"}
+
+When running shell commands always use a **single string**, not a list of tokens.
+
 ## YOU MUST — Core Responsibilities
 
+- **Create / update `.gitignore` first** — before writing any other file, ensure
+  a `.gitignore` exists at the project root containing at minimum:
+      .venv/
+      venv/
+      env/
+      __pycache__/
+      *.pyc
+      node_modules/
+      dist/
+      build/
+      *.egg-info/
+      .pytest_cache/
+      .mypy_cache/
+  If the file already exists, append any entries that are missing.
 - Ensure a Python virtual environment named `.venv` exists at the project root.
-  If absent, create it: `python3 -m venv .venv`.
-- Add all required packages to `requirements.txt` (one per line with a minimum
-  version pin, e.g. `fastapi>=0.110`). Never remove existing entries.
-- After updating `requirements.txt`, install dependencies:
-      .venv/bin/pip install --upgrade pip
-      .venv/bin/pip install -r requirements.txt
-- Include an **Environment Setup** section in `summary.md` listing every package
-  added in this iteration.
+  If absent, create it: `python -m venv .venv`.
+- Add any NEW packages you introduce to `requirements.txt` (one per line with a
+  minimum version pin, e.g. `fastapi>=0.110`). Never remove existing entries.
+- If you add NEW packages to `requirements.txt`, install ONLY those new packages:
+      On Windows : .venv\\Scripts\\pip install <new-package-name>
+      On Linux   : .venv/bin/pip install <new-package-name>
+- NEVER run `pip install -r requirements.txt` — the project has large ML
+  dependencies (PyTorch, Transformers, etc.) that are gigabytes in size and
+  would exceed the execution time limit. Assume all existing packages are
+  already installed in the environment.
 
 ## ITERATION 1 ONLY — CI Script
 
@@ -39,10 +69,10 @@ Example CI check skeleton (adapt to the actual project):
 
     #!/usr/bin/env python3
     \"\"\"CI sanity check — run by Agent OS after each code-generation iteration.\"\"\"
-    import subprocess, sys
+    import subprocess, sys, os, glob
 
     def run(cmd):
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
         if result.stdout:
             print(result.stdout)
         if result.returncode != 0 and result.stderr:
@@ -50,7 +80,25 @@ Example CI check skeleton (adapt to the actual project):
         return result.returncode
 
     if __name__ == "__main__":
-        rc = run(".venv/bin/pytest --tb=short -q")
+        # Resolve pytest executable — works on both Windows and Linux
+        root = os.path.dirname(os.path.abspath(__file__))
+        venv = os.path.join(root, ".venv")
+        pytest_exe = (
+            os.path.join(venv, "Scripts", "pytest")
+            if os.path.exists(os.path.join(venv, "Scripts", "pytest"))
+            else os.path.join(venv, "bin", "pytest")
+        )
+        # Run ONLY the test files we created in this iteration (avoids importing
+        # heavy ML dependencies from the full existing test suite).
+        # Pattern: tests/test_<module_name>*.py  — adjust to the actual file names.
+        test_files = glob.glob(os.path.join(root, "tests", "test_*.py"))
+        if not test_files:
+            print("No test files found — skipping pytest")
+            sys.exit(0)
+        # --timeout flag requires pytest-timeout; fall back gracefully if absent
+        files_arg = " ".join(f'"{f}"' for f in test_files)
+        rc = run(f'"{pytest_exe}" {files_arg} --tb=short -q --no-header -p no:timeout 2>/dev/null '
+                 f'|| "{pytest_exe}" {files_arg} --tb=short -q --no-header')
         sys.exit(rc)
 
 **IMPORTANT**: Do NOT add `ci_check.py` to `.gitignore`.
@@ -63,8 +111,7 @@ with defects found in the previous iteration.  For every defect you MUST:
 1. Identify the exact file and line range described.
 2. Fix the root cause — do not just suppress the symptom.
 3. Re-run `ci_check.py` after applying all fixes and ensure it exits 0.
-4. In `summary.md` acknowledge each fixed defect:
-   `Defect #N (<file>): <one-line description of the fix>`
+4. Confirm in a code comment which defect each change addresses.
 
 Do NOT add new files or features in a fix iteration unless the reviewer
 explicitly requests them.
@@ -80,19 +127,21 @@ explicitly requests them.
 
 ## YOU MUST NOT — Structural Rules
 
-- Create files not listed in the prompt (except `ci_check.py` in iteration 1
-  and `summary.md` which are always required).
+- Create files not listed in the prompt (except `ci_check.py` in iteration 1).
 - Add API endpoints, database schemas, or configuration files not specified.
 - Install dependencies not mentioned in the prompt.
 - Modify files outside this module's scope.
 - Push code directly to the `main` branch after iteration 1.
 - Add `ci_check.py` to `.gitignore`.
-
-## COMPLETION
-
-When finished, write `summary.md` in the working directory.
-The last line of `summary.md` MUST be exactly: `END`
-Do NOT modify or delete `summary.md` after writing it.
+- Run the **entire** project test suite — only run the specific test files you
+  created in this iteration. The project imports heavy ML libraries (PyTorch,
+  Transformers) whose import alone takes minutes and will time out.
+- Import `torch`, `transformers`, `ctranslate2`, `spacy`, or other large ML
+  packages in `ci_check.py` or any test utility that runs during CI.
+- **Commit or push `.venv/`, `venv/`, `node_modules/`, `__pycache__/`, or any
+  build artefact** to git. Always write/update `.gitignore` before staging files.
+  Never run `git add .` or `git add -A` without first ensuring `.gitignore`
+  excludes all virtual-environment and dependency directories.
 
 ## OUTPUT FORMAT
 

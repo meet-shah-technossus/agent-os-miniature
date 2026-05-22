@@ -40,7 +40,7 @@ class OrchestratorConfig(BaseModel):
 
 class CodexConfig(BaseModel):
     model: str = "codex"
-    timeout_seconds: int = Field(default=600, ge=30)
+    timeout_seconds: int = Field(default=1200, ge=30)
     max_retries: int = Field(default=2, ge=0, le=5)
     model_routing: dict[str, str] = Field(default_factory=lambda: {
         "PROMPT_GENERATOR": "gpt-4.1-mini",

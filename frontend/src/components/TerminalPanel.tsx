@@ -108,25 +108,28 @@ export default function TerminalPanel({ state, onExpand, compact = false }: Prop
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollLocked, setScrollLocked] = useState(true);
+  // Tracks whether the current scroll event was triggered by our own code,
+  // so handleScroll doesn't inadvertently release the lock mid-animation.
+  const isProgrammaticRef = useRef(false);
 
-  // Auto-scroll when locked — smooth scroll so it doesn't jump
+  // Auto-scroll when locked — instant jump keeps handleScroll at-bottom immediately
   useEffect(() => {
     if (!scrollLocked) return;
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    isProgrammaticRef.current = true;
+    el.scrollTop = el.scrollHeight;
+    // One rAF is enough: by next frame the scroll event has already fired
+    requestAnimationFrame(() => { isProgrammaticRef.current = false; });
   }, [lines.length, scrollLocked]);
 
   // Detect manual scroll-up to release lock; re-lock when user scrolls back to bottom
   const handleScroll = useCallback(() => {
+    if (isProgrammaticRef.current) return; // ignore our own programmatic scrolls
     const el = scrollRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
-    if (atBottom) {
-      setScrollLocked(true);
-    } else {
-      setScrollLocked(false);
-    }
+    setScrollLocked(atBottom);
   }, []);
 
   const handleScrollLockToggle = () => {

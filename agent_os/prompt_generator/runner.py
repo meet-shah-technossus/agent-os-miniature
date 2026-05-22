@@ -40,10 +40,8 @@ Rules for the generated prompt:
 3. Specify a CI pipeline Python script (``ci_check.py`` at the project root) that:
    - Validates the project builds successfully (language-appropriate checks).
    - Must NOT be listed in ``.gitignore``.
-4. Include an Output Format section: the agent must write ``summary.md`` listing every \
-file created/modified, and end the file with the word END on its own line.
-5. Do not invent requirements beyond what is provided.
-6. Be specific and technical — assume the agent is capable but has no prior context.
+4. Do not invent requirements beyond what is provided.
+5. Be specific and technical — assume the agent is capable but has no prior context.
 
 Reason through the key implementation challenges before writing the prompt."""
 
@@ -66,8 +64,6 @@ security issues, architecture violations, etc.).
 listed issue.
 7. Instruct the agent to run the existing ``ci_check.py`` after making all fixes and \
 to resolve any CI failures before declaring done.
-8. Include an Output Format section: write ``summary.md`` listing every modified file, \
-ending with END on its own line.
 
 Reason through each finding (root causes, fix ordering, interdependencies) before \
 writing the final fix prompt."""
@@ -356,10 +352,7 @@ writing the final fix prompt."""
             "- Write a ``ci_check.py`` script at the project root that validates "
             "the build succeeds (syntax check, lint, tests). This file must NOT "
             "be added to ``.gitignore``.\n"
-            "- Include all necessary dependency files (requirements.txt, package.json, etc.).\n\n"
-            "## Output Format\n\n"
-            "When done, write ``summary.md`` listing every file created/modified. "
-            "End the file with the word END on its own line."
+            "- Include all necessary dependency files (requirements.txt, package.json, etc.).\n"
         )
 
     @staticmethod
@@ -392,10 +385,7 @@ writing the final fix prompt."""
             "## Instructions\n\n"
             "- Address every issue listed in the review JSON.\n"
             "- Do not modify files that passed review.\n"
-            "- Run ``ci_check.py`` after making fixes and resolve any failures.\n\n"
-            "## Output Format\n\n"
-            "When done, write ``summary.md`` listing every file modified. "
-            "End the file with the word END on its own line."
+            "- Run ``ci_check.py`` after making fixes and resolve any failures.\n"
         )
 
 

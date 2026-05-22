@@ -116,28 +116,13 @@ class CodeGeneratorRunner:
         codex_result = self._execute(prompt_text, working_dir, on_stdout=on_stdout, on_stderr=on_stderr)
         completion = detect_completion(codex_result.exit_code, working_dir, codex_result.timed_out)
 
-        # One automatic retry on partial completion
-        retried = False
-        if completion.status == CompletionStatus.PARTIAL:
-            logger.info("Partial completion detected — retrying once.")
-            retry_prompt = (
-                f"{prompt_text}\n\n"
-                "# RETRY NOTICE\n"
-                "The previous attempt was incomplete. "
-                "Continue from where you left off and ensure summary.md "
-                "is written with END marker when done.\n"
-            )
-            codex_result = self._execute(retry_prompt, working_dir, on_stdout=on_stdout, on_stderr=on_stderr)
-            completion = detect_completion(codex_result.exit_code, working_dir, codex_result.timed_out)
-            retried = True
-
-        summary = consume_summary(working_dir)
+        summary = consume_summary(working_dir)  # no-op; kept for API compatibility
 
         result = CodeGenResult(
             completion=completion,
             codex_result=codex_result,
             summary_text=summary,
-            retried=retried,
+            retried=False,
         )
 
         # Only run git ops when Codex succeeded
@@ -238,6 +223,7 @@ class CodeGeneratorRunner:
                 if not story_id
                 else f"feat({story_id}): {story_title or 'AI-generated implementation'}"
             )
+            self._sanitise_before_commit(working_dir, git)
             git.commit_all(commit_msg)
 
             # Push story branch
@@ -291,6 +277,7 @@ class CodeGeneratorRunner:
             commit_msg = (
                 f"fix({story_id or feature_branch}): address review comments (iter {iteration})"
             )
+            self._sanitise_before_commit(working_dir, git)
             git.commit_all(commit_msg)
 
             r = git.push(feature_branch)
@@ -310,6 +297,59 @@ class CodeGeneratorRunner:
                     logger.debug("[GHR] resolve_all_pr_review_comments raised", exc_info=True)
 
         return errors
+
+    # ── Pre-commit sanitisation ────────────────────────────────────────────
+
+    _GITIGNORE_ENTRIES: tuple[str, ...] = (
+        ".venv/",
+        "venv/",
+        "env/",
+        ".env/",
+        "__pycache__/",
+        "*.pyc",
+        "*.pyd",
+        "*.pyo",
+        "node_modules/",
+        "*.egg-info/",
+        "dist/",
+        "build/",
+        ".eggs/",
+        ".mypy_cache/",
+        ".pytest_cache/",
+        ".ruff_cache/",
+        ".tox/",
+        "*.dist-info/",
+    )
+
+    def _sanitise_before_commit(self, working_dir: Path, git: "GitOpsManager") -> None:
+        """Ensure generated artefacts (venv, caches) are excluded before commit.
+
+        1. Creates / updates .gitignore with all standard ignore entries.
+        2. Unconditionally removes tracked versions of those paths from the git
+           index via ``git rm --cached`` so GitHub's 100 MB file-size limit is
+           never hit even if the directories don't exist on disk right now.
+        """
+        gitignore_path = working_dir / ".gitignore"
+        try:
+            existing = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+            missing = [e for e in self._GITIGNORE_ENTRIES if e.rstrip("/") not in existing]
+            if missing:
+                with gitignore_path.open("a", encoding="utf-8") as fh:
+                    fh.write("\n" + "\n".join(missing) + "\n")
+                logger.debug("[sanitise] Added %d entries to .gitignore", len(missing))
+        except OSError:
+            logger.debug("[sanitise] Could not update .gitignore", exc_info=True)
+
+        # Always remove large/generated paths from the index — don't check if they
+        # exist on disk; they may have been committed in a previous iteration.
+        _CACHED_PATTERNS = (
+            ".venv", "venv", "env", "__pycache__", "node_modules",
+            ".eggs", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
+        )
+        for pattern in _CACHED_PATTERNS:
+            r = git._run("rm", "--cached", "-r", "--ignore-unmatch", pattern)
+            if r and getattr(r, "stdout", "") and r.stdout.strip():
+                logger.info("[sanitise] Removed %s from git index (--cached)", pattern)
 
     # ── Git / GitHub operations ────────────────────────────────────────────
 

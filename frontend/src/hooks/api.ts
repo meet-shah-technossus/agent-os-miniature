@@ -150,6 +150,9 @@ export const api = {
   approveReview: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/approve-review', { method: 'POST' }),
 
+  moveToNextStory: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/move-to-next-story', { method: 'POST' }),
+
   retryPR: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/retry-pr', { method: 'POST' }),
 

@@ -116,6 +116,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     orch_holder.init(config)
     logger.info("Orchestrator initialised")
 
+    # Reconcile model_routing: the DB is the authoritative store for UI changes
+    # made during a previous session.  If the DB holds a routing that differs
+    # from what config.yaml has, update the live config so the runner always
+    # uses the same model the frontend shows in the dropdown.
+    try:
+        from ..storage.agent_config_repo import AgentConfigRepo
+        _orch = orch_holder.orchestrator
+        db_routing = AgentConfigRepo(_orch.db.conn).get_model_routing()
+        if db_routing:
+            _orch.config.codex.model_routing.update(db_routing)
+            logger.info("Startup: merged DB model_routing into live config: %s", db_routing)
+    except Exception:
+        logger.debug("Could not merge DB model_routing at startup (non-fatal)", exc_info=True)
+
     # Wire the shared asyncio broadcast queue into the orchestrator so that
     # every _emit() call from the pipeline loop reaches WebSocket clients.
     orch_holder.orchestrator.set_ws_queue(_ws_queue)

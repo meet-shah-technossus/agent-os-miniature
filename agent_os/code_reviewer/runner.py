@@ -121,6 +121,15 @@ OUTPUT FORMAT:
 First, reason through each checklist item and finding in plain text.
 Then, end your response with a single JSON object (no markdown fences) with:
 
+CRITICAL RULES FOR line_comments:
+- You MUST generate line_comments for EVERY specific code issue you find.
+  Do NOT put line-specific issues only in global_comments.
+- Every line_comment MUST have a non-empty "suggested_fix" field showing
+  the corrected code or the exact change needed. "See above" is NOT acceptable.
+- Use the exact file path from the diff (e.g. "app.py", "register.py").
+- Use the line number of the added line (lines starting with '+' in the diff).
+- Aim for at least one line_comment per file that has issues.
+
 {
   "overall_status"          : "needs_work" | "accepted" | "rejected",
   "overall_score"           : <integer 0-100>,
@@ -135,9 +144,11 @@ Then, end your response with a single JSON object (no markdown fences) with:
       "overall_impact": <0-100>
   },
   "line_comments"           : [
-      { "file": "<path>", "line": <int>, "comment": "<text>",
+      { "file": "<exact path from diff>", "line": <int>,
+        "comment": "<specific issue description>",
         "severity": "critical"|"high"|"medium"|"low"|"info",
-        "checklist_item": "<name>", "suggested_fix": "<fix>" }
+        "checklist_item": "<name>",
+        "suggested_fix": "<exact corrected code or precise fix instruction>" }
   ],
   "global_comments"         : [
       { "comment": "<text>",
@@ -297,8 +308,33 @@ class CodeReviewerRunner:
 
         diff_result = gh.get_pr_diff(pr_number)
         diff_text = (diff_result.data or {}).get("diff", "") if diff_result.success else ""
+
+        # Fallback: build diff from per-file patches when unified diff is empty
         if not diff_text:
-            emit("[code-reviewer] Warning: could not fetch PR diff")
+            emit("[code-reviewer] Unified diff empty — falling back to per-file patches")
+            try:
+                files_result = gh.get_pr_files(pr_number)
+                if files_result.success and files_result.data:
+                    raw_files = files_result.data
+                    if isinstance(raw_files, dict):
+                        raw_files = raw_files.get("files", raw_files.get("value", []))
+                    parts: list[str] = []
+                    for f in (raw_files or []):
+                        fname = f.get("filename", "")
+                        patch = f.get("patch", "")
+                        if fname and patch:
+                            parts.append(
+                                f"diff --git a/{fname} b/{fname}\n"
+                                f"--- a/{fname}\n+++ b/{fname}\n{patch}"
+                            )
+                    if parts:
+                        diff_text = "\n".join(parts)
+                        emit(f"[code-reviewer] Built diff from {len(parts)} file patch(es) ({len(diff_text)} chars)")
+            except Exception:
+                logger.debug("[code-reviewer] Per-file fallback failed", exc_info=True)
+
+        if not diff_text:
+            emit("[code-reviewer] Warning: could not fetch PR diff — review will have no code context")
 
         pr_result = gh.get_pr(pr_number)
         pr_data = pr_result.data or {} if pr_result.success else {}

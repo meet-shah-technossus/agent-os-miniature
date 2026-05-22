@@ -94,9 +94,9 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "",
         return cmd
 
     if tool == "codex":
-        # codex exec --skip-git-repo-check --sandbox danger-full-access
+        # codex exec --full-auto --skip-git-repo-check --sandbox danger-full-access
         #            [-C <working_dir>] [--add-dir <dir>] [-m <model>] <prompt>
-        cmd = ["codex", "exec", "--skip-git-repo-check", "--sandbox", "danger-full-access"]
+        cmd = ["codex", "exec", "--full-auto", "--skip-git-repo-check", "--sandbox", "danger-full-access"]
         if working_dir:
             cmd.extend(["-C", working_dir])          # set working root
             cmd.extend(["--add-dir", working_dir])   # grant write access

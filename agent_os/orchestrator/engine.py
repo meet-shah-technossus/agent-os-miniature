@@ -477,38 +477,10 @@ class Orchestrator:
                                 line=line, stream="stderr",
                                 iteration=iteration, module_id="")
 
-        # On the first iteration, inject an ADO work-item activation instruction
-        # into the prompt file so the code-generator CLI can use its azure-devops
-        # MCP connection to update work item states (New → Active) as its first action.
+        # Iteration 1: activate ADO work items (New → Active) via REST API directly,
+        # so the status change is guaranteed regardless of MCP tool availability.
         if iteration == 1:
-            meta = self.state_mgr.state.metadata
-            work_item_ids = meta.get("ado_work_item_ids", [])
-            ado_org = meta.get("ado_org", "")
-            ado_project = meta.get("ado_project", "")
-            if work_item_ids and ado_org:
-                try:
-                    prompt_file = Path(prompt_path)
-                    if prompt_file.exists():
-                        original = prompt_file.read_text(encoding="utf-8")
-                        ids_str = ", ".join(str(i) for i in work_item_ids)
-                        preamble = (
-                            f"## Pre-task: Activate Azure DevOps Work Items\n\n"
-                            f"Before starting the main implementation, use the **azure-devops MCP tool** "
-                            f"to update the following work items to **Active** status:\n\n"
-                            f"- Work Item IDs: {ids_str}\n"
-                            f"- Organisation: {ado_org}\n"
-                            f"- Project: {ado_project}\n\n"
-                            f"Use the `update_work_item` tool (or equivalent) from the azure-devops MCP "
-                            f"server to set `System.State` = `Active` for each work item ID listed above.\n\n"
-                            f"---\n\n"
-                        )
-                        prompt_file.write_text(preamble + original, encoding="utf-8")
-                        logger.info(
-                            "Injected ADO work item activation preamble into prompt for %d items",
-                            len(work_item_ids),
-                        )
-                except Exception:
-                    logger.warning("Failed to inject ADO preamble into prompt", exc_info=True)
+            self._activate_ado_work_items()
 
         runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
         try:
@@ -569,12 +541,13 @@ class Orchestrator:
                                     line=f"[git] {git_err}",
                                     stream="stderr", iteration=iteration, module_id="")
 
+        _is_incomplete = gen_result.completion.status.value in ("failed", "partial")
         self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session,
-                            exit_code=0 if gen_result.completion.status.value != "failed" else 1)
+                            exit_code=0 if not _is_incomplete else 1)
 
-        if gen_result.completion.status.value == "failed":
-            err_msg = gen_result.completion.reason or "Code generation failed (timeout or exit)"
-            logger.warning("Code generation failed — transitioning to CODE_GEN_FAILED: %s", err_msg)
+        if _is_incomplete:
+            err_msg = gen_result.completion.reason or "Code generation incomplete (no summary.md produced)"
+            logger.warning("Code generation incomplete — transitioning to CODE_GEN_FAILED: %s", err_msg)
             self.state_mgr.transition_to(
                 PipelineStatus.CODE_GEN_FAILED,
                 metadata={"code_gen_failed": True, "code_gen_error": err_msg},
@@ -965,12 +938,7 @@ class Orchestrator:
         self._emit("analyse_dependencies_started", {"story_count": len(raw_stories)})
 
         mgr = StoryQueueManager(self.db)
-        try:
-            loop = asyncio.get_event_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-        items = loop.run_until_complete(mgr.build_queue(
+        items = asyncio.run(mgr.build_queue(
             raw_stories,
             api_key=getattr(self.config.secrets, "openai_api_key", "") or "",
             model=getattr(self.config, "openai_model", "gpt-4o-mini") or "gpt-4o-mini",
@@ -1128,6 +1096,10 @@ class Orchestrator:
 
         logger.info("[GHR] Story code generation — story=%s iter=%d", story_id, story_iter)
 
+        # Activate ADO work items (New → Active) via REST API on the first story iteration.
+        if story_iter == 1:
+            self._activate_ado_work_items()
+
         # Derive branch name from story id + title
         mgr = StoryQueueManager(self.db)
         item = mgr.get_item(story_id) if story_id else None
@@ -1208,18 +1180,43 @@ class Orchestrator:
         if gen_result.pr_number is not None:
             meta_update["pr_number"] = gen_result.pr_number
             meta_update["pr_url"] = gen_result.pr_url
+        if gen_result.git_errors:
+            meta_update["git_errors"] = gen_result.git_errors
         self.state_mgr.update_metadata(meta_update)
 
-        self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session,
-                            exit_code=0 if gen_result.completion.status.value != "failed" else 1)
+        # Emit git errors to the terminal so they are visible in the UI
+        if gen_result.git_errors:
+            for git_err in gen_result.git_errors:
+                logger.warning("[GHR] Git error for story %s: %s", story_id, git_err)
+                self._emit_terminal("line", "CODE_GENERATOR", _cg_session,
+                                    line=f"[git] {git_err}",
+                                    stream="stderr", story_id=story_id)
 
-        if gen_result.completion.status.value == "failed":
-            err = gen_result.completion.reason or "Code generation failed"
+        _is_incomplete = gen_result.completion.status.value in ("failed", "partial")
+        self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session,
+                            exit_code=0 if not _is_incomplete else 1)
+
+        if _is_incomplete:
+            err = gen_result.completion.reason or "Code generation did not complete successfully."
+            logger.warning("[GHR] Story %s code gen incomplete: %s", story_id, err)
             self.state_mgr.transition_to(
                 PipelineStatus.CODE_GEN_FAILED,
                 metadata={"code_gen_failed": True, "code_gen_error": err},
             )
             self._emit("code_gen_failed", {"story_id": story_id, "error": err})
+            return
+
+        # If codex completed but git push / PR creation failed, abort early with
+        # a clear error rather than flowing to STORY_CODE_REVIEW where the failure
+        # is reported as "no PR found" with no context.
+        if gen_result.pr_number is None and gen_result.git_errors:
+            err_git = "; ".join(gen_result.git_errors)
+            logger.warning("[GHR] Story %s git ops failed — no PR created: %s", story_id, err_git)
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": f"Git ops failed: {err_git}"},
+            )
+            self._emit("code_gen_failed", {"story_id": story_id, "error": err_git})
             return
 
         self._emit("code_generation_complete", {
@@ -1283,14 +1280,13 @@ class Orchestrator:
                 logger.debug("[GHR] PR discovery failed", exc_info=True)
 
         if pr_number is None:
-            logger.warning("[GHR] No PR found for story %s — marking story failed", story_id)
-            mgr = StoryQueueManager(self.db)
-            mgr.mark_failed(story_id, reason="No pull request found or created")
-            self.state_mgr.update_story_context(
-                stories_completed=state.stories_completed + 1
+            err_no_pr = "No pull request found or created — code may not have been pushed to GitHub."
+            logger.warning("[GHR] No PR found for story %s — pausing at CODE_GEN_FAILED", story_id)
+            self.state_mgr.transition_to(
+                PipelineStatus.CODE_GEN_FAILED,
+                metadata={"code_gen_failed": True, "code_gen_error": err_no_pr},
             )
-            self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
-            self._emit("story_failed", {"story_id": story_id, "reason": "no_pr"})
+            self._emit("code_gen_failed", {"story_id": story_id, "reason": "no_pr", "error": err_no_pr})
             return
 
         _cr_session = f"cr-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
@@ -1304,6 +1300,9 @@ class Orchestrator:
                                 line=line, stream="stdout", story_id=story_id)
 
         runner = CodeReviewerRunner(self.config, vcs_client=_project_vcs())
+        from ..orchestrator.story_queue import StoryQueueManager as _StoryQueueManager
+        _mgr = _StoryQueueManager(self.db)
+        _item = _mgr.get_item(story_id) if story_id else None
         try:
             run_result = runner.run(
                 pr_number=pr_number,
@@ -1312,9 +1311,8 @@ class Orchestrator:
                 on_stdout=_on_stdout,
                 story_context={
                     "story_id": story_id or "",
-                    "title": (mgr.get_item(story_id).title if story_id and mgr.get_item(story_id) else ""),
-                    "acceptance_criteria": (mgr.get_item(story_id).acceptance_criteria
-                                            if story_id and mgr.get_item(story_id) else []),
+                    "title": (_item.title if _item else ""),
+                    "acceptance_criteria": (_item.acceptance_criteria if _item else []),
                 },
             )
         except Exception as exc:
@@ -1326,11 +1324,15 @@ class Orchestrator:
             return
 
         review = run_result.review
+        review_json_str = review.model_dump_json()
         self.state_mgr.update_metadata({
-            "story_review_json": review.model_dump_json(),
+            "story_review_json": review_json_str,
+            "review_json_content": review_json_str,   # also write canonical key for API/frontend
             "review_overall_status": review.overall_status,
             "pr_merged": str(run_result.pr_merged),
         })
+        # Persist review JSON to the iterations table so history/GitHistory views can show it
+        self._upsert_iteration(story_iter, review_json_content=review_json_str)
 
         # Update pr_url in queue item if the reviewer merged it
         if run_result.pr_merged:
@@ -1365,13 +1367,26 @@ class Orchestrator:
             self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
             self._emit("story_failed", {"story_id": story_id, "reason": "max_iterations"})
         else:
-            # Loop back: bump story iteration, re-run prompt generation
+            # Loop back: bump story iteration counter, then pause at HITL so
+            # the user can inspect / edit the review JSON before prompt gen.
             next_iter = story_iter + 1
-            logger.info("[GHR] Story %s rejected — starting iteration %d", story_id, next_iter)
+            logger.info("[GHR] Story %s rejected — pausing at review gate before iteration %d",
+                        story_id, next_iter)
             self.state_mgr.update_metadata({"story_iteration": next_iter})
             StoryQueueManager(self.db).increment_iteration(story_id)
-            self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
-            self._emit("state_changed", {"story_id": story_id, "next_story_iteration": next_iter})
+            if self.config.orchestrator.auto_approve_hitl:
+                # Auto-approve: skip the HITL gate and go straight to prompt gen
+                self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+                self._emit("state_changed", {"story_id": story_id, "next_story_iteration": next_iter})
+                self._resume_in_thread()
+            else:
+                self.state_mgr.transition_to(PipelineStatus.HITL_REVIEW_DECISION)
+                self._emit("hitl_gate", {
+                    "gate": PipelineStatus.HITL_REVIEW_DECISION.value,
+                    "story_id": story_id,
+                    "next_story_iteration": next_iter,
+                    "review_overall_status": review.overall_status,
+                })
 
     def _step_story_complete(self) -> None:
         """STORY_COMPLETE → QUEUE_READY (next story) or PIPELINE_COMPLETE (queue empty)."""
@@ -1383,6 +1398,9 @@ class Orchestrator:
 
         logger.info("[GHR] Story complete: %s — checking queue", story_id)
 
+        # Close this story's ADO work item now that it's done (Active → Closed)
+        self._close_ado_work_items(story_id=story_id)
+
         if mgr.is_complete():
             counts = mgr.counts()
             logger.info("[GHR] All stories processed — %s", counts)
@@ -1393,7 +1411,6 @@ class Orchestrator:
                 "stories_total": state.stories_total,
                 "counts": counts,
             })
-            self._close_ado_work_items()
         else:
             self.state_mgr.transition_to(PipelineStatus.QUEUE_READY)
             self._emit("state_changed", {"next": "queue_ready"})
@@ -1402,12 +1419,15 @@ class Orchestrator:
 
     def _auto_approve(self, status: PipelineStatus) -> None:
         """Auto-approve HITL gate (used when auto_approve_hitl=True)."""
+        is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
         if status == PipelineStatus.HITL_PROMPT_REVIEW:
-            is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
             next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
             self.state_mgr.transition_to(next_status)
         elif status == PipelineStatus.HITL_REVIEW_DECISION:
-            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            if is_ghr:
+                self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+            else:
+                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
         self._emit("state_changed")
 
     def approve_prompt(
@@ -1470,22 +1490,137 @@ class Orchestrator:
         # If reviewer already accepted, just confirm completion
         review_status = state.metadata.get("review_overall_status", "")
         if review_status == "accepted":
-            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
-            self._emit("pipeline_complete", {"reason": "user_approved_accepted_review"})
+            is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
+            if is_ghr:
+                self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+                self._emit("story_completed", {"story_id": state.current_story_id, "reason": "user_approved"})
+                self._resume_in_thread()
+            else:
+                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+                self._emit("pipeline_complete", {"reason": "user_approved_accepted_review"})
             return True
 
-        max_iter = self.config.orchestrator.max_iterations
-        if state.current_iteration >= max_iter:
-            self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
-            self._emit("pipeline_complete", {"reason": "max_iterations_reached"})
-        else:
-            self.state_mgr.transition_to(
-                PipelineStatus.PROMPT_GENERATION,
-                iteration=state.current_iteration + 1,
-            )
-            self._emit("state_changed", {"approved": "review", "next_iteration": state.current_iteration + 1})
+        is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
+        if is_ghr:
+            # GHR mode: loop back to story prompt generation for another fix iteration
+            self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+            self._emit("state_changed", {
+                "approved": "review",
+                "next": "story_prompt_generation",
+                "story_id": state.current_story_id,
+            })
             self._resume_in_thread()
+        else:
+            max_iter = self.config.orchestrator.max_iterations
+            if state.current_iteration >= max_iter:
+                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+                self._emit("pipeline_complete", {"reason": "max_iterations_reached"})
+            else:
+                self.state_mgr.transition_to(
+                    PipelineStatus.PROMPT_GENERATION,
+                    iteration=state.current_iteration + 1,
+                )
+                self._emit("state_changed", {"approved": "review", "next_iteration": state.current_iteration + 1})
+                self._resume_in_thread()
 
+        return True
+
+    def move_to_next_story(self) -> bool:
+        """Force-advance to the next story: merge current PR, delete branch, then resume.
+
+        Intended to be triggered by the frontend "Move to Next Story" button.
+        Only valid when the pipeline is paused at ``HITL_REVIEW_DECISION``
+        (i.e. after the code reviewer has completed and produced a review JSON).
+
+        Steps performed:
+          1. Merge the PR for the current story via the GitHub VCS client.
+          2. Delete the feature branch.
+          3. Mark the story as complete in the queue.
+          4. Transition to ``STORY_COMPLETE``.
+          5. Resume the pipeline loop (``_step_story_complete`` picks the next story
+             or transitions to ``PIPELINE_COMPLETE`` if the queue is exhausted).
+
+        Returns True if the action was triggered, False if not in the right state.
+        """
+        from ..vcs.factory import make_vcs_client
+        from ..orchestrator.story_queue import StoryQueueManager
+
+        if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
+            logger.warning("move_to_next_story() called but pipeline is not at HITL_REVIEW_DECISION")
+            return False
+
+        state = self.state_mgr.state
+        story_id = state.current_story_id
+        feature_branch = self.config.project.feature_branch or (f"story-{story_id}" if story_id else "dev")
+
+        pr_number: Optional[int] = None
+        pr_raw = state.metadata.get("pr_number")
+        if pr_raw is not None:
+            try:
+                pr_number = int(pr_raw)
+            except (TypeError, ValueError):
+                pass
+
+        def _project_vcs():
+            vcs = make_vcs_client(self.config)
+            if vcs is None:
+                return None
+            repo = self.config.project.repo_name or ""
+            if repo and hasattr(vcs, "for_repo") and repo != getattr(vcs, "_repo", ""):
+                return vcs.for_repo(repo)
+            return vcs
+
+        vcs = _project_vcs()
+        merged = False
+        branch_deleted = False
+
+        if vcs and pr_number:
+            try:
+                merge_result = vcs.merge_pr(
+                    pr_number,
+                    commit_message=f"Story {story_id}: merged via Agent OS — Move to Next Story",
+                )
+                merged = merge_result.success
+                if merged:
+                    logger.info("[GHR] move_to_next_story: PR #%d merged for story %s", pr_number, story_id)
+                else:
+                    logger.warning(
+                        "[GHR] move_to_next_story: PR #%d merge failed: %s",
+                        pr_number, merge_result.error,
+                    )
+            except Exception:
+                logger.warning("[GHR] move_to_next_story: merge PR raised", exc_info=True)
+
+        if vcs and feature_branch:
+            try:
+                del_result = vcs.delete_branch(feature_branch)
+                branch_deleted = del_result.success
+                if branch_deleted:
+                    logger.info("[GHR] move_to_next_story: deleted branch '%s'", feature_branch)
+            except Exception:
+                logger.debug("[GHR] move_to_next_story: branch delete raised", exc_info=True)
+
+        # Mark story complete in the queue (idempotent if already marked)
+        mgr = StoryQueueManager(self.db)
+        mgr.mark_complete(story_id, pr_number=pr_number, pr_url=state.metadata.get("pr_url", ""))
+
+        self.state_mgr.update_story_context(
+            stories_completed=state.stories_completed + 1,
+        )
+        self.state_mgr.update_metadata({
+            "pr_merged": str(merged),
+            "branch_deleted": str(branch_deleted),
+            "move_to_next_story_triggered": "true",
+        })
+
+        self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+        self._emit("story_completed", {
+            "story_id": story_id,
+            "reason": "move_to_next_story",
+            "pr_merged": merged,
+            "branch_deleted": branch_deleted,
+        })
+        self._resume_in_thread()
         return True
 
     def pause(self) -> bool:
@@ -1851,12 +1986,27 @@ class Orchestrator:
         return str(candidate)
 
     def _activate_ado_work_items(self) -> None:
-        """Transition ADO work items from New to Active when code generation starts (iteration 1 only)."""
+        """Transition ADO work items from New → Active when code generation starts (iteration 1 only).
+
+        In GHR mode the current story's ID is the ADO work item ID, so only that
+        item is activated.  In standard mode all imported work items are activated.
+        Credentials fall back from state metadata to config.requirements.
+        """
         meta = self.state_mgr.state.metadata
-        work_item_ids = meta.get("ado_work_item_ids", [])
-        ado_org = meta.get("ado_org", "")
-        ado_token = meta.get("ado_token", "")
-        if not work_item_ids or not ado_org or not ado_token:
+        # Credential fallback: metadata (set via ADO import API) → config.requirements
+        ado_org = meta.get("ado_org", "") or getattr(self.config.requirements, "ado_org", "")
+        ado_token = meta.get("ado_token", "") or getattr(self.config.requirements, "ado_token", "")
+        if not ado_org or not ado_token:
+            logger.debug("[ADO] No credentials — skipping New→Active transition")
+            return
+        # In GHR mode the current story_id IS the ADO work item ID
+        story_id = self.state_mgr.state.current_story_id
+        if story_id and str(story_id).isdigit():
+            work_item_ids: list[int] = [int(story_id)]
+        else:
+            work_item_ids = meta.get("ado_work_item_ids", [])
+        if not work_item_ids:
+            logger.debug("[ADO] No work item IDs — skipping New→Active transition")
             return
         try:
             import base64
@@ -1874,27 +2024,41 @@ class Orchestrator:
             with httpx.Client(headers=headers, timeout=15, follow_redirects=False) as client:
                 for wi_id in work_item_ids:
                     try:
-                        client.patch(
+                        resp = client.patch(
                             f"https://dev.azure.com/{org_enc}/_apis/wit/workitems/{wi_id}?api-version=7.1",
                             json=patch_body,
                         )
+                        logger.debug("[ADO] Activated work item %s → HTTP %s", wi_id, resp.status_code)
                     except Exception:
-                        logger.debug("Failed to activate ADO work item %d", wi_id, exc_info=True)
+                        logger.debug("Failed to activate ADO work item %s", wi_id, exc_info=True)
 
-            logger.info("Activated %d ADO work items to Active state", len(work_item_ids))
+            logger.info("[ADO] Activated %d work item(s) to Active: %s", len(work_item_ids), work_item_ids)
         except Exception:
             logger.warning("Failed to activate ADO work items", exc_info=True)
 
-    def _close_ado_work_items(self) -> None:
-        """Transition ADO work items from Active to Closed on pipeline completion."""
+    def _close_ado_work_items(self, story_id: Optional[str] = None) -> None:
+        """Transition ADO work items to Closed.
+
+        When *story_id* is given (GHR per-story completion), only that item is
+        closed.  Without *story_id* all items from state metadata are closed
+        (used at final PIPELINE_COMPLETE as a safety net).
+        Credentials fall back from state metadata to config.requirements.
+        """
         meta = self.state_mgr.state.metadata
-        work_item_ids = meta.get("ado_work_item_ids", [])
-        ado_org = meta.get("ado_org", "")
-        ado_token = meta.get("ado_token", "")
-        if not work_item_ids or not ado_org or not ado_token:
+        # Credential fallback: metadata → config.requirements
+        ado_org = meta.get("ado_org", "") or getattr(self.config.requirements, "ado_org", "")
+        ado_token = meta.get("ado_token", "") or getattr(self.config.requirements, "ado_token", "")
+        if not ado_org or not ado_token:
+            logger.debug("[ADO] No credentials — skipping Active→Closed transition")
+            return
+        if story_id and str(story_id).isdigit():
+            work_item_ids: list[int] = [int(story_id)]
+        else:
+            work_item_ids = meta.get("ado_work_item_ids", [])
+        if not work_item_ids:
+            logger.debug("[ADO] No work item IDs — skipping Active→Closed transition")
             return
         try:
-            import asyncio
             import base64
             import httpx
             from urllib.parse import quote
@@ -1907,25 +2071,18 @@ class Orchestrator:
             org_enc = quote(ado_org, safe="")
             patch_body = [{"op": "replace", "path": "/fields/System.State", "value": "Closed"}]
 
-            async def _update_all() -> None:
-                async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=False) as client:
-                    for wi_id in work_item_ids:
-                        try:
-                            await client.patch(
-                                f"https://dev.azure.com/{org_enc}/_apis/wit/workitems/{wi_id}?api-version=7.1",
-                                json=patch_body,
-                            )
-                        except Exception:
-                            logger.debug("Failed to close ADO work item %d", wi_id, exc_info=True)
+            with httpx.Client(headers=headers, timeout=15, follow_redirects=False) as client:
+                for wi_id in work_item_ids:
+                    try:
+                        resp = client.patch(
+                            f"https://dev.azure.com/{org_enc}/_apis/wit/workitems/{wi_id}?api-version=7.1",
+                            json=patch_body,
+                        )
+                        logger.debug("[ADO] Closed work item %s → HTTP %s", wi_id, resp.status_code)
+                    except Exception:
+                        logger.debug("Failed to close ADO work item %s", wi_id, exc_info=True)
 
-            # Run in existing event loop or create one
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_update_all())
-            except RuntimeError:
-                asyncio.run(_update_all())
-
-            logger.info("Queued ADO work item state update to Closed for %d items", len(work_item_ids))
+            logger.info("[ADO] Closed %d work item(s): %s", len(work_item_ids), work_item_ids)
         except Exception:
             logger.warning("Failed to close ADO work items", exc_info=True)
 

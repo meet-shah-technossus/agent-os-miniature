@@ -128,6 +128,18 @@ class VCSClient(ABC):
     def resolve_all_pr_review_comments(self, pr_number: int) -> list[VCSResult]:
         """Resolve (mark-fixed) all open review comments / threads on the PR."""
 
+    def get_pr_files(self, pr_id: int) -> VCSResult:
+        """Fetch the list of files changed in a PR (includes per-file patches).
+
+        Returns a list of file dicts in ``data`` (or ``data["files"]`` for ADO).
+        Each dict should have at minimum ``"filename"`` and ``"patch"`` keys.
+
+        Default implementation returns a failure result; providers override as
+        needed.  The code reviewer falls back to this when the unified diff is
+        empty.
+        """
+        return VCSResult(success=False, error="get_pr_files not implemented for this provider")
+
     # ── Branches ─────────────────────────────────────────────────────────────
 
     @abstractmethod
