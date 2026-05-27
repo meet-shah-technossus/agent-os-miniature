@@ -87,13 +87,35 @@ def stream_pty(
 
 
 def kill_process(proc: subprocess.Popen) -> None:
-    """Gracefully terminate, then force-kill a process (cross-platform)."""
+    """Gracefully terminate, then force-kill a process (cross-platform).
+
+    On Windows, uses ``taskkill /F /T`` to kill the entire process tree
+    (including children spawned by ``cmd /c``).
+    """
+    import platform as _platform
     try:
-        proc.terminate()          # SIGTERM on Unix; TerminateProcess on Windows
-        try:
-            proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+        if _platform.system() == "Windows" and proc.pid:
+            # Kill the entire process tree so cmd /c + codex children all die.
+            import subprocess as _sp
+            try:
+                _sp.run(
+                    ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except Exception:
+                pass  # taskkill not available — fall back to terminate
+            # Reap the original proc handle regardless
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+        else:
+            proc.terminate()          # SIGTERM on Unix
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
     except (ProcessLookupError, OSError):
         pass  # Already dead

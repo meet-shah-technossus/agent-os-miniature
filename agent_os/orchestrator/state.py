@@ -36,12 +36,19 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     PipelineStatus.CODE_GENERATION: [
         PipelineStatus.CODE_REVIEW,
         PipelineStatus.CODE_GEN_FAILED,
+        PipelineStatus.CODE_GEN_STOPPED,
         PipelineStatus.FAILED,
     ],
     PipelineStatus.CODE_GEN_FAILED: [
         PipelineStatus.CODE_GENERATION,
         PipelineStatus.STORY_CODE_GENERATION,  # GHR mode retry
         PipelineStatus.IDLE,
+    ],
+    PipelineStatus.CODE_GEN_STOPPED: [
+        PipelineStatus.HITL_PROMPT_REVIEW,   # rollback path
+        PipelineStatus.CODE_REVIEW,          # save-and-continue (standard mode)
+        PipelineStatus.STORY_CODE_REVIEW,    # save-and-continue (GHR mode)
+        PipelineStatus.IDLE,                 # reset
     ],
     PipelineStatus.CODE_REVIEW: [
         PipelineStatus.HITL_REVIEW_DECISION,
@@ -83,6 +90,7 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     PipelineStatus.STORY_CODE_GENERATION: [
         PipelineStatus.STORY_CODE_REVIEW,
         PipelineStatus.CODE_GEN_FAILED,
+        PipelineStatus.CODE_GEN_STOPPED,
         PipelineStatus.FAILED,
     ],
     PipelineStatus.STORY_CODE_REVIEW: [

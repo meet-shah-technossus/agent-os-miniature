@@ -40,6 +40,9 @@ class Orchestrator:
 
         self._stop_event = threading.Event()
         self._pause_event = threading.Event()
+        # Stop-code-generation support
+        self._code_gen_stop_requested = threading.Event()
+        self._active_codex_wrapper = None  # CodexWrapper instance during code gen steps
 
         # WebSocket broadcast queue — populated by _emit(); drained by API layer
         self._ws_queue: Optional[asyncio.Queue] = None
@@ -221,6 +224,13 @@ class Orchestrator:
 
             if status == PipelineStatus.CODE_GEN_FAILED:
                 logger.warning("Pipeline paused at CODE_GEN_FAILED — awaiting retry or reset")
+                break
+
+            if status == PipelineStatus.CODE_GEN_STOPPED:
+                logger.info("Pipeline stopped by user — awaiting rollback or continue decision")
+                self._emit("code_gen_stopped", {
+                    "working_dir": self.state_mgr.state.metadata.get("stopped_working_dir", ""),
+                })
                 break
 
             if self.state_mgr.is_hitl_gate():
@@ -483,6 +493,8 @@ class Orchestrator:
             self._activate_ado_work_items()
 
         runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
+        self._active_codex_wrapper = runner._codex
+        self._code_gen_stop_requested.clear()
         try:
             gen_result = runner.run(
                 prompt_path=prompt_path,
@@ -493,14 +505,33 @@ class Orchestrator:
                 on_stderr=_on_stderr,
             )
         except Exception as exc:
+            self._active_codex_wrapper = None
             logger.exception("Code generator raised: %s", exc)
             self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=1)
-            err_msg = str(exc)
+            if self._code_gen_stop_requested.is_set():
+                self.state_mgr.transition_to(
+                    PipelineStatus.CODE_GEN_STOPPED,
+                    metadata={"stopped_working_dir": str(working_dir)},
+                )
+                self._emit("code_gen_stopped", {"iteration": iteration})
+            else:
+                err_msg = str(exc)
+                self.state_mgr.transition_to(
+                    PipelineStatus.CODE_GEN_FAILED,
+                    metadata={"code_gen_failed": True, "code_gen_error": err_msg},
+                )
+                self._emit("code_gen_failed", {"iteration": iteration, "error": err_msg})
+            return
+        self._active_codex_wrapper = None
+
+        # If the user stopped code gen mid-flight, transition to CODE_GEN_STOPPED
+        if self._code_gen_stop_requested.is_set():
+            self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=-2)
             self.state_mgr.transition_to(
-                PipelineStatus.CODE_GEN_FAILED,
-                metadata={"code_gen_failed": True, "code_gen_error": err_msg},
+                PipelineStatus.CODE_GEN_STOPPED,
+                metadata={"stopped_working_dir": str(working_dir)},
             )
-            self._emit("code_gen_failed", {"iteration": iteration, "error": err_msg})
+            self._emit("code_gen_stopped", {"iteration": iteration, "working_dir": str(working_dir)})
             return
 
         # Persist PR metadata for subsequent iterations
@@ -1152,6 +1183,8 @@ class Orchestrator:
                                 line=line, stream="stderr", story_id=story_id)
 
         runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
+        self._active_codex_wrapper = runner._codex
+        self._code_gen_stop_requested.clear()
         try:
             gen_result = runner.run(
                 prompt_path=prompt_path,
@@ -1167,13 +1200,35 @@ class Orchestrator:
                 } if item else None,
             )
         except Exception as exc:
+            self._active_codex_wrapper = None
             logger.exception("[GHR] Story code generator raised: %s", exc)
             self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=1)
+            if self._code_gen_stop_requested.is_set():
+                self.state_mgr.transition_to(
+                    PipelineStatus.CODE_GEN_STOPPED,
+                    metadata={"stopped_working_dir": str(working_dir), "stopped_story_id": story_id or ""},
+                )
+                self._emit("code_gen_stopped", {"story_id": story_id})
+            else:
+                self.state_mgr.transition_to(
+                    PipelineStatus.CODE_GEN_FAILED,
+                    metadata={"code_gen_failed": True, "code_gen_error": str(exc)},
+                )
+                self._emit("code_gen_failed", {"story_id": story_id, "error": str(exc)})
+            return
+        self._active_codex_wrapper = None
+
+        # If the user stopped code gen mid-flight, transition to CODE_GEN_STOPPED
+        if self._code_gen_stop_requested.is_set():
+            self._emit_terminal("session_end", "CODE_GENERATOR", _cg_session, exit_code=-2)
             self.state_mgr.transition_to(
-                PipelineStatus.CODE_GEN_FAILED,
-                metadata={"code_gen_failed": True, "code_gen_error": str(exc)},
+                PipelineStatus.CODE_GEN_STOPPED,
+                metadata={
+                    "stopped_working_dir": str(working_dir),
+                    "stopped_story_id": story_id or "",
+                },
             )
-            self._emit("code_gen_failed", {"story_id": story_id, "error": str(exc)})
+            self._emit("code_gen_stopped", {"story_id": story_id, "working_dir": str(working_dir)})
             return
 
         meta_update: dict = {"completion_status": gen_result.completion.status.value}
@@ -1629,6 +1684,208 @@ class Orchestrator:
         logger.info("Pause requested")
         return True
 
+    def stop_code_generation(self) -> bool:
+        """Kill the active code-generation subprocess mid-flight.
+
+        Sets a stop-requested flag, calls kill_session() on the active
+        CodexWrapper, and transitions the pipeline to CODE_GEN_STOPPED.
+        The pipeline loop will then wait for the user to choose rollback or
+        save-and-continue (Phase 2 endpoints).
+
+        Returns True if a code-generation step was active and the kill was
+        attempted.  Returns False if not currently in a code-generation state.
+        """
+        from ..codex.session import SessionType
+
+        status = self.state_mgr.current_status
+        if status not in (PipelineStatus.CODE_GENERATION, PipelineStatus.STORY_CODE_GENERATION):
+            logger.warning(
+                "stop_code_generation() called but pipeline is not in a code-generation state (%s)",
+                status.value,
+            )
+            return False
+
+        self._code_gen_stop_requested.set()
+
+        wrapper = self._active_codex_wrapper
+        killed = False
+        if wrapper is not None:
+            killed = wrapper.kill_session(SessionType.CODE_GENERATOR)
+            logger.info("stop_code_generation: kill_session(CODE_GENERATOR) = %s", killed)
+        else:
+            logger.warning("stop_code_generation: no active wrapper found — stop flag set, process may already be finishing")
+
+        self._emit("code_gen_stopping", {
+            "message": "Stop requested — killing code generation subprocess",
+            "killed": killed,
+        })
+        return True
+
+    def rollback_after_stop(self) -> bool:
+        """Discard all partial changes from a stopped code-gen session and return
+        to HITL_PROMPT_REVIEW so the user can edit the prompt and try again.
+
+        Actions performed:
+          1. ``git reset --hard HEAD`` — restore tracked files to last commit.
+          2. ``git clean -fd``        — remove untracked files/dirs written by codex.
+          3. Transition to HITL_PROMPT_REVIEW.
+
+        Returns True if the action was performed; False if not at CODE_GEN_STOPPED.
+        """
+        from ..git_ops.manager import GitOpsManager
+        from pathlib import Path as _Path
+
+        if self.state_mgr.current_status != PipelineStatus.CODE_GEN_STOPPED:
+            logger.warning("rollback_after_stop() called but not at CODE_GEN_STOPPED (current: %s)",
+                           self.state_mgr.current_status.value)
+            return False
+
+        state = self.state_mgr.state
+        working_dir = (
+            state.metadata.get("stopped_working_dir", "")
+            or getattr(self.config.project, "root_path", "")
+            or ""
+        )
+
+        if working_dir:
+            wd = _Path(working_dir)
+            if wd.exists():
+                git = GitOpsManager(str(wd))
+                r_reset = git.reset_hard("HEAD")
+                if r_reset.success:
+                    logger.info("rollback_after_stop: hard-reset to HEAD in %s", working_dir)
+                else:
+                    logger.warning("rollback_after_stop: reset --hard failed: %s", r_reset.stderr)
+                r_clean = git._run("clean", "-fd")
+                if r_clean.success:
+                    logger.info("rollback_after_stop: cleaned untracked files in %s", working_dir)
+                else:
+                    logger.warning("rollback_after_stop: clean -fd failed: %s", r_clean.stderr)
+            else:
+                logger.warning("rollback_after_stop: working_dir does not exist: %s", working_dir)
+        else:
+            logger.warning("rollback_after_stop: no working_dir in metadata — skipping git cleanup")
+
+        self.state_mgr.update_metadata({"stopped_working_dir": "", "code_gen_stopped": False})
+        self.state_mgr.transition_to(PipelineStatus.HITL_PROMPT_REVIEW)
+        self._emit("hitl_gate", {
+            "gate": PipelineStatus.HITL_PROMPT_REVIEW.value,
+            "reason": "stop_rollback",
+        })
+        return True
+
+    def continue_after_stop(self) -> bool:
+        """Commit and push whatever partial changes exist from a stopped code-gen
+        session, then proceed to code review as if generation completed normally.
+
+        Actions performed:
+          1. Check for uncommitted changes; if none — roll back instead.
+          2. Sanitise .gitignore and ``git rm --cached`` large directories.
+          3. ``git commit -m "partial: ..."``.
+          4. Push the feature branch and create/find a GitHub PR.
+          5. Transition to CODE_REVIEW (standard) or STORY_CODE_REVIEW (GHR).
+          6. Resume the pipeline loop.
+
+        Returns True if action was attempted; False if not at CODE_GEN_STOPPED.
+        """
+        from pathlib import Path as _Path
+        from ..code_generator.runner import CodeGeneratorRunner, CodeGenResult
+        from ..code_generator.completion import CompletionResult, CompletionStatus
+        from ..codex.session import CodexResult
+        from ..git_ops.manager import GitOpsManager
+        from ..vcs.factory import make_vcs_client
+
+        if self.state_mgr.current_status != PipelineStatus.CODE_GEN_STOPPED:
+            logger.warning("continue_after_stop() called but not at CODE_GEN_STOPPED (current: %s)",
+                           self.state_mgr.current_status.value)
+            return False
+
+        state = self.state_mgr.state
+        working_dir = (
+            state.metadata.get("stopped_working_dir", "")
+            or getattr(self.config.project, "root_path", "")
+            or ""
+        )
+        if not working_dir:
+            logger.error("continue_after_stop: no working_dir available — cannot commit")
+            return False
+
+        wd = _Path(working_dir)
+        git = GitOpsManager(str(wd))
+
+        # If there's nothing to commit, silently roll back to avoid an empty PR
+        if not git.has_changes():
+            logger.info("continue_after_stop: no changes detected — rolling back to HITL_PROMPT_REVIEW")
+            self.state_mgr.update_metadata({"stopped_working_dir": "", "code_gen_stopped": False})
+            self.state_mgr.transition_to(PipelineStatus.HITL_PROMPT_REVIEW)
+            self._emit("hitl_gate", {
+                "gate": PipelineStatus.HITL_PROMPT_REVIEW.value,
+                "reason": "stop_continue_no_changes",
+                "message": "No changes were written — rolled back to prompt review.",
+            })
+            return True
+
+        is_ghr = (self.config.pipeline_mode == "github_review")
+        story_id = state.current_story_id
+        iteration = (
+            state.metadata.get("story_iteration", 1) if is_ghr else state.current_iteration
+        )
+        pr_number: Optional[int] = None
+        pr_raw = state.metadata.get("pr_number")
+        if pr_raw is not None:
+            try:
+                pr_number = int(pr_raw)
+            except (TypeError, ValueError):
+                pass
+
+        # Build a synthetic CodeGenResult so runner git ops can fill in PR fields
+        syn_result = CodeGenResult(
+            completion=CompletionResult(status=CompletionStatus.COMPLETE, reason="partial — user stopped"),
+            codex_result=CodexResult(exit_code=0, stdout="", stderr=""),
+        )
+
+        runner = CodeGeneratorRunner(self.config, vcs_client=make_vcs_client(self.config))
+
+        self._emit("code_gen_continue_started", {
+            "working_dir": working_dir,
+            "iteration": iteration,
+            "story_id": story_id,
+        })
+
+        if is_ghr:
+            from ..orchestrator.story_queue import StoryQueueManager
+            _sq = StoryQueueManager(self.db)
+            _item = _sq.get_item(story_id) if story_id else None
+            git_errors = runner._git_operations_fork_mode(
+                wd, iteration, pr_number, syn_result,
+                story_context={
+                    "story_id": story_id or "",
+                    "title": _item.title if _item else "",
+                    "acceptance_criteria": _item.acceptance_criteria if _item else [],
+                },
+            )
+        else:
+            git_errors = runner._git_operations(wd, iteration, pr_number, syn_result)
+
+        meta_update: dict = {"code_gen_stopped": False, "stopped_working_dir": ""}
+        if syn_result.pr_number is not None:
+            meta_update["pr_number"] = syn_result.pr_number
+            meta_update["pr_url"] = syn_result.pr_url
+        if git_errors:
+            meta_update["git_errors"] = git_errors
+            logger.warning("continue_after_stop: git errors: %s", git_errors)
+        self.state_mgr.update_metadata(meta_update)
+
+        next_status = PipelineStatus.STORY_CODE_REVIEW if is_ghr else PipelineStatus.CODE_REVIEW
+        self.state_mgr.transition_to(next_status)
+        self._emit("state_changed", {
+            "reason": "stop_continue",
+            "next": next_status.value,
+            "pr_number": syn_result.pr_number,
+        })
+        self._resume_in_thread()
+        return True
+
     def retry_pr(self) -> bool:
         """Retry pull request creation after a failure.
 
@@ -1908,6 +2165,8 @@ class Orchestrator:
         """
         self._stop_event.set()
         self._pause_event.set()
+        self._code_gen_stop_requested.clear()
+        self._active_codex_wrapper = None
         # Wipe iteration rows + reset pipeline_state in one transaction
         self.db.clear_run_data()
         # Clear project name + root_path + repo_name so next run derives them fresh

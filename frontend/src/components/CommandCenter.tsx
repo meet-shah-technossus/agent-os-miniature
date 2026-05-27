@@ -1098,6 +1098,45 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     }
   };
 
+  const handleStopCodeGen = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.stopCodeGeneration();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStopRollback = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.stopRollback();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleStopContinue = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      await api.stopContinue();
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleRetryPR = async () => {
     setIsLoading(true);
     setError(null);
@@ -1281,6 +1320,18 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
           <div className="mb-2 shrink-0 flex items-center gap-2">
             <h3 className="text-sm font-semibold text-white">CLI Terminals</h3>
             <span className="text-[11px] text-slate-500">click to expand</span>
+            <div className="flex-1" />
+            {(pipelineStatus === 'CODE_GENERATION' || pipelineStatus === 'STORY_CODE_GENERATION') && (
+              <button
+                onClick={handleStopCodeGen}
+                disabled={isLoading}
+                title="Kill the running CLI session and preserve partial file changes"
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-red-600 text-white hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <span className="w-2 h-2 rounded-sm bg-white inline-block" />
+                Stop
+              </button>
+            )}
           </div>
           {pipelineStatus === 'CODE_GEN_FAILED' && (
             <div className="mb-2 shrink-0 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
@@ -1293,6 +1344,39 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
               >
                 Retry Code Generator
               </button>
+            </div>
+          )}
+          {pipelineStatus === 'CODE_GEN_STOPPED' && (
+            <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 flex flex-col gap-2">
+              <div className="flex items-center gap-2 text-amber-400 text-xs font-semibold">
+                <span className="w-2 h-2 rounded-sm bg-amber-400 inline-block" />
+                Code generation stopped — partial changes preserved on disk
+              </div>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                The CLI session was killed. Any files written up to this point are still on disk.
+                Choose what to do with the partial changes:
+              </p>
+              <div className="flex items-center gap-2 mt-1">
+                <button
+                  onClick={handleStopRollback}
+                  disabled={isLoading}
+                  title="Discard partial changes (git reset --hard HEAD + git clean -fd) and return to prompt review"
+                  className="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-600 text-white hover:bg-slate-500 border border-slate-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Roll Back
+                </button>
+                <button
+                  onClick={handleStopContinue}
+                  disabled={isLoading}
+                  title="Commit partial changes, push to GitHub and proceed to code review"
+                  className="flex-1 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Save &amp; Continue
+                </button>
+              </div>
+              <p className="text-[10px] text-slate-500 italic">
+                Roll Back discards all partial changes. Save &amp; Continue commits what was written and opens a PR.
+              </p>
             </div>
           )}
           <div className="flex-1 min-h-0 overflow-y-auto">

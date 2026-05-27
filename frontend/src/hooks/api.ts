@@ -153,6 +153,15 @@ export const api = {
   moveToNextStory: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/move-to-next-story', { method: 'POST' }),
 
+  stopCodeGeneration: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/stop', { method: 'POST' }),
+
+  stopRollback: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/stop-rollback', { method: 'POST' }),
+
+  stopContinue: () =>
+    fetchJson<ApproveGateResponse>('/orchestrator/stop-continue', { method: 'POST' }),
+
   retryPR: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/retry-pr', { method: 'POST' }),
 

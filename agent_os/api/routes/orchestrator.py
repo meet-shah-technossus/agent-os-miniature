@@ -147,6 +147,68 @@ def pause_pipeline(orch: Orchestrator = Depends(get_orchestrator)):
     return ApproveGateResponse(approved=True, message="Pause requested")
 
 
+@router.post("/stop", response_model=ApproveGateResponse)
+def stop_code_generation(orch: Orchestrator = Depends(get_orchestrator)):
+    """Kill the active code-generation subprocess mid-flight.
+
+    Sends a kill signal to the running Codex/Aider/Claude process, preserves
+    whatever file changes have been written to disk so far, and transitions the
+    pipeline to CODE_GEN_STOPPED.  The user must then choose one of:
+      - POST /stop-rollback  — discard partial changes and return to HITL_PROMPT_REVIEW
+      - POST /stop-continue  — commit & push partial changes then proceed to code review
+
+    Returns 409 if the pipeline is not currently in a code-generation state.
+    """
+    ok = orch.stop_code_generation()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot stop — pipeline is not currently in a code-generation state.",
+        )
+    return ApproveGateResponse(approved=True, message="Stop signal sent — killing code generation subprocess")
+
+
+@router.post("/stop-rollback", response_model=ApproveGateResponse)
+def stop_rollback(orch: Orchestrator = Depends(get_orchestrator)):
+    """Roll back partial code-gen changes after a stop.
+
+    Performs ``git reset --hard HEAD`` + ``git clean -fd`` in the project
+    working directory to restore the codebase to the state it was in before
+    code generation started, then returns the pipeline to HITL_PROMPT_REVIEW.
+
+    Only valid when the pipeline is at CODE_GEN_STOPPED.
+    """
+    ok = orch.rollback_after_stop()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot roll back — pipeline is not at CODE_GEN_STOPPED.",
+        )
+    return ApproveGateResponse(approved=True, message="Partial changes discarded — returned to prompt review")
+
+
+@router.post("/stop-continue", response_model=ApproveGateResponse)
+def stop_continue(orch: Orchestrator = Depends(get_orchestrator)):
+    """Save partial code-gen progress and continue to code review.
+
+    Commits whatever files were written before the stop, pushes the feature
+    branch to GitHub, creates (or finds) a pull request, then advances the
+    pipeline to CODE_REVIEW (standard mode) or STORY_CODE_REVIEW (GHR mode).
+
+    If no file changes are detected, the pipeline rolls back to
+    HITL_PROMPT_REVIEW automatically.
+
+    Only valid when the pipeline is at CODE_GEN_STOPPED.
+    """
+    ok = orch.continue_after_stop()
+    if not ok:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot continue — pipeline is not at CODE_GEN_STOPPED.",
+        )
+    return ApproveGateResponse(approved=True, message="Partial changes committed — proceeding to code review")
+
+
 @router.post("/retry-pr", response_model=ApproveGateResponse)
 def retry_pr(orch: Orchestrator = Depends(get_orchestrator)):
     """Retry pull request creation after a failure."""
