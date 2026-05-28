@@ -15,12 +15,15 @@ from ..schemas import (
     CliRoutingSettingsResponse,
     GitHubSettingsResponse,
     GitHubReviewSettingsResponse,
+    OllamaSettingsResponse,
     PipelineSettingsResponse,
     ProjectSettingsResponse,
+    PromptGeneratorSettingsResponse,
     RequirementsSettingsResponse,
     SecretsSettingsResponse,
     SettingsResponse,
     SettingsUpdateRequest,
+    TestGitHubRequest,
     TestGitHubResponse,
     AIToolsSettingsResponse,
     AIToolCredentialResponse,
@@ -108,6 +111,16 @@ def get_settings(orch=Depends(get_orchestrator)):
         ai_tools=_serialize_ai_tools(cfg),
         vcs=VCSSettingsResponse(
             provider=getattr(getattr(cfg, 'vcs', None), 'provider', 'github') or 'github',
+        ),
+        ollama=OllamaSettingsResponse(
+            base_url=getattr(getattr(cfg, 'ollama', None), 'base_url', 'http://localhost:11434') or 'http://localhost:11434',
+            model=getattr(getattr(cfg, 'ollama', None), 'model', 'llama3.1:8b') or 'llama3.1:8b',
+            timeout_seconds=getattr(getattr(cfg, 'ollama', None), 'timeout_seconds', 300) or 300,
+        ),
+        prompt_generator=PromptGeneratorSettingsResponse(
+            provider=getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama') or 'ollama',
+            ollama_model=getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b') or 'llama3.1:8b',
+            openai_model=getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini') or 'gpt-4.1-mini',
         ),
     )
 
@@ -250,6 +263,31 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             vcs_cfg = cfg.vcs
         vcs_cfg.provider = body.vcs.provider if body.vcs.provider in ('github', 'ado') else 'github'
 
+    if body.ollama is not None:
+        ollama_cfg = getattr(cfg, 'ollama', None)
+        if ollama_cfg is None:
+            from ...config.schema import OllamaConfig
+            cfg.ollama = OllamaConfig()
+            ollama_cfg = cfg.ollama
+        if body.ollama.base_url:
+            ollama_cfg.base_url = body.ollama.base_url
+        if body.ollama.model:
+            ollama_cfg.model = body.ollama.model
+        ollama_cfg.timeout_seconds = body.ollama.timeout_seconds
+
+    if body.prompt_generator is not None:
+        pg_cfg = getattr(cfg, 'prompt_generator', None)
+        if pg_cfg is None:
+            from ...config.schema import PromptGeneratorConfig
+            cfg.prompt_generator = PromptGeneratorConfig()
+            pg_cfg = cfg.prompt_generator
+        if body.prompt_generator.provider in ('ollama', 'openai'):
+            pg_cfg.provider = body.prompt_generator.provider
+        if body.prompt_generator.ollama_model:
+            pg_cfg.ollama_model = body.prompt_generator.ollama_model
+        if body.prompt_generator.openai_model:
+            pg_cfg.openai_model = body.prompt_generator.openai_model
+
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
 
@@ -315,16 +353,25 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
 
 
 @router.post("/test-github", response_model=TestGitHubResponse)
-def test_github_connection(orch=Depends(get_orchestrator)):
-    """Test the GitHub token by calling the /user endpoint."""
+def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)):
+    """Test a GitHub token by calling the /user endpoint.
+
+    If ``body.token`` is provided (unsaved value from the UI), it is used
+    directly.  Otherwise the saved token from config / env is resolved.
+    """
     cfg = orch.config
     project_root = cfg.project.root_path or "."
-    try:
-        from ...storage.agent_config_repo import AgentConfigRepo
-        _db_tok = AgentConfigRepo(orch.db.conn).get_secrets().get("github_token", "")
-    except Exception:
-        _db_tok = ""
-    token = resolve_secret("github_token", cfg.secrets.github_token or _db_tok, project_root)
+
+    # Prefer the token sent in the request (allows testing before saving).
+    if body.token and not body.token.startswith("***") and "..." not in body.token:
+        token = body.token
+    else:
+        try:
+            from ...storage.agent_config_repo import AgentConfigRepo
+            _db_tok = AgentConfigRepo(orch.db.conn).get_secrets().get("github_token", "")
+        except Exception:
+            _db_tok = ""
+        token = resolve_secret("github_token", cfg.secrets.github_token or _db_tok, project_root)
 
     if not token:
         return TestGitHubResponse(valid=False, message="No GitHub token configured")
@@ -481,6 +528,16 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             "requirements_path": cfg.github_review.requirements_path,
             "fork_repo_name": cfg.github_review.fork_repo_name,
             "branch_name": cfg.github_review.branch_name,
+        },
+        "ollama": {
+            "base_url": getattr(getattr(cfg, 'ollama', None), 'base_url', 'http://localhost:11434'),
+            "model": getattr(getattr(cfg, 'ollama', None), 'model', 'llama3.1:8b'),
+            "timeout_seconds": getattr(getattr(cfg, 'ollama', None), 'timeout_seconds', 300),
+        },
+        "prompt_generator": {
+            "provider": getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama'),
+            "ollama_model": getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b'),
+            "openai_model": getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini'),
         },
     }
 

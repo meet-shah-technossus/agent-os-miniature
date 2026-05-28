@@ -157,10 +157,9 @@ writing the final fix prompt."""
         )
         model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
-        return self._stream_openai(
+        return self._stream_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            model=model,
             label=f"iter-{iteration}-impl",
             fallback=fallback,
             on_stdout=on_stdout,
@@ -211,14 +210,108 @@ writing the final fix prompt."""
         )
         model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
-        return self._stream_openai(
+        return self._stream_llm(
             system_prompt=self._SYSTEM_FIX,
             user_prompt=user_prompt,
-            model=model,
             label=f"iter-{iteration}-fix",
             fallback=fallback,
             on_stdout=on_stdout,
         )
+
+    # ── LLM dispatcher ────────────────────────────────────────────────────────
+
+    def _stream_llm(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        label: str,
+        fallback: str,
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> str:
+        """Route to Ollama or OpenAI based on prompt_generator.provider config."""
+        pg_cfg = getattr(self._config, "prompt_generator", None)
+        provider = getattr(pg_cfg, "provider", "ollama") if pg_cfg else "ollama"
+
+        if provider == "openai":
+            model = getattr(pg_cfg, "openai_model", None) or \
+                self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+            return self._stream_openai(system_prompt, user_prompt, model, label, fallback, on_stdout)
+        else:
+            # Default: Ollama
+            ollama_cfg = getattr(self._config, "ollama", None)
+            model = getattr(pg_cfg, "ollama_model", None) or \
+                getattr(ollama_cfg, "model", "llama3.1:8b")
+            base_url = getattr(ollama_cfg, "base_url", None) or \
+                os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            timeout = getattr(ollama_cfg, "timeout_seconds", 300)
+            return self._stream_ollama(system_prompt, user_prompt, model, base_url, timeout, label, fallback, on_stdout)
+
+    # ── Ollama streaming ──────────────────────────────────────────────────────
+
+    def _stream_ollama(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        base_url: str,
+        timeout: int,
+        label: str,
+        fallback: str,
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> str:
+        """Call Ollama's OpenAI-compatible /v1/chat/completions with streaming."""
+
+        def _emit(line: str) -> None:
+            if on_stdout:
+                try:
+                    on_stdout(line)
+                except Exception:
+                    pass
+
+        # Strip trailing slash; Ollama's OpenAI-compat endpoint lives at /v1
+        api_base = base_url.rstrip("/")
+        _emit(f"[prompt-generator] Calling Ollama {model} @ {api_base} …")
+        logger.info("Generating prompt (%s) via Ollama %s @ %s", label, model, api_base)
+
+        try:
+            import openai  # reuse the openai client with a custom base_url
+
+            client = openai.OpenAI(
+                api_key="ollama",          # Ollama ignores the key value
+                base_url=f"{api_base}/v1",
+            )
+
+            resp = client.chat.completions.create(
+                model=model,
+                stream=True,
+                temperature=0.7,
+                timeout=float(timeout),
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+
+            full_text: list[str] = []
+            for chunk in resp:
+                delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
+                if not delta:
+                    continue
+                full_text.append(delta)
+                _emit(delta)
+
+            generated = "".join(full_text).strip()
+            if generated:
+                logger.info("Ollama prompt complete (%s, %d chars)", label, len(generated))
+                return generated
+
+            _emit("[prompt-generator] Empty response from Ollama — using fallback.")
+
+        except Exception as exc:
+            _emit(f"[prompt-generator] Ollama call failed: {exc} — using fallback.")
+            logger.warning("Ollama streaming failed for %s: %s", label, exc)
+
+        return fallback
 
     # ── OpenAI streaming ──────────────────────────────────────────────────────
 

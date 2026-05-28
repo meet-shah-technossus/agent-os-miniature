@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 _ENV_MAP = {
     "openai_api_key": "OPENAI_API_KEY",
     "github_token": "GITHUB_TOKEN",
+    "ollama_base_url": "OLLAMA_BASE_URL",
 }
 
 # Additional env var aliases checked as fallbacks (in order) when _ENV_MAP lookup fails.

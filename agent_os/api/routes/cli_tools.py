@@ -22,6 +22,10 @@ from ..deps import get_orchestrator
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/cli-tools", tags=["cli-tools"])
 
+# ── OS detection ─────────────────────────────────────────────────────────────
+_IS_WINDOWS = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
+
 
 # ── Tool registry ────────────────────────────────────────────────────────────
 
@@ -115,7 +119,13 @@ TOOL_REGISTRY: dict[str, _ToolMeta] = {
         key="cursor",
         display_name="Cursor CLI",
         binary="cursor",
-        install_cmd="brew install --cask cursor",
+        install_cmd=(
+            "winget install Anysphere.Cursor"
+            if _IS_WINDOWS
+            else "brew install --cask cursor"
+            if _IS_MAC
+            else "flatpak install flathub com.cursor.Cursor"
+        ),
         docs_url="https://docs.cursor.com",
         auth_check_cmd=["cursor", "--version"],
         login_cmd=["cursor", "auth", "login"],
@@ -125,7 +135,11 @@ TOOL_REGISTRY: dict[str, _ToolMeta] = {
         key="copilot",
         display_name="GitHub Copilot CLI",
         binary="gh",
-        install_cmd="brew install gh && gh extension install github/gh-copilot",
+        install_cmd=(
+            "winget install GitHub.cli ; gh extension install github/gh-copilot"
+            if _IS_WINDOWS
+            else "brew install gh && gh extension install github/gh-copilot"
+        ),
         docs_url="https://docs.github.com/en/copilot/github-copilot-in-the-cli",
         auth_check_cmd=["gh", "auth", "status"],
         login_cmd=["gh", "auth", "login", "--web"],
@@ -183,6 +197,31 @@ def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
             text=True,
             timeout=timeout,
             env={**os.environ, "NO_COLOR": "1"},
+        )
+        return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    except FileNotFoundError:
+        return -1, "", f"Command not found: {cmd[0]}"
+    except subprocess.TimeoutExpired:
+        return -2, "", "Command timed out"
+    except Exception as exc:
+        return -3, "", str(exc)
+
+
+def _run_no_gh_token(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    """Like _run but strips GITHUB_TOKEN / GH_TOKEN from the subprocess env.
+
+    Used for gh auth status / gh auth login so we check the stored OAuth
+    credential rather than the env-var PAT that is only meant for git operations.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+    env["NO_COLOR"] = "1"
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
         )
         return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
     except FileNotFoundError:
@@ -264,8 +303,11 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
 
     # 2. Per-tool auth detection
     if meta.key == "copilot":
-        # gh auth status exits 0 and prints account info when logged in
-        rc, out, err = _run(["gh", "auth", "status"])
+        # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN in the environment.
+        # When those env vars are present, gh uses them for API calls but reports
+        # no stored OAuth credential (exit code 1) — causing a false "not authenticated".
+        # Stripping them here lets us check whether a real gh OAuth session exists.
+        rc, out, err = _run_no_gh_token(["gh", "auth", "status"])
         if rc == 0:
             for line in (out + "\n" + err).splitlines():
                 if "account" in line.lower():
@@ -663,6 +705,21 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
             # Open in an interactive terminal — needed for OAuth flows that
             # require browser callbacks or interactive prompts.
             cmd_str = " ".join(shlex.quote(c) for c in login_cmd)
+
+            # GitHub Copilot OAuth: GITHUB_TOKEN / GH_TOKEN in the environment
+            # prevent gh from storing real OAuth credentials.  Unset them in the
+            # terminal session so the browser flow runs and writes to gh's keychain.
+            # The env vars remain intact for all other processes (git, API calls).
+            if tool_key == "copilot":
+                if _IS_WINDOWS:
+                    cmd_str = (
+                        "Remove-Item Env:GITHUB_TOKEN -ErrorAction SilentlyContinue; "
+                        "Remove-Item Env:GH_TOKEN -ErrorAction SilentlyContinue; "
+                        + cmd_str
+                    )
+                else:
+                    cmd_str = "unset GITHUB_TOKEN GH_TOKEN; " + cmd_str
+
             _open_in_terminal(cmd_str)
 
             # Update config to reflect the login attempt

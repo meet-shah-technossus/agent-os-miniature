@@ -159,6 +159,18 @@ export interface VCSSettings {
   provider: 'github' | 'ado';
 }
 
+export interface OllamaSettings {
+  base_url: string;
+  model: string;
+  timeout_seconds: number;
+}
+
+export interface PromptGeneratorSettings {
+  provider: 'ollama' | 'openai';
+  ollama_model: string;
+  openai_model: string;
+}
+
 export interface Settings {
   secrets: SecretsSettings;
   github: GitHubSettings;
@@ -170,6 +182,8 @@ export interface Settings {
   pipeline_mode: string;
   ai_tools?: AIToolsSettings;
   vcs?: VCSSettings;
+  ollama?: OllamaSettings;
+  prompt_generator?: PromptGeneratorSettings;
 }
 
 export interface TestGitHubResponse {

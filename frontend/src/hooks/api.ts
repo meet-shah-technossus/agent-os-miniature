@@ -287,8 +287,12 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  testGitHub: () =>
-    fetchJson<TestGitHubResponse>('/settings/test-github', { method: 'POST' }),
+  testGitHub: (token?: string) =>
+    fetchJson<TestGitHubResponse>('/settings/test-github', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token ?? '' }),
+    }),
 
   // Project routes
   getProjectInfo: () => fetchJson<ProjectInfo>('/project/info'),

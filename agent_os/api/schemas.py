@@ -220,6 +220,20 @@ class VCSSettingsResponse(BaseModel):
     provider: str = "github"  # "github" | "ado"
 
 
+class OllamaSettingsResponse(BaseModel):
+    """Ollama service connection settings."""
+    base_url: str = "http://localhost:11434"
+    model: str = "llama3.1:8b"
+    timeout_seconds: int = 300
+
+
+class PromptGeneratorSettingsResponse(BaseModel):
+    """Prompt generator LLM provider selection."""
+    provider: str = "ollama"       # "ollama" | "openai"
+    ollama_model: str = "llama3.1:8b"
+    openai_model: str = "gpt-4.1-mini"
+
+
 class SettingsResponse(BaseModel):
     secrets: SecretsSettingsResponse = SecretsSettingsResponse()
     github: GitHubSettingsResponse = GitHubSettingsResponse()
@@ -231,6 +245,8 @@ class SettingsResponse(BaseModel):
     pipeline_mode: str = "standard"
     ai_tools: AIToolsSettingsResponse = AIToolsSettingsResponse()
     vcs: VCSSettingsResponse = VCSSettingsResponse()
+    ollama: OllamaSettingsResponse = OllamaSettingsResponse()
+    prompt_generator: PromptGeneratorSettingsResponse = PromptGeneratorSettingsResponse()
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -244,6 +260,13 @@ class SettingsUpdateRequest(BaseModel):
     pipeline_mode: Optional[str] = None
     ai_tools: Optional[AIToolsSettingsResponse] = None
     vcs: Optional[VCSSettingsResponse] = None
+    ollama: Optional[OllamaSettingsResponse] = None
+    prompt_generator: Optional[PromptGeneratorSettingsResponse] = None
+
+
+class TestGitHubRequest(BaseModel):
+    """Optional body for test-github — pass token to test an unsaved value."""
+    token: str = ""
 
 
 class TestGitHubResponse(BaseModel):

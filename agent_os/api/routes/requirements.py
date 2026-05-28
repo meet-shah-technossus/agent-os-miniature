@@ -531,7 +531,7 @@ class RemoteValidationResult(BaseModel):
 
 
 @router.post("/validate-remote", response_model=RemoteValidationResult)
-async def validate_remote_connection(body: RemoteIngestRequest) -> RemoteValidationResult:
+async def validate_remote_connection(body: RemoteIngestRequest, orch=Depends(get_orchestrator)) -> RemoteValidationResult:
     """Test connectivity and credentials for a remote source without ingesting."""
     import httpx
 
@@ -603,10 +603,17 @@ async def validate_remote_connection(body: RemoteIngestRequest) -> RemoteValidat
         from urllib.parse import quote
         import base64 as b64
 
-        cfg_req = None  # no orch dependency for validation
-        ado_org = body.ado_org
-        ado_token = body.ado_token
-        ado_project = body.ado_project
+        # Fall back to saved config credentials so validation works even when
+        # the UI is showing the masked placeholder.
+        cfg_req = getattr(getattr(orch, "config", None), "requirements", None)
+        ado_org = body.ado_org or getattr(cfg_req, "ado_org", "")
+        raw_tok = body.ado_token
+        ado_token = (
+            raw_tok
+            if raw_tok and not raw_tok.startswith("***")
+            else getattr(cfg_req, "ado_token", "")
+        )
+        ado_project = body.ado_project or getattr(cfg_req, "ado_project", "")
 
         if not ado_org:
             errors.append("ADO organization name is required.")
@@ -1014,32 +1021,43 @@ class AdoProjectsRequest(BaseModel):
 
 
 @router.post("/ado-projects")
-async def get_ado_projects(body: AdoProjectsRequest) -> dict:
+async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrator)) -> dict:
     """Fetch all project names from an Azure DevOps organisation.
 
     Accepts the ADO organisation name and a Personal Access Token (PAT).
-    Returns a list of project names the PAT has access to.
+    When the UI sends the masked placeholder (*** or empty) the saved
+    config token is used automatically so the user never has to re-enter it.
     """
     import base64 as _b64
     import httpx
     from urllib.parse import quote
 
-    if not body.org or not body.token:
+    # Fall back to the saved config value so the user does not have to
+    # re-enter the PAT after it has been saved once.
+    cfg_req = getattr(getattr(orch, "config", None), "requirements", None)
+    org   = body.org or getattr(cfg_req, "ado_org", "")
+    token = (
+        body.token
+        if body.token and not body.token.startswith("***")
+        else getattr(cfg_req, "ado_token", "")
+    )
+
+    if not org or not token:
         raise HTTPException(status_code=422, detail="Both 'org' and 'token' are required.")
 
-    token_b64 = _b64.b64encode(f":{body.token}".encode()).decode()
+    token_b64 = _b64.b64encode(f":{token}".encode()).decode()
     headers = {
         "Authorization": f"Basic {token_b64}",
         "Accept": "application/json",
     }
-    org_enc = quote(body.org, safe="")
+    org_enc = quote(org, safe="")
     url = f"https://dev.azure.com/{org_enc}/_apis/projects?api-version=7.1"
 
     try:
         async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=False) as client:
             resp = await client.get(url)
     except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail=f"Cannot connect to Azure DevOps for org '{body.org}'.")
+        raise HTTPException(status_code=502, detail=f"Cannot connect to Azure DevOps for org '{org}'.")
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Connection to Azure DevOps timed out.")
     except Exception as exc:

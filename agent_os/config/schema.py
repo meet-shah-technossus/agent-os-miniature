@@ -185,6 +185,42 @@ class VCSConfig(BaseModel):
     provider: str = "github"  # "github" | "ado"
 
 
+# ── Prompt Generator LLM provider ────────────────────────────────────────────
+
+OLLAMA_MODELS: list[str] = [
+    "llama3.1:8b",
+    "llama3.2:3b",
+    "llama3:latest",
+    "qwen2.5:7b",
+    "qwen2.5-coder:32b",
+    "gemma3:4b",
+    "mistral-nemo:latest",
+    "ibm/granite-docling:latest",
+    "nomic-embed-text:latest",
+]
+
+
+class OllamaConfig(BaseModel):
+    """Connection settings for a remote (or local) Ollama service."""
+    base_url: str = "http://localhost:11434"   # override with VPN remote GPU URL
+    model: str = "llama3.1:8b"                # default model on the remote GPU
+    timeout_seconds: int = Field(default=300, ge=30)
+
+
+class PromptGeneratorConfig(BaseModel):
+    """Which LLM backend to use for prompt generation."""
+    provider: str = "ollama"          # "ollama" | "openai"
+    ollama_model: str = "llama3.1:8b"
+    openai_model: str = "gpt-4.1-mini"
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _valid_provider(cls, v: object) -> object:
+        if v not in ("ollama", "openai"):
+            return "ollama"
+        return v
+
+
 class AIToolCredential(BaseModel):
     """Auth config for a single AI coding tool CLI."""
     enabled: bool = False
@@ -236,6 +272,8 @@ class AgentOSConfig(BaseModel):
     pipeline_mode: str = "standard"  # "standard" | "github_review"
     ai_tools: AIToolsConfig = AIToolsConfig()
     vcs: VCSConfig = VCSConfig()
+    ollama: OllamaConfig = OllamaConfig()
+    prompt_generator: PromptGeneratorConfig = PromptGeneratorConfig()
 
     @field_validator("project")
     @classmethod

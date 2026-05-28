@@ -303,6 +303,13 @@ export default function SettingsView() {
   const [ghReviewForkName, setGhReviewForkName] = useState('');
   const [ghReviewBranch, setGhReviewBranch]     = useState('story-');
 
+  /* ── Prompt Generator / Ollama ──────────────────────────────────────────── */
+  const [pgProvider, setPgProvider]         = useState<'ollama' | 'openai'>('ollama');
+  const [pgOllamaModel, setPgOllamaModel]   = useState('llama3.1:8b');
+  const [pgOpenAIModel, setPgOpenAIModel]   = useState('gpt-4.1-mini');
+  const [ollamaBaseUrl, setOllamaBaseUrl]   = useState('http://localhost:11434');
+  const [ollamaTimeout, setOllamaTimeout]   = useState(300);
+
   /* ── Load settings ──────────────────────────────────────────────────────── */
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -310,6 +317,11 @@ export default function SettingsView() {
       setGhToken(s.secrets.github_token);
       setGhOwner(s.github.owner);
       setGhRepo(s.github.repo);
+      // Auto-derive repo name from project root folder when not configured
+      if (!s.github.repo && s.project.root_path) {
+        const derivedRepo = s.project.root_path.replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+        if (derivedRepo) setGhRepo(derivedRepo);
+      }
       setAutoPush(s.github.auto_push);
       setAutoCreatePr(s.github.auto_create_pr);
       setVcsProvider(s.vcs?.provider === 'ado' ? 'ado' : 'github');
@@ -354,6 +366,15 @@ export default function SettingsView() {
         setGhReviewReqPath(s.github_review.requirements_path ?? '');
         setGhReviewForkName(s.github_review.fork_repo_name ?? '');
         setGhReviewBranch(s.github_review.branch_name || 'story-');
+      }
+      if (s.ollama) {
+        setOllamaBaseUrl(s.ollama.base_url || 'http://localhost:11434');
+        setOllamaTimeout(s.ollama.timeout_seconds ?? 300);
+      }
+      if (s.prompt_generator) {
+        setPgProvider(s.prompt_generator.provider === 'openai' ? 'openai' : 'ollama');
+        setPgOllamaModel(s.prompt_generator.ollama_model || 'llama3.1:8b');
+        setPgOpenAIModel(s.prompt_generator.openai_model || 'gpt-4.1-mini');
       }
     }).catch(() => {});
   }, []);
@@ -424,6 +445,16 @@ export default function SettingsView() {
           ado_token: adoToken.startsWith('***') ? '' : adoToken,
           ado_project: adoProject,
         },
+        ollama: {
+          base_url: ollamaBaseUrl,
+          model: pgOllamaModel,
+          timeout_seconds: ollamaTimeout,
+        },
+        prompt_generator: {
+          provider: pgProvider,
+          ollama_model: pgOllamaModel,
+          openai_model: pgOpenAIModel,
+        },
       });
       setSettings(updated);
       setGhToken(updated.secrets.github_token);
@@ -438,15 +469,24 @@ export default function SettingsView() {
   const handleTestGH = async () => {
     setGhTest(null);
     try {
-      const r = await api.testGitHub();
+      // Pass the live token from the input (unless it's a masked placeholder)
+      const tokenToTest = ghToken && !ghToken.startsWith('***') && !ghToken.includes('...') ? ghToken : undefined;
+      const r = await api.testGitHub(tokenToTest);
       setGhTest(r);
+      // Auto-populate Owner from the authenticated GitHub user
+      if (r.valid && r.user) setGhOwner(r.user);
+      // Auto-populate Repo from project root folder name if still empty
+      if (!ghRepo && projRoot) {
+        const derivedRepo = projRoot.replace(/\\/g, '/').split('/').filter(Boolean).pop() || '';
+        if (derivedRepo) setGhRepo(derivedRepo);
+      }
     } catch {
       setGhTest({ valid: false, user: '', message: 'Request failed' });
     }
   };
 
   const fetchAdoProjects = async (org: string, token: string) => {
-    if (!org || !token || token.startsWith('***')) return;
+    if (!org) return;  // token may be '***' — backend resolves the saved PAT automatically
     setAdoProjectsLoading(true);
     setAdoProjectsFetchError('');
     try {
@@ -626,42 +666,69 @@ export default function SettingsView() {
   /* ═══════════════════════════════════════════════════════════════════════════ */
 
   function renderAITools() {
+    // OS detection — used to serve platform-appropriate commands
+    const isWindows: boolean = (
+      // Modern API (Chrome 90+) — most reliable
+      ((navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? '')
+        .toLowerCase().includes('windows') ||
+      // Legacy fallback
+      navigator.platform.toLowerCase().startsWith('win')
+    );
+    const isMac: boolean = (
+      ((navigator as unknown as { userAgentData?: { platform?: string } }).userAgentData?.platform ?? '')
+        .toLowerCase().includes('mac') ||
+      navigator.platform.toLowerCase().startsWith('mac')
+    );
+
     const adoOrgUrl = adoOrg ? `https://dev.azure.com/${adoOrg}` : 'https://dev.azure.com/{your-org}';
     const orgName = adoOrg || '{your-org}';
-    // Full JSON structure to paste into the config file.
-    // Uses cmd /c npx for Windows compatibility (npx is a .cmd script on Windows,
-    // not a binary, so MCP clients must go through cmd.exe to launch it).
-    // Package: @azure-devops/mcp (correct package — NOT @azure/azure-devops-mcp).
-    // Org is a positional CLI arg; --authentication azcli uses the az login token.
+
+    // MCP JSON config — Windows must launch npx via cmd.exe; Mac/Linux call npx directly
     const mcpJsonFull = (org: string) => JSON.stringify({
       mcpServers: {
-        'azure-devops': {
-          command: 'cmd',
-          args: ['/c', 'npx', '-y', '@azure-devops/mcp', org, '--authentication', 'azcli'],
-        },
+        'azure-devops': isWindows
+          ? { command: 'cmd', args: ['/c', 'npx', '-y', '@azure-devops/mcp', org, '--authentication', 'azcli'] }
+          : { command: 'npx', args: ['-y', '@azure-devops/mcp', org, '--authentication', 'azcli'] },
       },
     }, null, 2);
 
     type StepEntry = { label: string; content: string; isRunnable: boolean; isJson?: boolean; note?: string };
     type McpEntry = { steps: StepEntry[] };
 
-    // Shared step reused by all CLIs
-    const pathRefreshStep: StepEntry = {
-      label: 'Step 2 — Refresh PATH (if az is still not recognised after install)',
-      content: '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")',
-      isRunnable: true,
-      note: 'Run this in the same terminal. It loads the new PATH immediately — no need to restart VS Code.',
-    };
+    // Step 1 — Azure CLI install (OS-specific)
+    const azCliInstallStep: StepEntry = isWindows
+      ? {
+          label: 'Step 1 — Install Azure CLI',
+          content: 'winget install Microsoft.AzureCLI',
+          isRunnable: true,
+          note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
+        }
+      : {
+          label: 'Step 1 — Install Azure CLI',
+          content: 'brew update && brew install azure-cli',
+          isRunnable: true,
+          note: 'After install, open a new terminal tab — Homebrew updates your PATH automatically.',
+        };
+
+    // Step 2 — PATH refresh (Windows only; Mac/Linux handled by Homebrew / new shell)
+    const pathRefreshStep: StepEntry = isWindows
+      ? {
+          label: 'Step 2 — Refresh PATH (if az is still not recognised after install)',
+          content: '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")',
+          isRunnable: true,
+          note: 'Run this in the same terminal. It loads the new PATH immediately — no need to restart VS Code.',
+        }
+      : {
+          label: 'Step 2 — Reload shell config (if az is still not recognised after install)',
+          content: 'source ~/.zshrc',
+          isRunnable: true,
+          note: 'Run this in the same terminal. If you use bash instead of zsh, run `source ~/.bash_profile`.',
+        };
 
     const ADO_MCP_SETUP: Partial<Record<ToolKey, McpEntry>> = {
       codex: {
         steps: [
-          {
-            label: 'Step 1 — Install Azure CLI',
-            content: 'winget install Microsoft.AzureCLI',
-            isRunnable: true,
-            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
-          },
+          azCliInstallStep,
           pathRefreshStep,
           {
             label: 'Step 3 — Authenticate with Microsoft (opens browser)',
@@ -675,10 +742,16 @@ export default function SettingsView() {
             note: 'Clears the old incorrect config. Ignore any "not found" error — it just means there was nothing to remove.',
           },
           {
-            label: 'Step 5 — Register ADO MCP server with Codex CLI (Windows-compatible)',
-            content: `codex mcp add azure-devops -- cmd /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`,
+            label: isWindows
+              ? 'Step 5 — Register ADO MCP server with Codex CLI (Windows-compatible)'
+              : 'Step 5 — Register ADO MCP server with Codex CLI',
+            content: isWindows
+              ? `codex mcp add azure-devops -- cmd /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`
+              : `codex mcp add azure-devops -- npx -y @azure-devops/mcp ${orgName} --authentication azcli`,
             isRunnable: true,
-            note: 'Saves to ~/.codex/config.toml. Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.',
+            note: isWindows
+              ? 'Saves to ~/.codex/config.toml. Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.'
+              : 'Saves to ~/.codex/config.toml. Uses the correct package @azure-devops/mcp.',
           },
           {
             label: 'Step 6 — Start Codex CLI',
@@ -695,12 +768,7 @@ export default function SettingsView() {
       },
       claude: {
         steps: [
-          {
-            label: 'Step 1 — Install Azure CLI',
-            content: 'winget install Microsoft.AzureCLI',
-            isRunnable: true,
-            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
-          },
+          azCliInstallStep,
           pathRefreshStep,
           {
             label: 'Step 3 — Authenticate with Microsoft (opens browser)',
@@ -708,10 +776,16 @@ export default function SettingsView() {
             isRunnable: true,
           },
           {
-            label: 'Step 4 — Register ADO MCP server with Claude Code (Windows-compatible)',
-            content: `claude mcp add azure-devops cmd -- /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`,
+            label: isWindows
+              ? 'Step 4 — Register ADO MCP server with Claude Code (Windows-compatible)'
+              : 'Step 4 — Register ADO MCP server with Claude Code',
+            content: isWindows
+              ? `claude mcp add azure-devops cmd -- /c npx -y @azure-devops/mcp ${orgName} --authentication azcli`
+              : `claude mcp add azure-devops npx -- -y @azure-devops/mcp ${orgName} --authentication azcli`,
             isRunnable: true,
-            note: 'Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.',
+            note: isWindows
+              ? 'Uses cmd /c npx (required on Windows) and the correct package @azure-devops/mcp.'
+              : 'Uses the correct package @azure-devops/mcp.',
           },
           {
             label: 'Step 5 — Start Claude Code',
@@ -728,12 +802,7 @@ export default function SettingsView() {
       },
       gemini: {
         steps: [
-          {
-            label: 'Step 1 — Install Azure CLI',
-            content: 'winget install Microsoft.AzureCLI',
-            isRunnable: true,
-            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
-          },
+          azCliInstallStep,
           pathRefreshStep,
           {
             label: 'Step 3 — Authenticate with Microsoft (opens browser)',
@@ -742,16 +811,22 @@ export default function SettingsView() {
           },
           {
             label: 'Step 4 — Open (or create) the Gemini config file',
-            content: 'New-Item -Path "$env:USERPROFILE\\.gemini" -ItemType Directory -Force | Out-Null; notepad "$env:USERPROFILE\\.gemini\\settings.json"',
+            content: isWindows
+              ? 'New-Item -Path "$env:USERPROFILE\\.gemini" -ItemType Directory -Force | Out-Null; notepad "$env:USERPROFILE\\.gemini\\settings.json"'
+              : 'mkdir -p ~/.gemini && open -e ~/.gemini/settings.json',
             isRunnable: true,
-            note: 'Windows path: C:\\Users\\<YourName>\\.gemini\\settings.json — If Notepad asks to create a new file, click Yes.',
+            note: isWindows
+              ? 'Windows path: C:\\Users\\<YourName>\\.gemini\\settings.json — If Notepad asks to create a new file, click Yes.'
+              : isMac
+              ? 'Mac path: ~/.gemini/settings.json — If TextEdit opens in Rich Text mode, choose Format → Make Plain Text before pasting.'
+              : 'Linux path: ~/.gemini/settings.json — use your preferred text editor.',
           },
           {
             label: 'Step 5 — Paste this into the file (replace entire contents if file is new):',
             content: mcpJsonFull(orgName),
             isRunnable: false,
             isJson: true,
-            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest. On macOS/Linux replace "cmd" with "npx" and remove the "/c" arg.',
+            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest.',
           },
           {
             label: 'Step 6 — Start Gemini CLI',
@@ -768,12 +843,7 @@ export default function SettingsView() {
       },
       cursor: {
         steps: [
-          {
-            label: 'Step 1 — Install Azure CLI',
-            content: 'winget install Microsoft.AzureCLI',
-            isRunnable: true,
-            note: 'After install, if az is still not recognised, run Step 2 below — no need to restart VS Code.',
-          },
+          azCliInstallStep,
           pathRefreshStep,
           {
             label: 'Step 3 — Authenticate with Microsoft (opens browser)',
@@ -782,16 +852,22 @@ export default function SettingsView() {
           },
           {
             label: 'Step 4 — Open (or create) .cursor/mcp.json in your project root',
-            content: 'New-Item -Path ".cursor" -ItemType Directory -Force | Out-Null; notepad ".cursor\\mcp.json"',
+            content: isWindows
+              ? 'New-Item -Path ".cursor" -ItemType Directory -Force | Out-Null; notepad ".cursor\\mcp.json"'
+              : 'mkdir -p .cursor && open -e .cursor/mcp.json',
             isRunnable: true,
-            note: 'Run this from your project root. If Notepad asks to create a new file, click Yes.',
+            note: isWindows
+              ? 'Run this from your project root. If Notepad asks to create a new file, click Yes.'
+              : isMac
+              ? 'Run this from your project root. If TextEdit opens in Rich Text mode, choose Format → Make Plain Text before pasting.'
+              : 'Run this from your project root using your preferred text editor.',
           },
           {
             label: 'Step 5 — Paste this into the file (replace entire contents if file is new):',
             content: mcpJsonFull(orgName),
             isRunnable: false,
             isJson: true,
-            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest. On macOS/Linux replace "cmd" with "npx" and remove the "/c" arg.',
+            note: 'If the file already has other settings, add only the "mcpServers" block — do not overwrite the rest.',
           },
           {
             label: 'Step 6 — Reopen Cursor to load the new MCP configuration',
@@ -1804,7 +1880,7 @@ export default function SettingsView() {
                           </select>
                           <button
                             type="button"
-                            disabled={adoProjectsLoading || !adoOrg || !adoToken || adoToken.startsWith('***')}
+                            disabled={adoProjectsLoading || !adoOrg}
                             onClick={() => fetchAdoProjects(adoOrg, adoToken)}
                             className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
                           >
@@ -1898,6 +1974,111 @@ export default function SettingsView() {
                   </svg>
                   View Requirements
                 </button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ── Prompt Generator LLM Provider ──────────────────────────────── */}
+        <section className={card}>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">
+            Prompt Generator
+          </h3>
+          <p className="text-[11px] text-white/30 mb-4">
+            Choose the LLM backend used when generating implementation and fix prompts.
+            Ollama connects to your local or remote GPU; OpenAI uses the API key.
+          </p>
+
+          {/* Provider toggle */}
+          <div className="flex gap-3 mb-5">
+            {([
+              ['ollama', '🦙', 'Ollama (GPU)'] as const,
+              ['openai', '✦', 'OpenAI API'] as const,
+            ]).map(([val, icon, name]) => (
+              <button
+                key={val}
+                onClick={() => setPgProvider(val)}
+                className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm transition-all ${
+                  pgProvider === val
+                    ? 'border-indigo-500/50 bg-indigo-500/10 text-white'
+                    : 'border-white/[0.08] bg-white/[0.03] text-white/50 hover:border-white/20 hover:text-white/70'
+                }`}
+              >
+                <span>{icon}</span>
+                {name}
+              </button>
+            ))}
+          </div>
+
+          {/* Ollama config */}
+          {pgProvider === 'ollama' && (
+            <div className="space-y-4">
+              <div>
+                <label className={label}>Ollama Base URL</label>
+                <input
+                  className={input}
+                  value={ollamaBaseUrl}
+                  onChange={(e) => setOllamaBaseUrl(e.target.value)}
+                  placeholder="http://192.168.x.x:11434"
+                />
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Remote GPU over VPN — set the full URL including port, e.g.{' '}
+                  <code className="text-white/40">http://192.168.10.5:11434</code>. 
+                  Also configurable via <code className="text-white/40">OLLAMA_BASE_URL</code> in <code className="text-white/40">.env</code>.
+                </p>
+              </div>
+              <div>
+                <label className={label}>Model</label>
+                <select
+                  className={input}
+                  value={pgOllamaModel}
+                  onChange={(e) => setPgOllamaModel(e.target.value)}
+                >
+                  {[
+                    'llama3.1:8b',
+                    'llama3.2:3b',
+                    'llama3:latest',
+                    'qwen2.5:7b',
+                    'qwen2.5-coder:32b',
+                    'gemma3:4b',
+                    'mistral-nemo:latest',
+                    'ibm/granite-docling:latest',
+                    'nomic-embed-text:latest',
+                  ].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Default: <span className="text-white/40">llama3.1:8b</span>. All models listed are available on the remote GPU.
+                </p>
+              </div>
+              <div>
+                <label className={label}>Request Timeout (seconds)</label>
+                <input
+                  type="number" min={30} max={1200}
+                  className={input}
+                  value={ollamaTimeout}
+                  onChange={(e) => setOllamaTimeout(Number(e.target.value))}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* OpenAI config */}
+          {pgProvider === 'openai' && (
+            <div className="space-y-4">
+              <div>
+                <label className={label}>OpenAI Model</label>
+                <input
+                  className={input}
+                  value={pgOpenAIModel}
+                  onChange={(e) => setPgOpenAIModel(e.target.value)}
+                  placeholder="gpt-4.1-mini"
+                />
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Any OpenAI chat model, e.g. <code className="text-white/40">gpt-4.1-mini</code>, <code className="text-white/40">gpt-4.1</code>, <code className="text-white/40">o3</code>.
+                  The API key is configured under <span className="text-white/40">VCS / Git → GitHub Authentication</span> or the <code className="text-white/40">OPENAI_API_KEY</code> env var.
+                </p>
               </div>
             </div>
           )}
@@ -2147,7 +2328,7 @@ export default function SettingsView() {
                   </select>
                   <button
                     type="button"
-                    disabled={adoProjectsLoading || !adoOrg || !adoToken || adoToken.startsWith('***')}
+                    disabled={adoProjectsLoading || !adoOrg}
                     onClick={() => fetchAdoProjects(adoOrg, adoToken)}
                     className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
                   >
@@ -2170,7 +2351,7 @@ export default function SettingsView() {
             </div>
             <div className="flex gap-2">
               <button
-                disabled={reqValidating || !adoOrg || !adoToken || !adoProject}
+                disabled={reqValidating || !adoOrg || !adoProject}
                 onClick={async () => {
                   setReqValidationResult(null); setReqError(''); setReqValidating(true);
                   try {

@@ -117,3 +117,26 @@ body {
   :root { --sidebar-w: 48px; }
   .sidebar-label { display: none; }
 }
+
+/* ─── Select / dropdown — always dark, readable in any OS theme ─────────── */
+/*
+ * `color-scheme: dark` tells Chromium/Edge/Firefox to render the native
+ * select popup in dark mode regardless of the OS system theme.
+ * The explicit option colours serve as a fallback for browsers that support
+ * option background/color CSS (Chrome on Windows does).
+ */
+select {
+  color-scheme: dark;
+  color: var(--text-primary);
+  background-color: var(--bg-surface);
+}
+select option {
+  background-color: var(--bg-surface);
+  color: var(--text-primary);
+}
+select option:hover,
+select option:focus,
+select option:checked {
+  background-color: #6366f1;
+  color: #ffffff;
+}
