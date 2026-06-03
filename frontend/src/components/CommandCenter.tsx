@@ -51,7 +51,10 @@ const CLI_ICON: Record<CliToolKey, string> = {
 const TOOL_MODELS: Record<CliToolKey, string[]> = {
   codex: [
     // GPT-5 family
+    'gpt-5.5', 'gpt-5.4', 'gpt-5.3',
+    'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.2-codex-mini',
     'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.1-codex-mini',
+    'gpt-5', 'gpt-5-mini',
     // GPT-4.1 family
     'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
     // o-series reasoning
@@ -88,9 +91,17 @@ const TOOL_MODELS: Record<CliToolKey, string[]> = {
     'deepseek-coder-v2', 'deepseek-v2.5',
   ],
   copilot: [
-    'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
-    'claude-sonnet-4-20250514', 'claude-opus-4-20250514',
-    'gemini-2.5-pro', 'o4-mini', 'o3-mini',
+    // GPT-5 (chat models — codex variants use a different internal endpoint)
+    'gpt-5.2',
+    'gpt-5-mini',
+    // GPT-4 family
+    'gpt-4.1', 'gpt-4.1-2025-04-14',
+    'gpt-4o', 'gpt-4o-2024-11-20', 'gpt-4o-2024-08-06', 'gpt-4o-mini',
+    'gpt-4', 'gpt-3.5-turbo',
+    // Anthropic Claude
+    'claude-haiku-4.5',
+    // Google Gemini
+    'gemini-3.1-pro-preview', 'gemini-2.5-pro',
   ],
 };
 
@@ -140,9 +151,11 @@ interface CliCardProps {
 }
 
 function CliCard({ toolKey, toolStatus, isSelected, terminalState, onClick }: CliCardProps) {
-  // Only show 'running' if this specific tool is the active one
+  // Only show 'running' if this specific tool is confirmed as the active one.
+  // When activeTool is null (no tool info from backend) only the currently
+  // selected (isSelected) card shows running, to avoid all cards lighting up.
   const isActiveForTool = terminalState?.status === 'running' &&
-    (terminalState.activeTool === toolKey || terminalState.activeTool === null);
+    (terminalState.activeTool === toolKey || (terminalState.activeTool === null && isSelected));
   const runStatus = isActiveForTool ? 'running' : (terminalState?.status === 'running' ? 'idle' : (terminalState?.status ?? 'idle'));
   const isRunning = runStatus === 'running';
 
@@ -388,6 +401,7 @@ interface PromptEditorProps {
   iteration: number;
   selectedTool: CliToolKey;
   selectedModel: string;
+  availableModels: string[];
   toolStatuses: CliToolStatus[];
   onContentChange: (v: string) => void;
   onApprove: () => void;
@@ -400,7 +414,7 @@ interface PromptEditorProps {
 
 function PromptEditor({
   content, isLoading, pipelineStatus, iteration,
-  selectedTool, selectedModel, toolStatuses,
+  selectedTool, selectedModel, availableModels, toolStatuses,
   onContentChange, onApprove, onRetryPromptGenerator, onToolSelect, onModelSelect,
   promptGenFailed, promptGenError,
 }: PromptEditorProps) {
@@ -534,7 +548,7 @@ function PromptEditor({
             disabled={selectorsLocked}
             className="px-2 py-1.5 rounded-lg text-xs bg-[var(--bg-secondary)] border border-[var(--border-glass)] text-slate-300 disabled:opacity-40 cursor-pointer font-mono"
           >
-            {(TOOL_MODELS[selectedTool] ?? []).map((m) => (
+            {availableModels.map((m) => (
               <option key={m} value={m}>{m}</option>
             ))}
           </select>
@@ -922,9 +936,15 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
       setCodeReviewFailed(!!statusRes.metadata?.code_review_failed);
       setCodeReviewError((statusRes.metadata?.code_review_error as string) || '');
       if (promptRes && promptRes.content) {
-        if (!promptUserModifiedRef.current) {
+        // Always update when iteration advances (new prompt from code review loop).
+        // Only suppress if user manually edited the *current* iteration.
+        const isNewIteration = promptRes.iteration > promptIteration;
+        if (isNewIteration || !promptUserModifiedRef.current) {
           setPromptContent(promptRes.content);
           setPromptIteration(promptRes.iteration);
+          if (isNewIteration) {
+            promptUserModifiedRef.current = false;
+          }
         }
       }
       if (reviewRes && reviewRes.content) {
@@ -936,10 +956,17 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
           return c;
         })();
         setReviewContent(pretty);
-        setReviewIteration(reviewRes.iteration);
         setReviewOriginalContent(pretty);
-        if (!reviewUserModifiedRef.current) {
+        // Always update the Monaco editor when a new iteration arrives (new review
+        // from backend after a retry loop). Only suppress if user is editing the
+        // *current* iteration.
+        const isNewReviewIteration = reviewRes.iteration > reviewIteration;
+        if (isNewReviewIteration || !reviewUserModifiedRef.current) {
           setReviewEditedContent(pretty);
+          setReviewIteration(reviewRes.iteration);
+          if (isNewReviewIteration) {
+            reviewUserModifiedRef.current = false;
+          }
         }
       }
     } catch {
@@ -961,6 +988,19 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
       .then((res) => setToolStatuses(res.tools))
       .catch(() => {});
   }, []);
+
+  // When CODE_GEN_FAILED banner is shown, ensure selectedTool is an available tool
+  useEffect(() => {
+    if (pipelineStatus !== 'CODE_GEN_FAILED' || toolStatuses.length === 0) return;
+    const currentTs = toolStatuses.find((t) => t.key === selectedTool);
+    if (!currentTs?.available) {
+      const firstReady = CLI_TOOL_KEYS.find((k) => toolStatuses.find((t) => t.key === k)?.available);
+      if (firstReady) {
+        setSelectedTool(firstReady);
+        setSelectedModel(TOOL_MODELS[firstReady]?.[0] ?? '');
+      }
+    }
+  }, [pipelineStatus, toolStatuses]);
 
   // Immediately update state from WebSocket pipeline events — no poll needed
   const prevMsgLen = useRef(0);
@@ -1032,7 +1072,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     setIsLoading(true);
     setError(null);
     try {
-      await api.approvePrompt(promptContent, selectedTool);
+      await api.approvePrompt(promptContent, selectedTool, selectedModel);
       setActiveTool(selectedTool);
       await refresh();
     } catch (e) {
@@ -1173,7 +1213,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     setIsLoading(true);
     setError(null);
     try {
-      await api.retryCodeGenerator();
+      await api.retryCodeGenerator(selectedTool, selectedModel);
       await refresh();
     } catch (e) {
       setError(String(e));
@@ -1279,6 +1319,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             iteration={promptIteration}
             selectedTool={selectedTool}
             selectedModel={selectedModel}
+            availableModels={TOOL_MODELS[selectedTool] ?? []}
             toolStatuses={toolStatuses}
             onContentChange={handlePromptEdit}
             onApprove={handleApprovePrompt}
@@ -1334,16 +1375,47 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             )}
           </div>
           {pipelineStatus === 'CODE_GEN_FAILED' && (
-            <div className="mb-2 shrink-0 px-3 py-2 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
-              <span>⚠</span>
-              <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
-              <button
-                onClick={handleRetryCodeGenerator}
-                disabled={isLoading}
-                className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
-              >
-                Retry Code Generator
-              </button>
+            <div className="mb-2 shrink-0 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex flex-col gap-2">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5">⚠</span>
+                <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
+              </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-rose-300/70 shrink-0">Change tool/model before retrying:</span>
+                <select
+                  value={selectedTool}
+                  onChange={(e) => {
+                    const t = e.target.value as CliToolKey;
+                    setSelectedTool(t);
+                    setSelectedModel(TOOL_MODELS[t]?.[0] ?? '');
+                  }}
+                  className="flex-1 min-w-[110px] rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs"
+                >
+                  {CLI_TOOL_KEYS.filter((k) => {
+                    const ts = toolStatuses.find((t) => t.key === k);
+                    // If status not yet loaded, show all; otherwise only ready tools
+                    return !ts || ts.available;
+                  }).map((k) => (
+                    <option key={k} value={k}>{CLI_DISPLAY[k]}</option>
+                  ))}
+                </select>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="flex-1 min-w-[140px] rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs"
+                >
+                  {(TOOL_MODELS[selectedTool] ?? []).map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleRetryCodeGenerator}
+                  disabled={isLoading}
+                  className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+                >
+                  Retry
+                </button>
+              </div>
             </div>
           )}
           {pipelineStatus === 'CODE_GEN_STOPPED' && (

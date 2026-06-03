@@ -355,21 +355,74 @@ class CodeReviewerRunner:
         emit: Callable[[str], None],
         story_context: Optional[dict] = None,
     ) -> str:
-        """Stream LLM review of the diff; return the full raw text."""
-        api_key = (
-            getattr(self._config.secrets, "openai_api_key", "") or ""
-            or os.environ.get("OPENAI_API_KEY", "")
-        )
-        if not api_key:
-            emit("[code-reviewer] No OpenAI API key — cannot run review")
-            return ""
+        """Stream LLM review of the diff; return the full raw text.
 
-        model = (
-            self._config.codex.model_routing.get("CODE_REVIEWER")
-            or self._config.codex.model
-            or "gpt-4.1-mini"
-        )
-        emit(f"[code-reviewer] Streaming review via {model} …")
+        Supports three providers (config.code_reviewer.provider):
+          - "openai"  — OpenAI API (requires OPENAI_API_KEY)
+          - "copilot" — GitHub Copilot via models.inference.ai.azure.com (requires GITHUB_TOKEN)
+          - "ollama"  — Ollama local/remote API
+        """
+        cr_cfg = getattr(self._config, "code_reviewer", None)
+        provider = (cr_cfg.provider if cr_cfg else None) or "openai"
+
+        # ── Determine base_url, api_key, model ────────────────────────────
+        if provider == "copilot":
+            base_url = "https://api.githubcopilot.com"
+            # Prefer the gh CLI OAuth token (required by Copilot API — PATs are rejected).
+            # Strip GITHUB_TOKEN/GH_TOKEN from the env before calling gh so it reads
+            # its stored OAuth credential instead of echoing back the PAT.
+            _gh_oauth = ""
+            try:
+                import subprocess as _sp
+                _clean = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+                _r = _sp.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5, env=_clean)
+                if _r.returncode == 0:
+                    _gh_oauth = _r.stdout.strip()
+            except Exception:
+                pass
+            api_key = (
+                _gh_oauth
+                # Settings UI → AI Tools → Copilot token (second priority)
+                or (getattr(getattr(self._config, "ai_tools", None), "copilot", None)
+                    and self._config.ai_tools.copilot.api_key)
+                # secrets.github_token from config.yaml
+                or getattr(self._config.secrets, "github_token", "")
+                # inherited env var
+                or os.environ.get("GITHUB_TOKEN", "")
+                or ""
+            )
+            model = (cr_cfg.model if cr_cfg else "") or "gpt-4.1-mini"
+            if not api_key:
+                emit("[code-reviewer] No GITHUB_TOKEN — cannot run Copilot review")
+                return ""
+
+        elif provider == "ollama":
+            ollama_base = (
+                getattr(self._config.ollama, "base_url", "") or "http://localhost:11434"
+            )
+            base_url = ollama_base.rstrip("/") + "/v1"
+            api_key = "ollama"  # Ollama accepts any non-empty key via OpenAI compat layer
+            model = (cr_cfg.ollama_model if cr_cfg else "") or (
+                getattr(self._config.ollama, "model", "") or "llama3.1:8b"
+            )
+
+        else:  # "openai" (default)
+            base_url = "https://api.openai.com/v1"
+            api_key = (
+                getattr(self._config.secrets, "openai_api_key", "") or ""
+                or os.environ.get("OPENAI_API_KEY", "")
+            )
+            model = (
+                (cr_cfg.model if cr_cfg else "")
+                or self._config.codex.model_routing.get("CODE_REVIEWER")
+                or self._config.codex.model
+                or "gpt-4.1-mini"
+            )
+            if not api_key:
+                emit("[code-reviewer] No OpenAI API key — cannot run review")
+                return ""
+
+        emit(f"[code-reviewer] Streaming review via {provider}/{model} …")
 
         pr_title = pr_info.get("title", "")
         pr_url = pr_info.get("html_url", "")
@@ -421,7 +474,15 @@ class CodeReviewerRunner:
         try:
             import openai
 
-            client = openai.OpenAI(api_key=api_key)
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                default_headers={
+                    "Copilot-Integration-Id": "agent-os",
+                    "Editor-Version": "agent-os/1.0",
+                    "Editor-Plugin-Version": "agent-os/1.0",
+                } if provider == "copilot" else {},
+            )
             _no_temp = ("o1", "o3", "o4", "gpt-5")
             create_kwargs: dict = {
                 "model": model,
@@ -439,6 +500,8 @@ class CodeReviewerRunner:
             full: list[str] = []
             buf: list[str] = []
             for chunk in resp:
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
                 if not delta:
                     continue
@@ -457,9 +520,9 @@ class CodeReviewerRunner:
             return "".join(full).strip()
 
         except Exception as exc:
-            emit(f"[code-reviewer] OpenAI streaming failed: {exc}")
+            emit(f"[code-reviewer] LLM streaming failed: {exc}")
             logger.warning("Code review LLM failed (iter %d): %s", iteration, exc)
-            return ""
+            raise
 
     def _parse_review_json(
         self,

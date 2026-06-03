@@ -488,6 +488,221 @@ class OpenTerminalRequest(BaseModel):
     command: str
 
 
+# ── Copilot available-models endpoint ────────────────────────────────────────
+
+import re as _re
+
+# GitHub Copilot's own model catalog (requires Copilot OAuth token or PAT with copilot scope).
+_COPILOT_API_ENDPOINT   = "https://api.githubcopilot.com/models"
+# GitHub AI Models marketplace (full catalog — we filter it down, works with any PAT).
+_GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com/models"
+
+# Authoritative list of chat-completion models available on GitHub Copilot
+# Free / Student / Pro as of 2026-05.  This is ALWAYS shown as the baseline —
+# the API calls add/discover any extras on top of this list.
+_COPILOT_DEFAULT_MODELS: list[str] = [
+    # OpenAI GPT-4.1 family
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    # OpenAI GPT-4o family
+    "gpt-4o",
+    "gpt-4o-mini",
+    # OpenAI o-series reasoning
+    "o4-mini",
+    "o3",
+    "o3-mini",
+    "o1",
+    "o1-mini",
+    # Anthropic Claude 4.x family
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-haiku-4-5",
+    "claude-opus-4",
+    "claude-sonnet-4",
+    # Anthropic Claude 3.x family
+    "claude-3.7-sonnet",
+    "claude-3.5-sonnet",
+    "claude-3.5-haiku",
+    # Google Gemini
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
+
+# Name fragments that signal a non-chat model — always exclude.
+_NON_CHAT_NAME_FRAGMENTS = (
+    "embed", "classifier", "rerank",
+    "whisper", "dall-e", "tts", "speech",
+)
+
+# Task-type values that mean the model is NOT a chat-completion model.
+_NON_CHAT_TASKS = {
+    "embeddings", "text-embedding", "text-embeddings",
+    "fill-mask", "token-classification", "text-classification",
+    "image-to-text", "text-to-image", "image-generation",
+    "question-answering", "summarization", "translation",
+    "automatic-speech-recognition", "zero-shot-classification",
+    "feature-extraction",
+}
+
+
+def _extract_model_name(raw_id: str) -> str:
+    """Extract a clean, usable model name from a raw API model ID.
+
+    Handles AzureML registry URIs such as:
+    ``azureml://registries/azure-openai/models/gpt-4o/versions/2``  →  ``gpt-4o``
+    """
+    raw_id = raw_id.strip()
+    if raw_id.startswith("azureml://"):
+        m = _re.search(r"/models/([^/]+)/versions/", raw_id)
+        if m:
+            return m.group(1)
+    return raw_id
+
+
+def _is_chat_model(item: dict, name: str) -> bool:
+    """Return True only when the model is a chat-completion model."""
+    task = item.get("task") or item.get("capabilities") or ""
+    if isinstance(task, list):
+        task = " ".join(task)
+    if any(t in task.lower() for t in _NON_CHAT_TASKS):
+        return False
+    name_lower = name.lower()
+    if any(frag in name_lower for frag in _NON_CHAT_NAME_FRAGMENTS):
+        return False
+    return True
+
+
+def _is_copilot_provider(item: dict, name: str) -> bool:
+    """Return True for models from providers covered by GitHub Copilot."""
+    _ok_publishers = {"openai", "azure-openai", "anthropic", "google", "microsoft"}
+    publisher = (
+        item.get("publisher") or item.get("publisher_name") or item.get("vendor") or ""
+    ).lower()
+    if publisher in _ok_publishers:
+        return True
+    raw_id = (item.get("id") or "").lower()
+    if "openai" in raw_id or "anthropic" in raw_id or "google" in raw_id:
+        return True
+    name_lower = name.lower()
+    ok_prefixes = ("gpt-", "o1", "o3", "o4", "claude-", "gemini-")
+    return any(name_lower.startswith(p) for p in ok_prefixes)
+
+
+def _sort_models(models: list[str]) -> list[str]:
+    def _key(m: str) -> tuple[int, str]:
+        ml = m.lower()
+        if ml.startswith("gpt-5"):   return (0, ml)
+        if ml.startswith("gpt-4"):   return (1, ml)
+        if ml.startswith("o4"):      return (2, ml)
+        if ml.startswith("o3"):      return (3, ml)
+        if ml.startswith("o"):       return (4, ml)
+        if ml.startswith("claude"):  return (5, ml)
+        if ml.startswith("gemini"):  return (6, ml)
+        return (9, ml)
+    return sorted(models, key=_key)
+
+
+def _extract_from_api_items(items: list) -> list[str]:
+    """Sanitize and filter a raw API model list down to usable chat-completion model ids."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        raw_id   = item.get("id") or ""
+        raw_name = item.get("name") or ""
+        mid = _extract_model_name(raw_name) or _extract_model_name(raw_id)
+        if not mid or mid in seen:
+            continue
+        if not _is_copilot_provider(item, mid):
+            continue
+        if not _is_chat_model(item, mid):
+            continue
+        seen.add(mid)
+        out.append(mid)
+    return out
+
+
+def _merge_models(api_models: list[str], baseline: list[str]) -> list[str]:
+    """Merge API-discovered models with the known baseline.
+
+    API models that are already in the baseline keep the baseline name (preserving
+    known-good casing/format).  Unknown extra models from the API are appended.
+    The result is sorted by provider priority.
+    """
+    # Normalise for case-insensitive dedup
+    baseline_lower = {m.lower(): m for m in baseline}
+    merged: dict[str, str] = dict(baseline_lower)  # lower → canonical name
+
+    for m in api_models:
+        ml = m.lower()
+        if ml not in merged:
+            merged[ml] = m  # new model discovered via API
+
+    return _sort_models(list(merged.values()))
+
+
+@router.get("/copilot-models")
+async def get_copilot_models():
+    """Return chat-completion models for this GitHub Copilot account.
+
+    Strategy:
+    1. Try ``api.githubcopilot.com/models`` (Copilot-native, returns only
+       subscription models for the authenticated account).
+    2. On failure / empty result, try ``models.inference.ai.azure.com/models``
+       (full marketplace, filtered to Copilot providers).
+    3. The result is always *merged with the hard-coded baseline* so the user
+       never sees an incomplete list just because an API call returned a subset.
+    """
+    # Always start with the full known list
+    baseline = list(_COPILOT_DEFAULT_MODELS)
+
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        return {"models": baseline, "source": "fallback"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+            # ── 1. Copilot-native API ──────────────────────────────────────
+            api_models: list[str] = []
+            try:
+                resp = await client.get(_COPILOT_API_ENDPOINT, headers=headers)
+                logger.info("Copilot API status: %d", resp.status_code)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    items = data if isinstance(data, list) else data.get("data", data.get("models", []))
+                    api_models = _extract_from_api_items(items)
+                    logger.info("Copilot API returned %d usable models", len(api_models))
+            except Exception as exc:
+                logger.warning("Copilot API call failed: %s", exc)
+
+            # ── 2. Marketplace fallback (adds anything not in Copilot API) ─
+            if not api_models:
+                try:
+                    resp2 = await client.get(_GITHUB_MODELS_ENDPOINT, headers=headers)
+                    logger.info("Marketplace API status: %d", resp2.status_code)
+                    if resp2.status_code == 200:
+                        data2 = resp2.json()
+                        items2 = data2 if isinstance(data2, list) else data2.get("data", data2.get("models", []))
+                        api_models = _extract_from_api_items(items2)
+                        logger.info("Marketplace API returned %d usable models", len(api_models))
+                except Exception as exc2:
+                    logger.warning("Marketplace API call failed: %s", exc2)
+
+            # Always merge with baseline so user sees the full known catalog
+            merged = _merge_models(api_models, baseline)
+            source = "api_merged" if api_models else "fallback"
+            return {"models": merged, "source": source}
+
+    except Exception as exc:
+        logger.warning("Could not fetch Copilot models: %s — using defaults", exc)
+
+    return {"models": baseline, "source": "fallback"}
+
+
 @router.post("/open-terminal")
 def open_in_terminal_route(body: OpenTerminalRequest):
     """Open any shell command in the user's native terminal emulator."""

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..codex.cli_adapter import API_TOOLS
 from ..codex.session import CodexResult, SessionType
 from ..codex.wrapper import CodexWrapper
 from ..config.schema import AgentOSConfig
@@ -75,6 +76,10 @@ class CodeGeneratorRunner:
             model_routing=config.codex.model_routing,
             default_model=config.codex.model,
             cli_routing=config.codex.cli_routing,
+            github_token=(
+                getattr(getattr(config, "ai_tools", None), "copilot", None) and
+                config.ai_tools.copilot.api_key
+            ) or config.secrets.github_token or "",
         )
 
     # ── Public interface ───────────────────────────────────────────────────
@@ -112,9 +117,29 @@ class CodeGeneratorRunner:
         if not prompt_path.exists():
             raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
 
-        prompt_text = self._build_prompt(prompt_path, iteration)
+        # Determine the actual CLI tool being used (for labelling + api-tool file writing)
+        _tool = self._codex._cli_routing.get(SessionType.CODE_GENERATOR.value, "codex")
+        _tool_label = _tool.capitalize() if _tool not in ("codex",) else "Codex"
+        try:
+            from ..codex.cli_adapter import TOOL_LABELS
+            _tool_label = TOOL_LABELS.get(_tool, _tool_label)
+        except ImportError:
+            pass
+
+        prompt_text = self._build_prompt(prompt_path, iteration, api_tool=_tool in API_TOOLS)
         codex_result = self._execute(prompt_text, working_dir, on_stdout=on_stdout, on_stderr=on_stderr)
         completion = detect_completion(codex_result.exit_code, working_dir, codex_result.timed_out)
+
+        # For API-backed tools (copilot, gemini, …) the subprocess only streams
+        # text to stdout — it has no agentic file-write capability.  Parse the
+        # LLM's response for FILE blocks and write them to the working directory.
+        if completion.status == CompletionStatus.COMPLETE and _tool in API_TOOLS:
+            _file_write_errors = self._apply_llm_file_output(
+                codex_result.stdout, working_dir, on_stdout
+            )
+            if _file_write_errors:
+                for _e in _file_write_errors:
+                    logger.warning("[%s] file-write error: %s", _tool_label, _e)
 
         summary = consume_summary(working_dir)  # no-op; kept for API compatibility
 
@@ -125,12 +150,13 @@ class CodeGeneratorRunner:
             retried=False,
         )
 
-        # Only run git ops when Codex succeeded
+        # Only run git ops when the tool succeeded
         if completion.status == CompletionStatus.COMPLETE:
             if getattr(self._config, "pipeline_mode", "standard") == "github_review":
                 git_errors = self._git_operations_fork_mode(
                     working_dir, iteration, pr_number, result,
                     story_context=story_context or {},
+                    tool_label=_tool_label,
                 )
             else:
                 git_errors = self._git_operations(working_dir, iteration, pr_number, result)
@@ -140,6 +166,57 @@ class CodeGeneratorRunner:
 
     # ── Git / GitHub operations (fork mode — GitHub Review) ───────────────────
 
+    # ── API-tool file output parser ─────────────────────────────────────────
+
+    _FILE_BLOCK_RE = None  # compiled lazily
+
+    def _apply_llm_file_output(
+        self,
+        stdout: str,
+        working_dir: Path,
+        emit: Optional[Callable[[str], None]] = None,
+    ) -> list[str]:
+        """Parse FILE blocks from LLM stdout and write them to *working_dir*.
+
+        Expects blocks of the form::
+
+            ### FILE: relative/path/to/file.ext
+            ```
+            ...content...
+            ```
+
+        Returns a list of error strings (empty = all OK).
+        """
+        import re
+        if CodeGeneratorRunner._FILE_BLOCK_RE is None:
+            CodeGeneratorRunner._FILE_BLOCK_RE = re.compile(
+                r'###\s+FILE:\s+(\S+)\s*\n```[^\n]*\n(.*?)```',
+                re.DOTALL,
+            )
+        root = working_dir.resolve()
+        errors: list[str] = []
+        written: list[str] = []
+        for m in CodeGeneratorRunner._FILE_BLOCK_RE.finditer(stdout):
+            rel_path = m.group(1).strip().lstrip("/\\").replace("\\", "/")
+            content = m.group(2)
+            target = (root / rel_path).resolve()
+            # Security: never write outside working_dir
+            try:
+                target.relative_to(root)
+            except ValueError:
+                errors.append(f"Skipped unsafe path: {rel_path}")
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            written.append(rel_path)
+            if emit:
+                emit(f"[code-generator] wrote {rel_path}")
+        if written:
+            logger.info("[api-tool] Wrote %d file(s): %s", len(written), ", ".join(written))
+        else:
+            logger.warning("[api-tool] LLM output contained no ### FILE: blocks")
+        return errors
+
     def _git_operations_fork_mode(
         self,
         working_dir: Path,
@@ -147,6 +224,7 @@ class CodeGeneratorRunner:
         pr_number: Optional[int],
         result: CodeGenResult,
         story_context: dict | None = None,
+        tool_label: str = "AI tool",
     ) -> list[str]:
         """Fork-aware git ops for GitHub Review mode.
 
@@ -195,6 +273,14 @@ class CodeGeneratorRunner:
         git.set_user(_BOT_NAME, _BOT_EMAIL)
 
         if iteration == 1:
+            # Stash Codex's generated changes so we can safely reset to origin/main
+            # without losing them.  We restore them after the feature branch is set up.
+            _has_codex_changes = git.has_changes()
+            _stashed = False
+            if _has_codex_changes:
+                stash_r = git._run("stash", "push", "--include-untracked", "-m", "codex-output")
+                _stashed = stash_r.success and "No local changes" not in stash_r.stdout
+
             # Fetch + reset to latest main so branch starts from a clean base
             git.fetch("origin", "main")
             if git.branch_exists("main"):
@@ -217,6 +303,13 @@ class CodeGeneratorRunner:
                     errors.append(f"create branch {feature_branch} failed: {r.stderr}")
                     return errors
 
+            # Restore Codex's generated changes onto the feature branch
+            if _stashed:
+                pop_r = git._run("stash", "pop")
+                if not pop_r.success:
+                    logger.warning("[GHR] stash pop failed — trying stash apply: %s", pop_r.stderr)
+                    git._run("stash", "apply")
+
             # Commit all changes
             commit_msg = (
                 f"feat({feature_branch}): AI-generated implementation"
@@ -224,7 +317,23 @@ class CodeGeneratorRunner:
                 else f"feat({story_id}): {story_title or 'AI-generated implementation'}"
             )
             self._sanitise_before_commit(working_dir, git)
-            git.commit_all(commit_msg)
+            commit_r = git.commit_all(commit_msg)
+            _nothing_committed = "nothing to commit" in (commit_r.stdout or "")
+            if _nothing_committed:
+                logger.warning("[GHR] commit_all returned 'nothing to commit' for story %s iter 1 "
+                               "— %s may not have written any files", story_id, tool_label)
+                # Check if an existing PR already covers this branch before erroring out
+                existing_pr = gh.find_open_pr(feature_branch)
+                if existing_pr:
+                    result.pr_number = existing_pr
+                    logger.info("[GHR] Nothing new to commit but PR #%d already exists — proceeding",
+                                existing_pr)
+                    return errors
+                errors.append(
+                    f"{tool_label} produced no file changes — nothing to commit. "
+                    "The prompt may need to be more specific or the model changed."
+                )
+                return errors
 
             # Push story branch
             r = git.push_upstream(feature_branch)
@@ -619,7 +728,26 @@ class CodeGeneratorRunner:
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
-    def _build_prompt(self, prompt_path: Path, iteration: int) -> str:
+    _API_TOOL_FILE_FORMAT_INSTRUCTIONS = """
+## FILE OUTPUT FORMAT — REQUIRED
+This tool streams its output directly; it does NOT have automatic file-write
+capability.  You MUST output every file you create or modify using EXACTLY
+this block format (one block per file):
+
+### FILE: relative/path/from/project/root/filename.ext
+```
+full file content here
+```
+
+Rules:
+- The path is relative to the project root — no leading slash.
+- Put the ENTIRE file content inside the code fence, not just the changed lines.
+- After all FILE blocks you may include a brief plain-text summary.
+- Do NOT use any other format for outputting file contents.
+"""
+
+    def _build_prompt(self, prompt_path: Path, iteration: int,
+                      api_tool: bool = False) -> str:
         """Prepend identity preamble and guardrails to the prompt file."""
         module_prompt = prompt_path.read_text(encoding="utf-8")
         parts: list[str] = []
@@ -627,9 +755,11 @@ class CodeGeneratorRunner:
             preamble = self._identity_ctx.build_preamble()
             if preamble:
                 parts.append(preamble)
-        # Inject current iteration number so Codex knows which rules apply
+        # Inject current iteration number so the tool knows which rules apply
         parts.append(f"<!-- Agent OS: iteration={iteration} -->")
         parts.append(GUARDRAIL_PROMPT)
+        if api_tool:
+            parts.append(self._API_TOOL_FILE_FORMAT_INSTRUCTIONS)
         parts.append(module_prompt)
         return "\n\n".join(parts)
 

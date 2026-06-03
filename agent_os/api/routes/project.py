@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -118,7 +119,13 @@ def open_in_vscode(orch=Depends(get_orchestrator)):
     """Open the project folder in VS Code."""
     root = _get_project_root(orch)
     try:
-        subprocess.Popen(["code", str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # On Windows, 'code' is 'code.cmd' — a batch file that requires shell=True
+        subprocess.Popen(
+            ["code", str(root)],
+            shell=sys.platform == "win32",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         return OpenResponse(success=True, message=f"Opened {root} in VS Code")
     except FileNotFoundError:
         return OpenResponse(success=False, message="'code' command not found. Install VS Code CLI.")
@@ -128,11 +135,16 @@ def open_in_vscode(orch=Depends(get_orchestrator)):
 
 @router.post("/open-in-finder", response_model=OpenResponse)
 def open_in_finder(orch=Depends(get_orchestrator)):
-    """Open the project folder in Finder / file explorer."""
+    """Open the project folder in Finder / Explorer."""
     root = _get_project_root(orch)
     try:
-        subprocess.Popen(["open", str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return OpenResponse(success=True, message=f"Opened {root} in Finder")
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", str(root)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return OpenResponse(success=True, message=f"Opened {root} in Explorer")
     except Exception as exc:
         return OpenResponse(success=False, message=str(exc)[:200])
 

@@ -60,6 +60,7 @@ class CurrentReviewResponse(BaseModel):
 class ApprovePromptRequest(BaseModel):
     prompt_content: Optional[str] = None
     cli_tool: Optional[str] = None
+    cli_model: Optional[str] = None
 
 
 class RequirementResponse(BaseModel):
@@ -234,6 +235,13 @@ class PromptGeneratorSettingsResponse(BaseModel):
     openai_model: str = "gpt-4.1-mini"
 
 
+class CodeReviewerSettingsResponse(BaseModel):
+    """Code reviewer LLM provider selection."""
+    provider: str = "openai"       # "openai" | "copilot" | "ollama"
+    model: str = "gpt-4.1-mini"   # used for openai and copilot
+    ollama_model: str = "llama3.1:8b"
+
+
 class SettingsResponse(BaseModel):
     secrets: SecretsSettingsResponse = SecretsSettingsResponse()
     github: GitHubSettingsResponse = GitHubSettingsResponse()
@@ -247,6 +255,7 @@ class SettingsResponse(BaseModel):
     vcs: VCSSettingsResponse = VCSSettingsResponse()
     ollama: OllamaSettingsResponse = OllamaSettingsResponse()
     prompt_generator: PromptGeneratorSettingsResponse = PromptGeneratorSettingsResponse()
+    code_reviewer: CodeReviewerSettingsResponse = CodeReviewerSettingsResponse()
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -262,6 +271,7 @@ class SettingsUpdateRequest(BaseModel):
     vcs: Optional[VCSSettingsResponse] = None
     ollama: Optional[OllamaSettingsResponse] = None
     prompt_generator: Optional[PromptGeneratorSettingsResponse] = None
+    code_reviewer: Optional[CodeReviewerSettingsResponse] = None
 
 
 class TestGitHubRequest(BaseModel):

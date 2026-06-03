@@ -221,6 +221,20 @@ class PromptGeneratorConfig(BaseModel):
         return v
 
 
+class CodeReviewerConfig(BaseModel):
+    """Which LLM backend to use for code review."""
+    provider: str = "openai"          # "openai" | "copilot" | "ollama"
+    model: str = "gpt-4.1-mini"       # used for openai and copilot providers
+    ollama_model: str = "llama3.1:8b" # used when provider == "ollama"
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _valid_provider(cls, v: object) -> object:
+        if v not in ("openai", "copilot", "ollama"):
+            return "openai"
+        return v
+
+
 class AIToolCredential(BaseModel):
     """Auth config for a single AI coding tool CLI."""
     enabled: bool = False
@@ -274,6 +288,7 @@ class AgentOSConfig(BaseModel):
     vcs: VCSConfig = VCSConfig()
     ollama: OllamaConfig = OllamaConfig()
     prompt_generator: PromptGeneratorConfig = PromptGeneratorConfig()
+    code_reviewer: CodeReviewerConfig = CodeReviewerConfig()
 
     @field_validator("project")
     @classmethod

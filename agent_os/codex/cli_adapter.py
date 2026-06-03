@@ -107,14 +107,19 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "",
         return cmd
 
     if tool in API_TOOLS:
-        # Route through the unified api_adapter as a subprocess
+        # Route through the unified api_adapter as a subprocess.
+        # When use_stdin=True, pass '-' so the adapter reads the prompt from stdin
+        # (avoids the Windows 8191-char command-line length limit for large prompts).
         cmd = [
             sys.executable, "-m", "agent_os.codex.api_adapter",
             "--tool", tool,
-            "--prompt", prompt,
         ]
+        if not use_stdin:
+            cmd.extend(["--prompt", prompt])
         if model:
             cmd.extend(["--model", model])
+        if use_stdin:
+            cmd.append("--stdin")
         return cmd
 
     raise UnsupportedToolError(

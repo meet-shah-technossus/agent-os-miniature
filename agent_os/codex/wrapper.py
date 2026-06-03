@@ -59,6 +59,7 @@ class CodexWrapper:
         model_routing: dict[str, str] | None = None,
         default_model: str = "",
         cli_routing: dict[str, str] | None = None,
+        github_token: str = "",
     ) -> None:
         self._timeout = timeout_seconds
         self._max_retries = max_retries
@@ -67,6 +68,7 @@ class CodexWrapper:
         self._model_routing = model_routing or {}
         self._default_model = default_model
         self._cli_routing = cli_routing or {}
+        self._github_token = github_token
         self._active_sessions: dict[SessionType, CodexSession] = {}
 
     def execute(
@@ -129,7 +131,8 @@ class CodexWrapper:
         model = self._model_routing.get(session_type.value) or self._default_model
         start_time = time.monotonic()
         # On Windows pass the prompt via stdin to avoid the 8191-char cmd-line limit.
-        use_stdin_for_prompt = _IS_WINDOWS and tool.lower() in ("codex",)
+        # This applies to 'codex' and all api_adapter-backed tools (copilot, gemini, etc.)
+        use_stdin_for_prompt = _IS_WINDOWS
         try:
             cmd = build_command(tool, model, prompt, working_dir=str(working_dir),
                                 use_stdin=use_stdin_for_prompt)
@@ -154,6 +157,12 @@ class CodexWrapper:
         try:
             from ..config.env import build_codex_env
             env = build_codex_env(self._openai_api_key, self._project_root)
+
+            # Inject the configured GitHub token as GITHUB_TOKEN so that
+            # api_adapter-backed tools (copilot, etc.) use the account
+            # configured in Settings UI rather than any inherited VS Code terminal token.
+            if self._github_token:
+                env["GITHUB_TOKEN"] = self._github_token
 
             if _IS_WINDOWS:
                 # On Windows, npm/pip global CLIs are installed as .cmd wrappers.

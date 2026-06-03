@@ -43,6 +43,7 @@ class Orchestrator:
         # Stop-code-generation support
         self._code_gen_stop_requested = threading.Event()
         self._active_codex_wrapper = None  # CodexWrapper instance during code gen steps
+        self._loop_thread: Optional[threading.Thread] = None
 
         # WebSocket broadcast queue — populated by _emit(); drained by API layer
         self._ws_queue: Optional[asyncio.Queue] = None
@@ -386,7 +387,12 @@ class Orchestrator:
 
         import uuid as _uuid
         _pg_session = f"pg-{iteration}-{_uuid.uuid4().hex[:8]}"
-        model_pg = self.config.codex.model_routing.get("PROMPT_GENERATOR") or self.config.codex.default_model or ""
+        _pg_cfg = getattr(self.config, 'prompt_generator', None)
+        _pg_provider = getattr(_pg_cfg, 'provider', 'ollama')
+        if _pg_provider == 'openai':
+            model_pg = getattr(_pg_cfg, 'openai_model', None) or 'gpt-4.1-mini'
+        else:
+            model_pg = f"ollama/{getattr(_pg_cfg, 'ollama_model', None) or 'llama3.1:8b'}"
         self._emit_terminal("session_start", "PROMPT_GENERATOR", _pg_session,
                             iteration=iteration, module_id="", model=model_pg)
 
@@ -458,6 +464,10 @@ class Orchestrator:
         if cli_tool:
             self.config.codex.cli_routing["CODE_GENERATOR"] = cli_tool
             logger.info("CLI tool overridden to '%s' for code generation step", cli_tool)
+        cli_model = state.metadata.get("selected_cli_model")
+        if cli_model:
+            self.config.codex.model_routing["CODE_GENERATOR"] = cli_model
+            logger.info("Model overridden to '%s' for code generation step", cli_model)
 
         pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
@@ -728,7 +738,13 @@ class Orchestrator:
 
         import uuid as _uuid
         _cr_session = f"cr-{iteration}-{_uuid.uuid4().hex[:8]}"
-        _cr_model = self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
+        _cr_cfg = getattr(self.config, "code_reviewer", None)
+        _cr_provider = (getattr(_cr_cfg, "provider", None) or "openai") if _cr_cfg else "openai"
+        if _cr_provider == "ollama":
+            _cr_model = (getattr(_cr_cfg, "ollama_model", "") or "") if _cr_cfg else ""
+        else:
+            _cr_model = (getattr(_cr_cfg, "model", "") or "") if _cr_cfg else ""
+        _cr_model = _cr_model or self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
         self._emit_terminal("session_start", "CODE_REVIEWER", _cr_session,
                             iteration=iteration, module_id="", model=_cr_model)
 
@@ -1067,7 +1083,12 @@ class Orchestrator:
                     review_json = {"raw": str(review_raw)}
 
         _pg_session = f"pg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
-        model_pg = self.config.codex.model_routing.get("PROMPT_GENERATOR") or self.config.codex.default_model or ""
+        _pg_cfg = getattr(self.config, 'prompt_generator', None)
+        _pg_provider = getattr(_pg_cfg, 'provider', 'ollama')
+        if _pg_provider == 'openai':
+            model_pg = getattr(_pg_cfg, 'openai_model', None) or 'gpt-4.1-mini'
+        else:
+            model_pg = f"ollama/{getattr(_pg_cfg, 'ollama_model', None) or 'llama3.1:8b'}"
         self._emit_terminal("session_start", "PROMPT_GENERATOR", _pg_session,
                             story_id=story_id, iteration=story_iter, model=model_pg)
 
@@ -1156,6 +1177,11 @@ class Orchestrator:
         cli_tool = state.metadata.get("selected_cli_tool")
         if cli_tool:
             self.config.codex.cli_routing["CODE_GENERATOR"] = cli_tool
+            logger.info("[GHR] CLI tool overridden to '%s' for story code generation", cli_tool)
+        cli_model = state.metadata.get("selected_cli_model")
+        if cli_model:
+            self.config.codex.model_routing["CODE_GENERATOR"] = cli_model
+            logger.info("[GHR] Model overridden to '%s' for story code generation", cli_model)
 
         pr_number: Optional[int] = None
         if story_iter > 1:
@@ -1168,8 +1194,9 @@ class Orchestrator:
 
         _cg_session = f"cg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
         _cg_model = self.config.codex.model_routing.get("CODE_GENERATOR") or self.config.codex.default_model or ""
+        _cg_tool = cli_tool or self.config.codex.cli_routing.get("CODE_GENERATOR", "codex")
         self._emit_terminal("session_start", "CODE_GENERATOR", _cg_session,
-                            story_id=story_id, iteration=story_iter, model=_cg_model)
+                            story_id=story_id, iteration=story_iter, model=_cg_model, tool=_cg_tool)
         self._emit("code_generation_started", {"story_id": story_id, "story_iteration": story_iter})
 
         def _on_stdout(line: str) -> None:
@@ -1345,7 +1372,13 @@ class Orchestrator:
             return
 
         _cr_session = f"cr-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
-        _cr_model = self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
+        _cr_cfg_ghr = getattr(self.config, "code_reviewer", None)
+        _cr_provider_ghr = (getattr(_cr_cfg_ghr, "provider", None) or "openai") if _cr_cfg_ghr else "openai"
+        if _cr_provider_ghr == "ollama":
+            _cr_model = (getattr(_cr_cfg_ghr, "ollama_model", "") or "") if _cr_cfg_ghr else ""
+        else:
+            _cr_model = (getattr(_cr_cfg_ghr, "model", "") or "") if _cr_cfg_ghr else ""
+        _cr_model = _cr_model or self.config.codex.model_routing.get("CODE_REVIEWER") or self.config.codex.default_model or ""
         self._emit_terminal("session_start", "CODE_REVIEWER", _cr_session,
                             story_id=story_id, iteration=story_iter, model=_cr_model)
 
@@ -1373,9 +1406,13 @@ class Orchestrator:
         except Exception as exc:
             logger.exception("[GHR] Story code reviewer raised: %s", exc)
             self._emit_terminal("session_end", "CODE_REVIEWER", _cr_session, exit_code=1)
-            self.state_mgr.update_metadata({"code_review_error": str(exc)})
-            self.state_mgr.transition_to(PipelineStatus.FAILED)
-            self._emit("error", {"message": str(exc), "story_id": story_id})
+            err_msg = str(exc)
+            self.state_mgr.transition_to(
+                PipelineStatus.HITL_REVIEW_DECISION,
+                metadata={"code_review_failed": True, "code_review_error": err_msg},
+            )
+            self._emit("code_review_failed", {"story_id": story_id, "error": err_msg})
+            self._emit("hitl_gate", {"gate": PipelineStatus.HITL_REVIEW_DECISION.value})
             return
 
         review = run_result.review
@@ -1489,12 +1526,14 @@ class Orchestrator:
         self,
         prompt_content: Optional[str] = None,
         cli_tool: Optional[str] = None,
+        cli_model: Optional[str] = None,
     ) -> bool:
         """HITL checkpoint 1 — user approved the generated prompt.
 
         Args:
             prompt_content: Optional edited prompt text to persist.
             cli_tool: CLI tool name to use for code generation.
+            cli_model: Model override for the selected CLI tool.
 
         Returns True if gate was approved, False if not at the expected gate.
         """
@@ -1505,6 +1544,8 @@ class Orchestrator:
         metadata: dict[str, Any] = {}
         if cli_tool:
             metadata["selected_cli_tool"] = cli_tool
+        if cli_model:
+            metadata["selected_cli_model"] = cli_model
         if prompt_content is not None:
             metadata["edited_prompt"] = prompt_content
             # Persist to the configured prompt file path
@@ -1628,8 +1669,21 @@ class Orchestrator:
         vcs = _project_vcs()
         merged = False
         branch_deleted = False
+        comments_resolved = False
 
         if vcs and pr_number:
+            # 1. Resolve all open review comments / threads before merging
+            try:
+                resolve_results = vcs.resolve_all_pr_review_comments(pr_number)
+                comments_resolved = all(r.success for r in resolve_results) if resolve_results else True
+                logger.info(
+                    "[GHR] move_to_next_story: resolved %d comment threads on PR #%d",
+                    len(resolve_results), pr_number,
+                )
+            except Exception:
+                logger.warning("[GHR] move_to_next_story: resolve comments raised", exc_info=True)
+
+            # 2. Merge the PR
             try:
                 merge_result = vcs.merge_pr(
                     pr_number,
@@ -1665,8 +1719,12 @@ class Orchestrator:
         self.state_mgr.update_metadata({
             "pr_merged": str(merged),
             "branch_deleted": str(branch_deleted),
+            "comments_resolved": str(comments_resolved),
             "move_to_next_story_triggered": "true",
         })
+
+        # Close the ADO work item for this specific story (Active → Closed)
+        self._close_ado_work_items(story_id=story_id)
 
         self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
         self._emit("story_completed", {
@@ -2116,15 +2174,24 @@ class Orchestrator:
         self._resume_in_thread()
         return True
 
-    def retry_code_generator(self) -> bool:
+    def retry_code_generator(self, cli_tool: str = "", cli_model: str = "") -> bool:
         """Retry code generation after a failure.
 
         Only callable when at CODE_GEN_FAILED.
         Clears the failure flag and resumes from CODE_GENERATION.
+        Optionally overrides the CLI tool and model for this retry.
         """
         if self.state_mgr.current_status != PipelineStatus.CODE_GEN_FAILED:
             logger.warning("retry_code_generator() called but not at CODE_GEN_FAILED")
             return False
+        if cli_tool:
+            self.config.codex.cli_routing["CODE_GENERATOR"] = cli_tool
+            self.state_mgr.update_metadata({"selected_cli_tool": cli_tool})
+            logger.info("retry_code_generator: cli_tool overridden to '%s'", cli_tool)
+        if cli_model:
+            self.config.codex.model_routing["CODE_GENERATOR"] = cli_model
+            self.state_mgr.update_metadata({"selected_cli_model": cli_model})
+            logger.info("retry_code_generator: cli_model overridden to '%s'", cli_model)
         is_ghr = getattr(self.config, "pipeline_mode", "") == "github_review"
         next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
         self.state_mgr.transition_to(
@@ -2136,19 +2203,21 @@ class Orchestrator:
         return True
 
     def retry_code_reviewer(self) -> bool:
-        """Retry code review after a failure.
+        """Retry code review.
 
-        Only callable when at HITL_REVIEW_DECISION with code_review_failed metadata.
-        Clears the failure flag and resumes from CODE_REVIEW.
+        Callable whenever the pipeline is paused at HITL_REVIEW_DECISION —
+        covers both LLM failures (code_review_failed=True) and the normal
+        "needs_work" rejection path where the user wants to re-run the review
+        (e.g. after changing the code-reviewer provider/model in Settings).
         """
         if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
             logger.warning("retry_code_reviewer() called but not at HITL_REVIEW_DECISION")
             return False
-        if not self.state_mgr.state.metadata.get("code_review_failed"):
-            logger.warning("retry_code_reviewer() called but code_review_failed not set")
-            return False
+        # Determine the correct review status for the current pipeline mode.
+        _is_ghr = (self.config.pipeline_mode == "github_review")
+        _review_status = PipelineStatus.STORY_CODE_REVIEW if _is_ghr else PipelineStatus.CODE_REVIEW
         self.state_mgr.transition_to(
-            PipelineStatus.CODE_REVIEW,
+            _review_status,
             metadata={"code_review_failed": False, "code_review_error": ""},
         )
         self._emit("state_changed", {"retry": "code_reviewer"})
@@ -2365,8 +2434,12 @@ class Orchestrator:
         """Re-start the run loop in a daemon thread (called after HITL approval)."""
         self._stop_event.clear()
         self._pause_event.clear()
-        t = threading.Thread(target=self._loop, daemon=True, name="orchestrator-loop")
-        t.start()
+        # Guard: don't spawn a second thread if one is already running
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            logger.warning("_resume_in_thread: loop thread already running — skipping duplicate start")
+            return
+        self._loop_thread = threading.Thread(target=self._loop, daemon=True, name="orchestrator-loop")
+        self._loop_thread.start()
 
     # ── Status helpers ────────────────────────────────────────────────────────
 

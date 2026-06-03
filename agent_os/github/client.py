@@ -398,9 +398,22 @@ mutation ResolveThread($threadId: ID!) {
     # ── Branch operations ─────────────────────────────────────────
 
     def delete_branch(self, branch: str) -> GitHubResult:
-        """Delete a remote branch by name (e.g. ``dev``, ``feature/agent-os``)."""
+        """Delete a remote branch by name (e.g. ``dev``, ``feature/agent-os``).
+
+        Treats a 422 "Reference does not exist" response as success — this
+        happens when GitHub auto-deleted the branch after PR merge.
+        """
         logger.info("Deleting remote branch: %s", branch)
-        return self._request("DELETE", f"/git/refs/heads/{branch}")
+        result = self._request("DELETE", f"/git/refs/heads/{branch}")
+        if not result.success and result.status_code == 422:
+            msg = result.error or ""
+            if "does not exist" in msg.lower() or "reference" in msg.lower():
+                logger.info(
+                    "Branch '%s' already deleted (422 Reference does not exist) — treating as success",
+                    branch,
+                )
+                return GitHubResult(success=True, status_code=200, data={}, error="")
+        return result
 
     def get_pr_head_sha(self, pr_number: int) -> Optional[str]:
         """Return the head commit SHA of a PR, or None on failure."""

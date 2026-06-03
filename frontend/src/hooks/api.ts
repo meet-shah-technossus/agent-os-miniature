@@ -137,13 +137,14 @@ export const api = {
       body: JSON.stringify(gate ? { gate } : {}),
     }),
 
-  approvePrompt: (promptContent?: string, cliTool?: string) =>
+  approvePrompt: (promptContent?: string, cliTool?: string, cliModel?: string) =>
     fetchJson<ApproveGateResponse>('/orchestrator/approve-prompt', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         ...(promptContent !== undefined ? { prompt_content: promptContent } : {}),
         ...(cliTool ? { cli_tool: cliTool } : {}),
+        ...(cliModel ? { cli_model: cliModel } : {}),
       }),
     }),
 
@@ -168,8 +169,15 @@ export const api = {
   retryPromptGenerator: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/retry-prompt-generator', { method: 'POST' }),
 
-  retryCodeGenerator: () =>
-    fetchJson<ApproveGateResponse>('/orchestrator/retry-code-generator', { method: 'POST' }),
+  retryCodeGenerator: (cliTool?: string, cliModel?: string) =>
+    fetchJson<ApproveGateResponse>('/orchestrator/retry-code-generator', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ...(cliTool ? { cli_tool: cliTool } : {}),
+        ...(cliModel ? { cli_model: cliModel } : {}),
+      }),
+    }),
 
   retryCodeReviewer: () =>
     fetchJson<ApproveGateResponse>('/orchestrator/retry-code-reviewer', { method: 'POST' }),

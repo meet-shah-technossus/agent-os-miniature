@@ -228,23 +228,61 @@ writing the final fix prompt."""
         fallback: str,
         on_stdout: Optional[Callable[[str], None]],
     ) -> str:
-        """Route to Ollama or OpenAI based on prompt_generator.provider config."""
+        """Route to Ollama or OpenAI based on prompt_generator.provider config.
+
+        Cascade:
+          - provider == "ollama"  → try Ollama first; if it fails try OpenAI; then static fallback
+          - provider == "openai"  → try OpenAI first; then static fallback
+        """
         pg_cfg = getattr(self._config, "prompt_generator", None)
         provider = getattr(pg_cfg, "provider", "ollama") if pg_cfg else "ollama"
+
+        def _emit(line: str) -> None:
+            if on_stdout:
+                try:
+                    on_stdout(line)
+                except Exception:
+                    pass
 
         if provider == "openai":
             model = getattr(pg_cfg, "openai_model", None) or \
                 self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
             return self._stream_openai(system_prompt, user_prompt, model, label, fallback, on_stdout)
-        else:
-            # Default: Ollama
-            ollama_cfg = getattr(self._config, "ollama", None)
-            model = getattr(pg_cfg, "ollama_model", None) or \
-                getattr(ollama_cfg, "model", "llama3.1:8b")
-            base_url = getattr(ollama_cfg, "base_url", None) or \
-                os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-            timeout = getattr(ollama_cfg, "timeout_seconds", 300)
-            return self._stream_ollama(system_prompt, user_prompt, model, base_url, timeout, label, fallback, on_stdout)
+
+        # Ollama path — try Ollama, then cascade to OpenAI on failure
+        ollama_cfg = getattr(self._config, "ollama", None)
+        model = getattr(pg_cfg, "ollama_model", None) or \
+            getattr(ollama_cfg, "model", "llama3.1:8b")
+        base_url = getattr(ollama_cfg, "base_url", None) or \
+            os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        timeout = getattr(ollama_cfg, "timeout_seconds", 300)
+
+        result = self._stream_ollama(
+            system_prompt, user_prompt, model, base_url, timeout,
+            label, fallback=None, on_stdout=on_stdout,
+        )
+        if result is not None:
+            return result
+
+        # Ollama failed — try OpenAI as secondary
+        openai_model = getattr(pg_cfg, "openai_model", None) or \
+            self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+        api_key = (
+            getattr(getattr(self._config, "secrets", None), "openai_api_key", "")
+            or os.environ.get("OPENAI_API_KEY", "")
+        )
+        if api_key:
+            _emit(f"[prompt-generator] Ollama unavailable — retrying with OpenAI {openai_model} …")
+            result = self._stream_openai(
+                system_prompt, user_prompt, openai_model,
+                label, fallback=None, on_stdout=on_stdout,
+            )
+            if result is not None:
+                return result
+
+        # Both failed — use static template
+        _emit("[prompt-generator] All LLM backends failed — using static fallback template.")
+        return fallback
 
     # ── Ollama streaming ──────────────────────────────────────────────────────
 
@@ -256,10 +294,13 @@ writing the final fix prompt."""
         base_url: str,
         timeout: int,
         label: str,
-        fallback: str,
+        fallback: Optional[str],
         on_stdout: Optional[Callable[[str], None]],
-    ) -> str:
-        """Call Ollama's OpenAI-compatible /v1/chat/completions with streaming."""
+    ) -> Optional[str]:
+        """Call Ollama's OpenAI-compatible /v1/chat/completions with streaming.
+
+        Returns the generated text on success, or ``None`` on any failure.
+        """
 
         def _emit(line: str) -> None:
             if on_stdout:
@@ -311,7 +352,7 @@ writing the final fix prompt."""
             _emit(f"[prompt-generator] Ollama call failed: {exc} — using fallback.")
             logger.warning("Ollama streaming failed for %s: %s", label, exc)
 
-        return fallback
+        return fallback if fallback is not None else None
 
     # ── OpenAI streaming ──────────────────────────────────────────────────────
 
@@ -321,10 +362,14 @@ writing the final fix prompt."""
         user_prompt: str,
         model: str,
         label: str,
-        fallback: str,
+        fallback: Optional[str],
         on_stdout: Optional[Callable[[str], None]],
-    ) -> str:
-        """Call OpenAI with streaming; pipe tokens to on_stdout; return full text."""
+    ) -> Optional[str]:
+        """Call OpenAI with streaming; pipe tokens to on_stdout; return full text.
+
+        Returns the generated text on success, or ``None`` on any failure
+        (including missing API key).
+        """
 
         def _emit(line: str) -> None:
             if on_stdout:
@@ -339,9 +384,9 @@ writing the final fix prompt."""
             or os.environ.get("OPENAI_API_KEY", "")
         )
         if not api_key:
-            _emit("[prompt-generator] No OpenAI API key found — using fallback prompt.")
-            logger.warning("No OpenAI API key — returning fallback for %s", label)
-            return fallback
+            _emit("[prompt-generator] No OpenAI API key found — skipping OpenAI.")
+            logger.warning("No OpenAI API key — skipping OpenAI for %s", label)
+            return fallback if fallback is not None else None
 
         _emit(f"[prompt-generator] Calling {model} …")
         logger.info("Generating prompt (%s) via %s", label, model)
@@ -386,7 +431,7 @@ writing the final fix prompt."""
             _emit(f"[prompt-generator] OpenAI call failed: {exc} — using fallback.")
             logger.warning("OpenAI streaming failed for %s: %s", label, exc)
 
-        return fallback
+        return fallback if fallback is not None else None
 
     # ── Disk output ───────────────────────────────────────────────────────────
 

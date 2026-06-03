@@ -139,9 +139,22 @@ def build_codex_env(
 
     Starts from os.environ and overrides OPENAI_API_KEY with the
     resolved value (config → .env → env).
+
+    Also ensures PYTHONPATH contains the agent-os package root so that
+    subprocesses launched from a different working directory (e.g. the
+    user's project folder) can still import ``agent_os``.
     """
+    import sys
     env = {**os.environ}
     resolved = resolve_secret("openai_api_key", config_openai, project_root)
     if resolved:
         env["OPENAI_API_KEY"] = resolved
+
+    # Derive the agent-os root (two levels up from this file: config/env.py → agent_os/ → root)
+    agent_os_root = str(Path(__file__).resolve().parent.parent.parent)
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    sep = ";" if sys.platform == "win32" else ":"
+    if agent_os_root not in existing_pythonpath.split(sep):
+        env["PYTHONPATH"] = agent_os_root + (sep + existing_pythonpath if existing_pythonpath else "")
+
     return env

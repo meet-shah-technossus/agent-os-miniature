@@ -58,7 +58,7 @@ interface NodeConfig {
 
 const NODES: Record<NodeId, NodeConfig> = {
   orchestrator:     { id: 'orchestrator',     label: 'Orchestrator',     sublabel: 'Coordinator',  icon: '◎', hue: 240 },
-  prompt_generator: { id: 'prompt_generator', label: 'Prompt Generator', sublabel: 'OpenAI API',   icon: '✍', hue: 270 },
+  prompt_generator: { id: 'prompt_generator', label: 'Prompt Generator', sublabel: 'LLM',        icon: '✍', hue: 270 },
   code_generator:   { id: 'code_generator',   label: 'Code Generator',   sublabel: 'CLI Terminal',  icon: '⚒', hue: 210 },
   code_reviewer:    { id: 'code_reviewer',    label: 'Code Reviewer',    sublabel: 'Review Engine', icon: '🔍', hue: 170 },
 };

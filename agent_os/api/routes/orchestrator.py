@@ -83,6 +83,7 @@ def approve_prompt(
     ok = orch.approve_prompt(
         prompt_content=body.prompt_content,
         cli_tool=body.cli_tool,
+        cli_model=body.cli_model,
     )
     if not ok:
         raise HTTPException(
@@ -234,9 +235,15 @@ def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)):
 
 
 @router.post("/retry-code-generator", response_model=ApproveGateResponse)
-def retry_code_generator(orch: Orchestrator = Depends(get_orchestrator)):
-    """Retry code generation after a failure."""
-    ok = orch.retry_code_generator()
+def retry_code_generator(
+    body: ApprovePromptRequest,
+    orch: Orchestrator = Depends(get_orchestrator),
+):
+    """Retry code generation after a failure, optionally with a different tool/model."""
+    ok = orch.retry_code_generator(
+        cli_tool=body.cli_tool or "",
+        cli_model=body.cli_model or "",
+    )
     if not ok:
         raise HTTPException(
             status_code=409,

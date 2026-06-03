@@ -95,8 +95,10 @@ async def analyse_dependencies(
                 temperature=0,
                 max_tokens=2000,
             )
-        finally:
-            await client.aclose()  # prevent "Event loop is closed" on GC
+        except Exception:
+            await client.close()
+            raise
+        await client.close()
 
         raw = response.choices[0].message.content or "{}"
         # The model wraps the array in an object; accept both forms.
@@ -127,8 +129,15 @@ async def analyse_dependencies(
 
         return result
 
-    except Exception:
-        logger.exception("Dependency analysis failed — falling back to natural order")
+    except Exception as exc:
+        err_str = str(exc)
+        if "401" in err_str or "invalid_api_key" in err_str or "AuthenticationError" in type(exc).__name__:
+            logger.warning(
+                "Dependency analysis skipped — OpenAI API key invalid or missing. "
+                "Stories will be processed in natural order."
+            )
+        else:
+            logger.exception("Dependency analysis failed — falling back to natural order")
         return _no_op_dependencies(stories)
 
 

@@ -310,6 +310,13 @@ export default function SettingsView() {
   const [ollamaBaseUrl, setOllamaBaseUrl]   = useState('http://localhost:11434');
   const [ollamaTimeout, setOllamaTimeout]   = useState(300);
 
+  /* ── Code Reviewer LLM Provider ─────────────────────────────────────────── */
+  const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama'>('openai');
+  const [crModel, setCrModel]               = useState('gpt-4.1-mini');
+  const [crOllamaModel, setCrOllamaModel]   = useState('llama3.1:8b');
+  const [crCopilotModels, setCrCopilotModels] = useState<string[]>([]);
+  const [crCopilotLoading, setCrCopilotLoading] = useState(false);
+
   /* ── Load settings ──────────────────────────────────────────────────────── */
   useEffect(() => {
     api.getSettings().then((s) => {
@@ -375,6 +382,12 @@ export default function SettingsView() {
         setPgProvider(s.prompt_generator.provider === 'openai' ? 'openai' : 'ollama');
         setPgOllamaModel(s.prompt_generator.ollama_model || 'llama3.1:8b');
         setPgOpenAIModel(s.prompt_generator.openai_model || 'gpt-4.1-mini');
+      }
+      if (s.code_reviewer) {
+        const p = (s.code_reviewer.provider as 'openai' | 'copilot' | 'ollama') || 'openai';
+        setCrProvider(p);
+        setCrModel(s.code_reviewer.model || 'gpt-4.1-mini');
+        setCrOllamaModel(s.code_reviewer.ollama_model || 'llama3.1:8b');
       }
     }).catch(() => {});
   }, []);
@@ -454,6 +467,11 @@ export default function SettingsView() {
           provider: pgProvider,
           ollama_model: pgOllamaModel,
           openai_model: pgOpenAIModel,
+        },
+        code_reviewer: {
+          provider: crProvider,
+          model: crModel,
+          ollama_model: crOllamaModel,
         },
       });
       setSettings(updated);
@@ -2078,6 +2096,127 @@ export default function SettingsView() {
                 <p className="text-[10px] text-white/25 mt-1.5">
                   Any OpenAI chat model, e.g. <code className="text-white/40">gpt-4.1-mini</code>, <code className="text-white/40">gpt-4.1</code>, <code className="text-white/40">o3</code>.
                   The API key is configured under <span className="text-white/40">VCS / Git → GitHub Authentication</span> or the <code className="text-white/40">OPENAI_API_KEY</code> env var.
+                </p>
+              </div>
+            </div>
+          )}
+        </section>
+
+        {/* ── Code Reviewer LLM Provider ─────────────────────────────────── */}
+        <section className={card}>
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">
+            Code Reviewer
+          </h3>
+          <p className="text-[11px] text-white/30 mb-4">
+            Choose the LLM backend for automated PR code review.
+            Copilot uses your GitHub token; OpenAI uses the OpenAI API key; Ollama connects to your local GPU.
+          </p>
+
+          {/* Provider toggle */}
+          <div className="flex gap-3 mb-5">
+            {([
+              ['openai', '✦', 'OpenAI API'] as const,
+              ['copilot', '🤖', 'GitHub Copilot'] as const,
+              ['ollama', '🦙', 'Ollama (GPU)'] as const,
+            ]).map(([val, icon, name]) => (
+              <button
+                key={val}
+                onClick={() => setCrProvider(val)}
+                className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm transition-all ${
+                  crProvider === val
+                    ? 'border-indigo-500/50 bg-indigo-500/10 text-white'
+                    : 'border-white/[0.08] bg-white/[0.03] text-white/50 hover:border-white/20 hover:text-white/70'
+                }`}
+              >
+                <span>{icon}</span>
+                {name}
+              </button>
+            ))}
+          </div>
+
+          {/* OpenAI config */}
+          {crProvider === 'openai' && (
+            <div className="space-y-4">
+              <div>
+                <label className={label}>OpenAI Model</label>
+                <select
+                  className={input}
+                  value={crModel}
+                  onChange={(e) => setCrModel(e.target.value)}
+                >
+                  {[
+                    'gpt-5.2', 'gpt-5-mini',
+                    'gpt-4.1', 'gpt-4.1-2025-04-14',
+                    'gpt-4o', 'gpt-4o-mini',
+                    'gpt-4', 'gpt-3.5-turbo',
+                  ].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Requires <code className="text-white/40">OPENAI_API_KEY</code> env var.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Copilot config */}
+          {crProvider === 'copilot' && (
+            <div className="space-y-4">
+              <div>
+                <label className={label}>Copilot Model</label>
+                <select
+                  className={input}
+                  value={crModel}
+                  onChange={(e) => setCrModel(e.target.value)}
+                >
+                  {[
+                    // GPT-5 (chat models only — codex variants not accessible via /chat/completions)
+                    'gpt-5.2', 'gpt-5-mini',
+                    // GPT-4
+                    'gpt-4.1', 'gpt-4.1-2025-04-14',
+                    'gpt-4o', 'gpt-4o-2024-11-20', 'gpt-4o-2024-08-06', 'gpt-4o-mini',
+                    'gpt-4', 'gpt-3.5-turbo',
+                    // Claude
+                    'claude-haiku-4.5',
+                    // Gemini
+                    'gemini-3.1-pro-preview', 'gemini-2.5-pro',
+                  ].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Uses your <code className="text-white/40">GITHUB_TOKEN</code> — no OpenAI key required.
+                  If the selected model is not in your plan, the terminal will show a "model not available" message.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Ollama config */}
+          {crProvider === 'ollama' && (
+            <div className="space-y-4">
+              <div>
+                <label className={label}>Ollama Model</label>
+                <select
+                  className={input}
+                  value={crOllamaModel}
+                  onChange={(e) => setCrOllamaModel(e.target.value)}
+                >
+                  {[
+                    'llama3.1:8b',
+                    'llama3.2:3b',
+                    'llama3:latest',
+                    'qwen2.5:7b',
+                    'qwen2.5-coder:32b',
+                    'gemma3:4b',
+                    'mistral-nemo:latest',
+                  ].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-white/25 mt-1.5">
+                  Ollama base URL is shared with Prompt Generator settings above.
                 </p>
               </div>
             </div>

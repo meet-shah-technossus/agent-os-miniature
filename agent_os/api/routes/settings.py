@@ -13,6 +13,7 @@ from ...config.env import mask_secret, resolve_secret
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import (
     CliRoutingSettingsResponse,
+    CodeReviewerSettingsResponse,
     GitHubSettingsResponse,
     GitHubReviewSettingsResponse,
     OllamaSettingsResponse,
@@ -121,6 +122,11 @@ def get_settings(orch=Depends(get_orchestrator)):
             provider=getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama') or 'ollama',
             ollama_model=getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b') or 'llama3.1:8b',
             openai_model=getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini') or 'gpt-4.1-mini',
+        ),
+        code_reviewer=CodeReviewerSettingsResponse(
+            provider=getattr(getattr(cfg, 'code_reviewer', None), 'provider', 'openai') or 'openai',
+            model=getattr(getattr(cfg, 'code_reviewer', None), 'model', 'gpt-4.1-mini') or 'gpt-4.1-mini',
+            ollama_model=getattr(getattr(cfg, 'code_reviewer', None), 'ollama_model', 'llama3.1:8b') or 'llama3.1:8b',
         ),
     )
 
@@ -287,6 +293,19 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             pg_cfg.ollama_model = body.prompt_generator.ollama_model
         if body.prompt_generator.openai_model:
             pg_cfg.openai_model = body.prompt_generator.openai_model
+
+    if body.code_reviewer is not None:
+        cr_cfg = getattr(cfg, 'code_reviewer', None)
+        if cr_cfg is None:
+            from ...config.schema import CodeReviewerConfig
+            cfg.code_reviewer = CodeReviewerConfig()
+            cr_cfg = cfg.code_reviewer
+        if body.code_reviewer.provider in ('openai', 'copilot', 'ollama'):
+            cr_cfg.provider = body.code_reviewer.provider
+        if body.code_reviewer.model:
+            cr_cfg.model = body.code_reviewer.model
+        if body.code_reviewer.ollama_model:
+            cr_cfg.ollama_model = body.code_reviewer.ollama_model
 
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
@@ -538,6 +557,11 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             "provider": getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama'),
             "ollama_model": getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b'),
             "openai_model": getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini'),
+        },
+        "code_reviewer": {
+            "provider": getattr(getattr(cfg, 'code_reviewer', None), 'provider', 'openai'),
+            "model": getattr(getattr(cfg, 'code_reviewer', None), 'model', 'gpt-4.1-mini'),
+            "ollama_model": getattr(getattr(cfg, 'code_reviewer', None), 'ollama_model', 'llama3.1:8b'),
         },
     }
 

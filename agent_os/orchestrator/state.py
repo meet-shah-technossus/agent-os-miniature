@@ -59,6 +59,8 @@ TRANSITIONS: dict[PipelineStatus, list[PipelineStatus]] = {
     PipelineStatus.HITL_REVIEW_DECISION: [
         PipelineStatus.PROMPT_GENERATION,
         PipelineStatus.STORY_PROMPT_GENERATION,  # GHR mode: loop back for next story iteration
+        PipelineStatus.STORY_CODE_REVIEW,         # GHR mode: retry code reviewer directly
+        PipelineStatus.STORY_COMPLETE,            # GHR mode: user clicks "Move to Next Story"
         PipelineStatus.PIPELINE_COMPLETE,
         PipelineStatus.CODE_REVIEW,
         PipelineStatus.FAILED,
