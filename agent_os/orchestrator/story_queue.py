@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from ..storage.database import Database
@@ -236,7 +236,7 @@ class StoryQueueManager:
         enriched = await analyse_dependencies(raw_stories, api_key=api_key, model=model)
         ordered = topological_sort(enriched)
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         conn = self._db.conn
 
         conn.execute("DELETE FROM story_queue")
@@ -278,7 +278,7 @@ class StoryQueueManager:
                     position=pos,
                     depends_on=story.get("depends_on", []),
                     dependency_reason=story.get("dependency_reason", ""),
-                    created_at=datetime.utcnow(),
+                    created_at=datetime.now(timezone.utc),
                 )
             )
         return items
@@ -347,7 +347,7 @@ class StoryQueueManager:
                WHERE story_id = ?""",
             (
                 StoryStatus.COMPLETED.value,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 pr_number,
                 pr_url,
                 story_id,

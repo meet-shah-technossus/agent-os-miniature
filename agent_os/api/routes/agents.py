@@ -54,7 +54,7 @@ def _cfg_repo(orch=None) -> AgentConfigRepo:
 
 
 @router.get("", response_model=AgentListResponse)
-def list_agents():
+def list_agents() -> AgentListResponse:
     """Return metadata for every agent (built-in and custom)."""
     agents = _store().list_agents()
     return AgentListResponse(agents=agents)
@@ -66,13 +66,13 @@ def list_agents():
 
 
 @router.get("/registry", response_model=AgentRegistryResponse)
-def get_registry():
+def get_registry() -> AgentRegistryResponse:
     """Return the current pipeline-post → agent mapping."""
     return AgentRegistryResponse(mapping=_registry().get_registry())
 
 
 @router.put("/registry", response_model=AgentRegistryResponse)
-def update_registry(body: UpdateRegistryRequest, orch=Depends(get_orchestrator)):
+def update_registry(body: UpdateRegistryRequest, orch=Depends(get_orchestrator)) -> AgentRegistryResponse:
     """Update one or more pipeline-post → agent mappings and persist to DB."""
     reg = _registry()
     reg.update_registry(body.mapping)
@@ -96,7 +96,7 @@ class ModelRoutingResponse(BaseModel):
 
 
 @router.get("/model-routing", response_model=ModelRoutingResponse)
-def get_model_routing(orch=Depends(get_orchestrator)):
+def get_model_routing(orch=Depends(get_orchestrator)) -> ModelRoutingResponse:
     """Return current model routing (DB first, then config fallback)."""
     repo = _cfg_repo(orch)
     routing = repo.get_model_routing()
@@ -108,7 +108,7 @@ def get_model_routing(orch=Depends(get_orchestrator)):
 
 
 @router.put("/model-routing", response_model=ModelRoutingResponse)
-def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator)):
+def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator)) -> ModelRoutingResponse:
     """Save model routing to config.yaml AND the database."""
     routing = body.model_routing
     # Apply to live config
@@ -131,7 +131,7 @@ def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator))
 
 
 @router.get("/{agent_name:path}", response_model=AgentDetailResponse)
-def get_agent(agent_name: str):
+def get_agent(agent_name: str) -> AgentDetailResponse:
     """Return all file contents for a single agent."""
     try:
         files = _store().get_agent(agent_name)
@@ -150,7 +150,7 @@ def get_agent(agent_name: str):
 
 
 @router.get("/{agent_name:path}/{file_name}", response_model=AgentFileResponse)
-def get_agent_file(agent_name: str, file_name: str):
+def get_agent_file(agent_name: str, file_name: str) -> AgentFileResponse:
     """Return the content of a single .md file for an agent."""
     if file_name not in AGENT_FILES:
         raise HTTPException(
@@ -170,7 +170,7 @@ def update_agent_file(
     file_name: str,
     body: UpdateAgentFileRequest,
     orch=Depends(get_orchestrator),
-):
+) -> AgentFileResponse:
     """Overwrite a single .md file for an agent — writes to disk AND database."""
     if file_name not in AGENT_FILES:
         raise HTTPException(
@@ -194,7 +194,7 @@ def update_agent_file(
 
 
 @router.post("", response_model=AgentDetailResponse, status_code=201)
-def create_agent(body: CreateAgentRequest):
+def create_agent(body: CreateAgentRequest) -> AgentDetailResponse:
     """Create a new custom agent with optional initial file contents."""
     try:
         _store().create_agent(body.name, body.files or {})
@@ -205,7 +205,7 @@ def create_agent(body: CreateAgentRequest):
 
 
 @router.delete("/{agent_name:path}", status_code=204)
-def delete_agent(agent_name: str, orch=Depends(get_orchestrator)):
+def delete_agent(agent_name: str, orch=Depends(get_orchestrator)) -> None:
     """Delete a custom agent. Built-in agents cannot be deleted."""
     try:
         _store().delete_agent(agent_name)

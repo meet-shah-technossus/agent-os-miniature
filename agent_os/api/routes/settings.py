@@ -36,7 +36,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("", response_model=SettingsResponse)
-def get_settings(orch=Depends(get_orchestrator)):
+def get_settings(orch=Depends(get_orchestrator)) -> SettingsResponse:
     """Return current settings with secrets masked."""
     cfg = orch.config
     project_root = cfg.project.root_path or "."
@@ -47,6 +47,7 @@ def get_settings(orch=Depends(get_orchestrator)):
         from ...storage.agent_config_repo import AgentConfigRepo
         _db_secrets = AgentConfigRepo(orch.db.conn).get_secrets()
     except Exception:
+        logger.warning("Settings DB read failed, using empty defaults", exc_info=True)
         _db_secrets = {}
 
     openai_resolved = resolve_secret(
@@ -148,22 +149,22 @@ def _cred_to_response(cred: object) -> AIToolCredentialResponse:
 
 
 def _serialize_ai_tools(cfg: object) -> AIToolsSettingsResponse:
-    at = getattr(cfg, 'ai_tools', None)
-    if at is None:
+    ai_tools_config = getattr(cfg, 'ai_tools', None)
+    if ai_tools_config is None:
         return AIToolsSettingsResponse()
     return AIToolsSettingsResponse(
-        codex=_cred_to_response(getattr(at, 'codex', object())),
-        claude=_cred_to_response(getattr(at, 'claude', object())),
-        gemini=_cred_to_response(getattr(at, 'gemini', object())),
-        qwen=_cred_to_response(getattr(at, 'qwen', object())),
-        deepseek=_cred_to_response(getattr(at, 'deepseek', object())),
-        cursor=_cred_to_response(getattr(at, 'cursor', object())),
-        copilot=_cred_to_response(getattr(at, 'copilot', object())),
+        codex=_cred_to_response(getattr(ai_tools_config, 'codex', object())),
+        claude=_cred_to_response(getattr(ai_tools_config, 'claude', object())),
+        gemini=_cred_to_response(getattr(ai_tools_config, 'gemini', object())),
+        qwen=_cred_to_response(getattr(ai_tools_config, 'qwen', object())),
+        deepseek=_cred_to_response(getattr(ai_tools_config, 'deepseek', object())),
+        cursor=_cred_to_response(getattr(ai_tools_config, 'cursor', object())),
+        copilot=_cred_to_response(getattr(ai_tools_config, 'copilot', object())),
     )
 
 
 @router.put("", response_model=SettingsResponse)
-def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)):
+def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)) -> SettingsResponse:
     """Update settings, write to config.yaml, and hot-reload into the orchestrator."""
     cfg = orch.config
 
@@ -241,16 +242,16 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
         cfg.github_review.branch_name = body.github_review.branch_name or 'agent-os-fixes'
 
     if body.ai_tools is not None:
-        at = getattr(cfg, 'ai_tools', None)
-        if at is None:
+        ai_tools_config = getattr(cfg, 'ai_tools', None)
+        if ai_tools_config is None:
             from ...config.schema import AIToolsConfig
             cfg.ai_tools = AIToolsConfig()
-            at = cfg.ai_tools
+            ai_tools_config = cfg.ai_tools
         for tool_name in ('codex', 'claude', 'gemini', 'qwen', 'deepseek', 'cursor', 'copilot'):
             incoming = getattr(body.ai_tools, tool_name, None)
             if incoming is None:
                 continue
-            cred = getattr(at, tool_name)
+            cred = getattr(ai_tools_config, tool_name)
             cred.enabled = incoming.enabled
             cred.auth_method = incoming.auth_method
             cred.email = incoming.email
@@ -295,17 +296,17 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             pg_cfg.openai_model = body.prompt_generator.openai_model
 
     if body.code_reviewer is not None:
-        cr_cfg = getattr(cfg, 'code_reviewer', None)
-        if cr_cfg is None:
+        code_reviewer_config = getattr(cfg, 'code_reviewer', None)
+        if code_reviewer_config is None:
             from ...config.schema import CodeReviewerConfig
             cfg.code_reviewer = CodeReviewerConfig()
-            cr_cfg = cfg.code_reviewer
+            code_reviewer_config = cfg.code_reviewer
         if body.code_reviewer.provider in ('openai', 'copilot', 'ollama'):
-            cr_cfg.provider = body.code_reviewer.provider
+            code_reviewer_config.provider = body.code_reviewer.provider
         if body.code_reviewer.model:
-            cr_cfg.model = body.code_reviewer.model
+            code_reviewer_config.model = body.code_reviewer.model
         if body.code_reviewer.ollama_model:
-            cr_cfg.ollama_model = body.code_reviewer.ollama_model
+            code_reviewer_config.ollama_model = body.code_reviewer.ollama_model
 
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
@@ -358,10 +359,11 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
                     _lines = _upsert(_lines, "OPENAI_API_KEY", _new_openai)
                 if _new_github:
                     _lines = _upsert(_lines, "GITHUB_TOKEN", _new_github)
-                _env_path.write_text("\n".join(_lines) + "\n")
+                from ...utils.file_ops import atomic_write as _atomic_write
+                _atomic_write(_env_path, "\n".join(_lines) + "\n")
                 logger.info("Saved token(s) to %s", _env_path)
             except Exception as _env_err:
-                logger.debug("Could not write .env file: %s", _env_err)
+                logger.error("Could not write .env file: %s", _env_err)
     except Exception as _e:
         logger.warning("Could not mirror settings to DB: %s", _e)
 
@@ -372,7 +374,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
 
 
 @router.post("/test-github", response_model=TestGitHubResponse)
-def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)):
+def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)) -> TestGitHubResponse:
     """Test a GitHub token by calling the /user endpoint.
 
     If ``body.token`` is provided (unsaved value from the UI), it is used
@@ -565,5 +567,9 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
         },
     }
 
-    with open(config_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    try:
+        from ...utils.file_ops import atomic_write
+        content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+        atomic_write(config_path, content)
+    except OSError as exc:
+        logger.error("Failed to write config.yaml at %s: %s", config_path, exc)

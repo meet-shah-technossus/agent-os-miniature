@@ -1,0 +1,156 @@
+# Implementation Prompt — Personal Task Tracker Website
+
+**Language / Stack**: python
+
+## Requirements
+
+epics:
+  - id: "E1"
+    title: "Personal Task Tracker Website"
+    description: >
+      A minimal single-page task tracker application with a Python FastAPI backend
+      and a plain HTML/CSS/JS frontend. Users can create, view, complete, and delete tasks.
+      Data is stored in a SQLite database. No authentication required — single user app.
+    features:
+      - id: "F1"
+        title: "Backend API"
+        description: >
+          A FastAPI REST API that exposes CRUD endpoints for tasks.
+          Each task has an id, title, done status, and created_at timestamp.
+          Data is persisted in a SQLite database file (tasks.db).
+        stories:
+          - id: "S1"
+            title: "Task data model and database setup"
+            description: >
+              Define a Task table in SQLite with columns: id (integer primary key autoincrement),
+              title (text not null), done (boolean default false), created_at (text, ISO timestamp).
+              Create the table on app startup if it does not exist.
+            acceptance_criteria:
+              - id: "AC1"
+                title: "Task table is created on startup"
+                description: >
+                  When the FastAPI app starts, a tasks.db SQLite file is created (if missing)
+                  and contains a 'tasks' table with columns id, title, done, created_at.
+              - id: "AC2"
+                title: "Task model matches schema"
+                description: >
+                  A Pydantic model 'Task' has fields: id (int), title (str),
+                  done (bool, default False), created_at (str).
+          - id: "S2"
+            title: "Create a new task"
+            description: >
+              POST /tasks accepts a JSON body with a 'title' field and creates a new task
+              in the database with done=false and created_at set to the current UTC time.
+            acceptance_criteria:
+              - id: "AC3"
+                title: "POST /tasks with valid title returns 201"
+                description: >
+                  Sending POST /tasks with {"title": "Buy milk"} returns HTTP 201
+                  and the response body contains the created task with an id and created_at.
+              - id: "AC4"
+                title: "POST /tasks with empty title returns 422"
+                description: >
+                  Sending POST /tasks with {"title": ""} or missing title returns HTTP 422.
+          - id: "S3"
+            title: "List all tasks"
+            description: >
+              GET /tasks returns a JSON array of all tasks ordered by created_at descending.
+            acceptance_criteria:
+              - id: "AC5"
+                title: "GET /tasks returns all tasks"
+                description: >
+                  After creating 3 tasks, GET /tasks returns an array of length 3,
+                  ordered newest first.
+          - id: "S4"
+            title: "Toggle task completion"
+            description: >
+              PATCH /tasks/{id}/toggle flips the done status of the task.
+            acceptance_criteria:
+              - id: "AC6"
+                title: "Toggle sets done from false to true"
+                description: >
+                  For a task with done=false, calling PATCH /tasks/1/toggle returns
+                  the task with done=true.
+              - id: "AC7"
+                title: "Toggle sets done from true to false"
+                description: >
+                  For a task with done=true, calling PATCH /tasks/1/toggle returns
+                  the task with done=false.
+              - id: "AC8"
+                title: "Toggle on non-existent task returns 404"
+                description: >
+                  PATCH /tasks/9999/toggle returns HTTP 404.
+          - id: "S5"
+            title: "Delete a task"
+            description: >
+              DELETE /tasks/{id} removes the task from the database.
+            acceptance_criteria:
+              - id: "AC9"
+                title: "DELETE removes the task"
+                description: >
+                  After DELETE /tasks/1, calling GET /tasks no longer includes that task.
+              - id: "AC10"
+                title: "DELETE on non-existent task returns 404"
+                description: >
+                  DELETE /tasks/9999 returns HTTP 404.
+
+      - id: "F2"
+        title: "Frontend UI"
+        description: >
+          A single index.html page served by FastAPI's static files. Uses plain HTML,
+          CSS, and vanilla JavaScript (no framework). Communicates with the backend API
+          via fetch(). Clean, minimal design with a centered card layout.
+        stories:
+          - id: "S6"
+            title: "Task list display"
+            description: >
+              The page shows all tasks in a vertical list. Each task shows its title
+              and a checkbox indicating done status. Done tasks have a strikethrough title.
+            acceptance_criteria:
+              - id: "AC11"
+                title: "Tasks are rendered as a list"
+                description: >
+                  On page load, all tasks from GET /tasks are displayed as list items.
+              - id: "AC12"
+                title: "Done tasks show strikethrough"
+                description: >
+                  Tasks with done=true have their title rendered with CSS text-decoration line-through.
+          - id: "S7"
+            title: "Add task form"
+            description: >
+              An input field and an 'Add' button at the top lets the user type a task title
+              and submit it. On success, the new task appears in the list without page reload.
+            acceptance_criteria:
+              - id: "AC13"
+                title: "Submitting the form adds a task"
+                description: >
+                  Typing 'Buy milk' and clicking Add sends POST /tasks and the new task
+                  appears at the top of the list.
+              - id: "AC14"
+                title: "Input is cleared after adding"
+                description: >
+                  After successful submission, the input field is emptied.
+          - id: "S8"
+            title: "Toggle and delete actions"
+            description: >
+              Each task has a checkbox to toggle done status and a delete button (x)
+              to remove it. Both actions update the UI immediately.
+            acceptance_criteria:
+              - id: "AC15"
+                title: "Clicking checkbox toggles done"
+                description: >
+                  Clicking the checkbox calls PATCH /tasks/{id}/toggle and updates
+                  the strikethrough styling.
+              - id: "AC16"
+                title: "Clicking delete removes the task"
+                description: >
+                  Clicking the x button calls DELETE /tasks/{id} and the task
+                  disappears from the list.
+
+
+## Instructions
+
+- Implement the complete project based on the requirements above.
+- Create a clean folder structure appropriate for the stack.
+- Write a ``ci_check.py`` script at the project root that validates the build succeeds (syntax check, lint, tests). This file must NOT be added to ``.gitignore``.
+- Include all necessary dependency files (requirements.txt, package.json, etc.).

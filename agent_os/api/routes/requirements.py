@@ -98,7 +98,7 @@ def _persist_requirements_path(orch: Any, path: str) -> None:
 # ---------------------------------------------------------------------------
 
 @router.get("", response_model=list[RequirementResponse])
-def list_requirements(orch=Depends(get_orchestrator)):
+def list_requirements(orch=Depends(get_orchestrator)) -> list[RequirementResponse]:
     repo = RequirementRepository(orch.db.conn)
     reqs = repo.get_all()
     return [
@@ -112,7 +112,7 @@ def list_requirements(orch=Depends(get_orchestrator)):
 
 
 @router.get("/preview")
-def preview_requirements(orch=Depends(get_orchestrator)):
+def preview_requirements(orch=Depends(get_orchestrator)) -> dict:
     """Return the active requirements YAML as structured JSON for the UI preview modal."""
     req_path = getattr(getattr(orch, "config", None), "requirements", None)
     path = getattr(req_path, "path", "") or ""

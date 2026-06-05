@@ -53,22 +53,15 @@ class OpenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/info", response_model=ProjectInfoResponse)
-def get_project_info(orch=Depends(get_orchestrator)):
+def get_project_info(orch=Depends(get_orchestrator)) -> ProjectInfoResponse:
     """Basic info about the target project folder."""
+    from ...services.project_service import count_source_files
+
     cfg = orch.config
     root = cfg.project.root_path
     root_path = Path(root) if root else None
     exists = root_path.exists() if root_path else False
-    file_count = 0
-    if exists and root_path:
-        # Count only source files, excluding venv/cache/git dirs
-        for f in root_path.rglob("*"):
-            if not f.is_file():
-                continue
-            # Skip if any part of the path is an ignored directory
-            if any(part in _IGNORE for part in f.parts):
-                continue
-            file_count += 1
+    file_count = count_source_files(root_path) if exists and root_path else 0
     return ProjectInfoResponse(
         name=cfg.project.name or "(unnamed)",
         root_path=root or "(not set)",
@@ -79,19 +72,21 @@ def get_project_info(orch=Depends(get_orchestrator)):
 
 
 @router.get("/files", response_model=List[FileNode])
-def list_project_files(orch=Depends(get_orchestrator)):
+def list_project_files(orch=Depends(get_orchestrator)) -> List[FileNode]:
     """Return the file tree of the generated project, or [] if not yet set up."""
+    from ...services.project_service import build_file_tree
+
     root_str = orch.config.project.root_path
     if not root_str:
         return []
     root = Path(root_str)
     if not root.exists():
         return []
-    return _build_tree(root, root, max_depth=6)
+    return build_file_tree(root, root, max_depth=6)
 
 
 @router.get("/file-content", response_model=FileContentResponse)
-def get_file_content(path: str, orch=Depends(get_orchestrator)):
+def get_file_content(path: str, orch=Depends(get_orchestrator)) -> FileContentResponse:
     """Read a single file from the generated project."""
     root = _get_project_root(orch)
     target = (root / path).resolve()
@@ -115,7 +110,7 @@ def get_file_content(path: str, orch=Depends(get_orchestrator)):
 
 
 @router.post("/open-in-vscode", response_model=OpenResponse)
-def open_in_vscode(orch=Depends(get_orchestrator)):
+def open_in_vscode(orch=Depends(get_orchestrator)) -> OpenResponse:
     """Open the project folder in VS Code."""
     root = _get_project_root(orch)
     try:
@@ -134,7 +129,7 @@ def open_in_vscode(orch=Depends(get_orchestrator)):
 
 
 @router.post("/open-in-finder", response_model=OpenResponse)
-def open_in_finder(orch=Depends(get_orchestrator)):
+def open_in_finder(orch=Depends(get_orchestrator)) -> OpenResponse:
     """Open the project folder in Finder / Explorer."""
     root = _get_project_root(orch)
     try:

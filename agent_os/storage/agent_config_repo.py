@@ -12,7 +12,7 @@ Provides two concerns:
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -48,7 +48,7 @@ class AgentConfigRepo:
                 SET value = excluded.value,
                     updated_at = excluded.updated_at
             """,
-            (key, json.dumps(value), datetime.utcnow().isoformat()),
+            (key, json.dumps(value), datetime.now(timezone.utc).isoformat()),
         )
         self._conn.commit()
 
@@ -103,7 +103,7 @@ class AgentConfigRepo:
                 SET content = excluded.content,
                     updated_at = excluded.updated_at
             """,
-            (agent_name, file_name, content, datetime.utcnow().isoformat()),
+            (agent_name, file_name, content, datetime.now(timezone.utc).isoformat()),
         )
         self._conn.commit()
 

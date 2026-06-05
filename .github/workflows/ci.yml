@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  backend:
+    name: Backend — lint, type-check, test, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff mypy pytest pytest-cov
+
+      - name: Lint (ruff)
+        run: ruff check agent_os/
+
+      - name: Type-check (mypy)
+        run: mypy agent_os/ --ignore-missing-imports --no-error-summary
+        continue-on-error: true
+
+      - name: Run tests with coverage
+        run: |
+          python -m pytest tests/unit/ tests/integration/ tests/characterization/ \
+            --cov=agent_os \
+            --cov-report=term-missing \
+            --tb=short \
+            -q
+
+  frontend:
+    name: Frontend — lint, type-check, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check (tsc)
+        run: npx tsc --noEmit
+        continue-on-error: true
+
+      - name: Run tests (vitest)
+        run: npm test

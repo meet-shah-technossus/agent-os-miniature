@@ -82,7 +82,7 @@ export interface ApproveGateResponse {
 }
 
 export interface SecretsSettings {
-  openai_api_key: string;
+  openai_api_key?: string;
   github_token: string;
 }
 
@@ -184,6 +184,7 @@ export interface Settings {
   vcs?: VCSSettings;
   ollama?: OllamaSettings;
   prompt_generator?: PromptGeneratorSettings;
+  code_reviewer?: { provider: string; model: string; ollama_model?: string };
 }
 
 export interface TestGitHubResponse {

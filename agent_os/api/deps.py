@@ -31,9 +31,11 @@ class _OrchestratorHolder:
 
     @property
     def orchestrator(self) -> Orchestrator:
-        if self._orch is None:
+        with self._lock:
+            orch = self._orch
+        if orch is None:
             raise RuntimeError("Orchestrator not initialised — call init() first")
-        return self._orch
+        return orch
 
     def shutdown(self) -> None:
         with self._lock:

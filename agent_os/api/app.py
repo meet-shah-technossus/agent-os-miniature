@@ -8,13 +8,17 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..config.loader import get_default_config, load_config
 from ..config.env import auto_load_dotenv
+from ..logging_config import configure_logging
 from .deps import orch_holder
+from .exceptions import PipelineConflictError, InvalidStateError, ValidationError
+from .middleware import CorrelationMiddleware
 from .routes import agents, cli_tools, metrics, orchestrator, project, requirements, settings
 from .websocket import _broadcast_worker, _setup_bus_subscriptions, router as ws_router, _queue as _ws_queue
 
@@ -153,12 +157,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     """Build and return the configured FastAPI application."""
+    # Configure structured logging before anything else
+    configure_logging()
+
     app = FastAPI(
         title="Agent OS",
         description="Autonomous SDLC Pipeline — Dashboard API",
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    # Correlation ID + request timing middleware
+    app.add_middleware(CorrelationMiddleware)
 
     # CORS — allow the React dev server
     app.add_middleware(
@@ -168,6 +178,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Exception handlers for typed API exceptions
+    @app.exception_handler(PipelineConflictError)
+    async def _conflict_handler(request: Request, exc: PipelineConflictError):
+        return JSONResponse(status_code=409, content={"detail": exc.detail})
+
+    @app.exception_handler(InvalidStateError)
+    async def _invalid_state_handler(request: Request, exc: InvalidStateError):
+        return JSONResponse(status_code=422, content={"detail": exc.detail})
+
+    @app.exception_handler(ValidationError)
+    async def _validation_handler(request: Request, exc: ValidationError):
+        return JSONResponse(status_code=400, content={"detail": exc.detail})
 
     # REST routers
     app.include_router(requirements.router)

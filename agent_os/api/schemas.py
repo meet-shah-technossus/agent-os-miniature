@@ -62,6 +62,9 @@ class ApprovePromptRequest(BaseModel):
     cli_tool: Optional[str] = None
     cli_model: Optional[str] = None
 
+    class Config:
+        max_anystr_length = 1_000_000  # 1MB max for prompt content
+
 
 class RequirementResponse(BaseModel):
     id: str

@@ -55,7 +55,3 @@ def detect_completion(
     return CompletionResult(CompletionStatus.COMPLETE)
 
 
-def consume_summary(working_dir: str | Path) -> str:
-    """No-op — summary.md is no longer used by the pipeline."""
-    return ""
-

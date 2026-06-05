@@ -643,7 +643,7 @@ def _merge_models(api_models: list[str], baseline: list[str]) -> list[str]:
 
 
 @router.get("/copilot-models")
-async def get_copilot_models():
+async def get_copilot_models() -> dict:
     """Return chat-completion models for this GitHub Copilot account.
 
     Strategy:
@@ -704,7 +704,7 @@ async def get_copilot_models():
 
 
 @router.post("/open-terminal")
-def open_in_terminal_route(body: OpenTerminalRequest):
+def open_in_terminal_route(body: OpenTerminalRequest) -> dict:
     """Open any shell command in the user's native terminal emulator."""
     _open_in_terminal(body.command)
     return {"opened": True}
@@ -790,7 +790,7 @@ class McpTerminalRequest(BaseModel):
 
 
 @router.post("/mcp-terminal")
-def run_in_mcp_terminal(body: McpTerminalRequest):
+def run_in_mcp_terminal(body: McpTerminalRequest) -> dict:
     """Run a command in a persistent per-tool terminal session for ADO MCP setup.
     Reuses the existing window when alive; opens a new one otherwise."""
     if _send_to_mcp_session(body.session_key, body.command):
@@ -800,7 +800,7 @@ def run_in_mcp_terminal(body: McpTerminalRequest):
 
 
 @router.get("", response_model=AllToolsStatusResponse)
-async def list_tools():
+async def list_tools() -> AllToolsStatusResponse:
     """Return installation + auth status for every supported CLI tool (parallel)."""
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
@@ -816,7 +816,7 @@ async def list_tools():
 
 
 @router.get("/{tool_key}", response_model=ToolStatusResponse)
-def get_tool(tool_key: str):
+def get_tool(tool_key: str) -> ToolStatusResponse:
     """Return status for a single tool."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -826,7 +826,7 @@ def get_tool(tool_key: str):
 
 
 @router.post("/{tool_key}/login", response_model=ToolActionResponse)
-def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)):
+def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)) -> ToolActionResponse:
     """
     Trigger authentication for a CLI tool.
 
@@ -968,7 +968,7 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
 
 
 @router.post("/{tool_key}/logout", response_model=ToolActionResponse)
-def logout_tool(tool_key: str, orch=Depends(get_orchestrator)):
+def logout_tool(tool_key: str, orch=Depends(get_orchestrator)) -> ToolActionResponse:
     """Clear credentials for a tool — both env and CLI session."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -1031,7 +1031,7 @@ def logout_tool(tool_key: str, orch=Depends(get_orchestrator)):
 
 
 @router.post("/{tool_key}/refresh", response_model=ToolStatusResponse)
-def refresh_tool(tool_key: str):
+def refresh_tool(tool_key: str) -> ToolStatusResponse:
     """Re-check installation and auth status for a single tool."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:

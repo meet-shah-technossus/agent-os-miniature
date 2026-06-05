@@ -7,7 +7,7 @@
    - Footer: Copy / Download / Scroll-lock toggle
 */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, memo } from 'react';
 import type { AgentTerminalState, AgentStatus, TerminalLine } from '../types';
 import { POST_DISPLAY_NAME } from '../hooks/useAgentTerminals';
 
@@ -98,7 +98,7 @@ interface Props {
   compact?: boolean;
 }
 
-export default function TerminalPanel({ state, onExpand, compact = false }: Props) {
+function TerminalPanel({ state, onExpand, compact = false }: Props) {
   const { agentPost, lines, status, model, currentModuleId, currentIteration, sessionStartedAt, sessionEndedAt } = state;
   const displayName = POST_DISPLAY_NAME[agentPost] ?? agentPost;
   const isRunning = status === 'running';
@@ -262,3 +262,5 @@ export default function TerminalPanel({ state, onExpand, compact = false }: Prop
     </div>
   );
 }
+
+export default memo(TerminalPanel);

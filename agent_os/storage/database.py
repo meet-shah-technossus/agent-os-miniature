@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-# Serialises schema initialisation across all threads to prevent
+from ..constants import SQLITE_CONNECT_TIMEOUT, SQLITE_BUSY_TIMEOUT_MS
+
+if TYPE_CHECKING:
+    from .models import PipelineState
+# Lock to guard schema initialisation across all threads to prevent
 # concurrent DDL/INSERT races that produce "database is locked" errors.
 _schema_init_lock = threading.Lock()
 # Tracks which DB paths have already been fully initialised.
-_initialised_db_paths: set[str] = set()
+_initialized_db_paths: set[str] = set()
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS modules (
@@ -91,6 +96,13 @@ CREATE TABLE IF NOT EXISTS story_queue (
     created_at TEXT NOT NULL,
     completed_at TEXT
 );
+
+-- Indexes for common query patterns
+CREATE INDEX IF NOT EXISTS idx_iterations_iteration_number ON iterations(iteration_number);
+CREATE INDEX IF NOT EXISTS idx_story_queue_status ON story_queue(status);
+CREATE INDEX IF NOT EXISTS idx_story_queue_story_id ON story_queue(story_id);
+CREATE INDEX IF NOT EXISTS idx_requirements_parent_id ON requirements(parent_id);
+CREATE INDEX IF NOT EXISTS idx_modules_status ON modules(status);
 """
 
 
@@ -121,7 +133,7 @@ class Database:
         conn = sqlite3.connect(
             str(self._db_path),
             check_same_thread=False,
-            timeout=30,
+            timeout=SQLITE_CONNECT_TIMEOUT,
             isolation_level=None,  # autocommit — no implicit Python transactions
         )
         conn.row_factory = sqlite3.Row
@@ -129,7 +141,7 @@ class Database:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         # SQLite-level busy-wait for concurrent writers (belt-and-suspenders).
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         return conn
 
     def connect(self) -> None:
@@ -155,11 +167,11 @@ class Database:
     def _init_schema(self) -> None:
         path_key = str(self._db_path)
         # Fast path: already initialised in a previous call from this process.
-        if path_key in _initialised_db_paths:
+        if path_key in _initialized_db_paths:
             return
         with _schema_init_lock:
             # Double-checked: another thread may have finished while we waited.
-            if path_key in _initialised_db_paths:
+            if path_key in _initialized_db_paths:
                 return
             self.conn.executescript(_SCHEMA_SQL)
             # Migrate existing DBs: add columns if missing
@@ -172,10 +184,10 @@ class Database:
             self.conn.execute(
                 """INSERT OR IGNORE INTO pipeline_state (id, current_iteration,
                    pipeline_status, last_checkpoint, metadata) VALUES (1, 0, 'IDLE', ?, '{}')""",
-                (datetime.utcnow().isoformat(),),
+                (datetime.now(timezone.utc).isoformat(),),
             )
             self.conn.commit()
-            _initialised_db_paths.add(path_key)
+            _initialized_db_paths.add(path_key)
 
     def _migrate_add_column(self, table: str, column: str, col_type: str) -> None:
         """Add a column if it doesn't already exist (safe migration)."""
@@ -186,11 +198,11 @@ class Database:
 
     # --- Convenience delegates (backward compat with Phase 1 callers) ---
 
-    def get_pipeline_state(self):
+    def get_pipeline_state(self) -> "PipelineState":
         from .pipeline_repo import PipelineRepository
         return PipelineRepository(self.conn).get_state()
 
-    def save_pipeline_state(self, state):
+    def save_pipeline_state(self, state: "PipelineState") -> None:
         from .pipeline_repo import PipelineRepository
         PipelineRepository(self.conn).save_state(state)
 
@@ -209,7 +221,7 @@ class Database:
                 "current_iteration = 0, pipeline_status = 'IDLE', "
                 "last_checkpoint = ?, metadata = '{}' "
                 "WHERE id = 1",
-                (datetime.utcnow().isoformat(),),
+                (datetime.now(timezone.utc).isoformat(),),
             )
 
     # module_repo methods removed in Phase 1 (module_maker deleted)

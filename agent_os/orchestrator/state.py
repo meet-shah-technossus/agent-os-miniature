@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from ..storage.database import Database
@@ -157,7 +157,7 @@ class StateManager:
         new_state = PipelineState(
             current_iteration=iteration if iteration is not None else current.current_iteration,
             pipeline_status=new_status,
-            last_checkpoint=datetime.utcnow(),
+            last_checkpoint=datetime.now(timezone.utc),
             metadata={**current.metadata, **(metadata or {}), **extra_meta},
             current_story_id=current.current_story_id,
             stories_completed=current.stories_completed,
@@ -167,6 +167,13 @@ class StateManager:
         self._db.save_pipeline_state(new_state)
 
         logger.info("State transition: %s → %s", old_status.value, new_status.value)
+
+        # Invalidate status endpoint cache (Phase 14.1)
+        try:
+            from ..api.routes.history import invalidate_status_cache
+            invalidate_status_cache()
+        except ImportError:
+            pass
 
         for listener in self._listeners:
             try:
@@ -181,6 +188,12 @@ class StateManager:
         new_state = PipelineState()
         self._db.save_pipeline_state(new_state)
         logger.info("Pipeline state reset to IDLE")
+        # Invalidate status endpoint cache (Phase 14.1)
+        try:
+            from ..api.routes.history import invalidate_status_cache
+            invalidate_status_cache()
+        except ImportError:
+            pass
         return new_state
 
     def update_metadata(self, metadata: dict[str, Any]) -> None:

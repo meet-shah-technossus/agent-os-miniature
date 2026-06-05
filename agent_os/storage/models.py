@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional
 
@@ -68,7 +68,7 @@ class IterationRecord(BaseModel):
     token_usage: int = 0
     cli_tool_used: str = ""
     ci_result: str = ""  # "pass" | "fail" | ""
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
 
 
@@ -84,7 +84,7 @@ class RequirementRecord(BaseModel):
 class PipelineState(BaseModel):
     current_iteration: int = 0
     pipeline_status: PipelineStatus = PipelineStatus.IDLE
-    last_checkpoint: datetime = Field(default_factory=datetime.utcnow)
+    last_checkpoint: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
     # --- GitHub Review mode story progress (stored in metadata when active) ---
     current_story_id: Optional[str] = None
@@ -107,5 +107,5 @@ class StoryQueueItem(BaseModel):
     story_iteration: int = 0               # iterations done for this story
     depends_on: list[str] = Field(default_factory=list)  # list of story_ids
     dependency_reason: str = ""            # LLM-provided explanation
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
