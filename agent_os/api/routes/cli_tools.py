@@ -184,8 +184,47 @@ class ToolActionResponse(BaseModel):
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _which(binary: str) -> str | None:
-    """Return absolute path, or None if not on PATH."""
-    return shutil.which(binary)
+    """Return absolute path, or None if not found.
+
+    On Windows the server process may launch with a restricted PATH that omits
+    user-installed locations (e.g. GitHub CLI via winget or the .msi installer).
+    We fall back to `where.exe` and a list of well-known installation directories
+    so the detection works regardless of how the server was started.
+    """
+    found = shutil.which(binary)
+    if found:
+        return found
+
+    if _IS_WINDOWS:
+        # 1. Ask Windows itself — `where` searches all PATH entries including
+        #    those added by installers that modify the system/user registry PATH
+        #    but that may not be visible in the current process environment.
+        try:
+            proc = subprocess.run(
+                ["where.exe", binary],
+                capture_output=True, text=True, timeout=5
+            )
+            if proc.returncode == 0:
+                first_line = proc.stdout.strip().splitlines()[0].strip()
+                if first_line and Path(first_line).exists():
+                    return first_line
+        except Exception:
+            pass
+
+        # 2. Check common Windows installation directories for known CLIs
+        candidate_dirs = [
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "GitHub CLI",
+            Path(os.environ.get("PROGRAMFILES", "C:/Program Files")) / "GitHub CLI",
+            Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")) / "GitHub CLI",
+            # winget installs here on some systems
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Links",
+        ]
+        for d in candidate_dirs:
+            candidate = d / f"{binary}.exe"
+            if candidate.exists():
+                return str(candidate)
+
+    return None
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -280,6 +319,36 @@ def _open_in_terminal(cmd: str) -> None:
                 break
 
 
+def _get_gh_oauth_token() -> str:
+    """Return the GitHub OAuth token stored by the gh CLI.
+
+    ``api.githubcopilot.com`` rejects PATs — it requires the OAuth token that
+    ``gh auth login`` stores in the system keychain.  We strip GITHUB_TOKEN /
+    GH_TOKEN from the subprocess environment before calling ``gh auth token``
+    so that gh reads its own keychain credential instead of echoing back the
+    env-var PAT.
+
+    Falls back to ``GITHUB_TOKEN`` env var only when gh is unavailable (e.g.
+    when the caller intends to use a PAT with an endpoint that accepts it, such
+    as models.inference.ai.azure.com).
+    """
+    try:
+        gh_exe = _which("gh") or "gh"
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+        clean_env["NO_COLOR"] = "1"
+        result = subprocess.run(
+            [gh_exe, "auth", "token"],
+            capture_output=True, text=True, timeout=5,
+            env=clean_env,
+        )
+        token = result.stdout.strip()
+        if token and result.returncode == 0:
+            return token
+    except Exception:
+        pass
+    return os.environ.get("GITHUB_TOKEN", "")
+
+
 def _check_env_key(key: str | None) -> bool:
     """Check whether an API key is set via environment variable."""
     if not key:
@@ -303,11 +372,14 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
 
     # 2. Per-tool auth detection
     if meta.key == "copilot":
+        # Resolve the gh binary path — the server process may have a restricted
+        # PATH that doesn't include the GitHub CLI installation directory.
+        gh_exe = _which("gh") or "gh"
         # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN in the environment.
         # When those env vars are present, gh uses them for API calls but reports
         # no stored OAuth credential (exit code 1) — causing a false "not authenticated".
         # Stripping them here lets us check whether a real gh OAuth session exists.
-        rc, out, err = _run_no_gh_token(["gh", "auth", "status"])
+        rc, out, err = _run_no_gh_token([gh_exe, "auth", "status"])
         if rc == 0:
             for line in (out + "\n" + err).splitlines():
                 if "account" in line.lower():
@@ -657,32 +729,37 @@ async def get_copilot_models():
     # Always start with the full known list
     baseline = list(_COPILOT_DEFAULT_MODELS)
 
-    token = os.environ.get("GITHUB_TOKEN", "")
-    if not token:
+    # Prefer the gh CLI OAuth token for api.githubcopilot.com (PATs are rejected there).
+    # Fall back to GITHUB_TOKEN env var which still works for the marketplace endpoint.
+    oauth_token = _get_gh_oauth_token()
+    pat_token = os.environ.get("GITHUB_TOKEN", "")
+    if not oauth_token and not pat_token:
         return {"models": baseline, "source": "fallback"}
 
     try:
         import httpx
         async with httpx.AsyncClient(timeout=15) as client:
-            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-            # ── 1. Copilot-native API ──────────────────────────────────────
+            # ── 1. Copilot-native API (requires OAuth token, rejects PATs) ─
             api_models: list[str] = []
-            try:
-                resp = await client.get(_COPILOT_API_ENDPOINT, headers=headers)
-                logger.info("Copilot API status: %d", resp.status_code)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    items = data if isinstance(data, list) else data.get("data", data.get("models", []))
-                    api_models = _extract_from_api_items(items)
-                    logger.info("Copilot API returned %d usable models", len(api_models))
-            except Exception as exc:
-                logger.warning("Copilot API call failed: %s", exc)
-
-            # ── 2. Marketplace fallback (adds anything not in Copilot API) ─
-            if not api_models:
+            if oauth_token:
+                copilot_headers = {"Authorization": f"Bearer {oauth_token}", "Accept": "application/json"}
                 try:
-                    resp2 = await client.get(_GITHUB_MODELS_ENDPOINT, headers=headers)
+                    resp = await client.get(_COPILOT_API_ENDPOINT, headers=copilot_headers)
+                    logger.info("Copilot API status: %d", resp.status_code)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        items = data if isinstance(data, list) else data.get("data", data.get("models", []))
+                        api_models = _extract_from_api_items(items)
+                        logger.info("Copilot API returned %d usable models", len(api_models))
+                except Exception as exc:
+                    logger.warning("Copilot API call failed: %s", exc)
+
+            # ── 2. Marketplace fallback — PAT is accepted here ─────────────
+            if not api_models:
+                market_token = pat_token or oauth_token
+                market_headers = {"Authorization": f"Bearer {market_token}", "Accept": "application/json"}
+                try:
+                    resp2 = await client.get(_GITHUB_MODELS_ENDPOINT, headers=market_headers)
                     logger.info("Marketplace API status: %d", resp2.status_code)
                     if resp2.status_code == 200:
                         data2 = resp2.json()
@@ -910,7 +987,8 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
             elif tool_key == "gemini" and auth_method == "vertex":
                 login_cmd = ["gcloud", "auth", "application-default", "login"]
             elif tool_key == "copilot":
-                login_cmd = ["gh", "auth", "login", "--web"]
+                gh_exe = _which("gh") or "gh"
+                login_cmd = [gh_exe, "auth", "login", "--web"]
             elif tool_key == "qwen":
                 if auth_method == "coding-plan":
                     login_cmd = ["qwen", "auth", "coding-plan"]

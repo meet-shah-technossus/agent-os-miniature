@@ -59,9 +59,9 @@ def _make_github_client(config: "AgentOSConfig") -> Optional[VCSClient]:
     repo = getattr(config.github, "repo", "") or ""
 
     if not all([token, owner, repo]):
-        logger.warning(
-            "GitHub VCS client: incomplete credentials "
-            "(need github_token, github.owner, github.repo)"
+        logger.debug(
+            "GitHub VCS client: credentials not configured "
+            "(github_token, github.owner, github.repo) — VCS operations will be skipped"
         )
         return None
 

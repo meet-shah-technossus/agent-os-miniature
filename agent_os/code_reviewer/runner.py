@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import re
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -373,9 +374,19 @@ class CodeReviewerRunner:
             # its stored OAuth credential instead of echoing back the PAT.
             _gh_oauth = ""
             try:
+                import shutil as _shutil
                 import subprocess as _sp
+                _gh_exe = _shutil.which("gh")
+                if not _gh_exe and sys.platform == "win32":
+                    try:
+                        _r2 = _sp.run(["where.exe", "gh"], capture_output=True, text=True, timeout=5)
+                        if _r2.returncode == 0:
+                            _gh_exe = _r2.stdout.strip().splitlines()[0].strip()
+                    except Exception:
+                        pass
+                _gh_exe = _gh_exe or "gh"
                 _clean = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
-                _r = _sp.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5, env=_clean)
+                _r = _sp.run([_gh_exe, "auth", "token"], capture_output=True, text=True, timeout=5, env=_clean)
                 if _r.returncode == 0:
                     _gh_oauth = _r.stdout.strip()
             except Exception:

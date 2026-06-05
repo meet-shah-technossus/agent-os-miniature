@@ -154,6 +154,22 @@ def is_tool_available(tool: str) -> bool:
     if tool in ("claude", "claude-code"):
         return shutil.which("claude") is not None
 
+    if tool == "copilot":
+        # gh binary may be installed outside the server's restricted PATH on Windows
+        if shutil.which("gh") is not None:
+            return True
+        if sys.platform == "win32":
+            try:
+                import subprocess as _sp
+                result = _sp.run(["where.exe", "gh"], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0 and result.stdout.strip():
+                    return True
+            except Exception:
+                pass
+        # Fall back to env var (PAT-based usage)
+        val = os.environ.get("GITHUB_TOKEN", "")
+        return bool(val and not val.startswith("***"))
+
     # API tools — check for credentials
     env_key = _API_TOOL_ENV_KEYS.get(tool, "")
     if env_key:

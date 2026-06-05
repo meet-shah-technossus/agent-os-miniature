@@ -26,6 +26,44 @@ from .cli_adapter import build_command, executable_name, UnsupportedToolError
 logger = logging.getLogger(__name__)
 
 
+def _get_gh_oauth_token() -> str:
+    """Return the GitHub OAuth token from the gh CLI keychain.
+
+    ``api.githubcopilot.com`` rejects Personal Access Tokens.  This function
+    obtains the OAuth token stored by ``gh auth login`` and returns it so
+    subprocess environments use it instead of any PAT from the config.
+
+    Strips GITHUB_TOKEN / GH_TOKEN before calling ``gh auth token`` so that
+    gh reads its own keychain credential rather than echoing back the env-var PAT.
+    Returns an empty string if gh is unavailable or not authenticated.
+    """
+    try:
+        import shutil as _shutil
+        gh_exe = _shutil.which("gh")
+        if not gh_exe and _IS_WINDOWS:
+            try:
+                _r = subprocess.run(
+                    ["where.exe", "gh"], capture_output=True, text=True, timeout=5
+                )
+                if _r.returncode == 0:
+                    gh_exe = _r.stdout.strip().splitlines()[0].strip()
+            except Exception:
+                pass
+        if not gh_exe:
+            return ""
+        clean_env = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
+        result = subprocess.run(
+            [gh_exe, "auth", "token"],
+            capture_output=True, text=True, timeout=5, env=clean_env,
+        )
+        token = result.stdout.strip()
+        if result.returncode == 0 and token:
+            return token
+    except Exception:
+        pass
+    return ""
+
+
 def _set_pty_size(fd: int, rows: int, cols: int) -> None:
     """Set the terminal size on a PTY file descriptor (TIOCSWINSZ). Unix only."""
     if _IS_WINDOWS:
@@ -80,11 +118,12 @@ class CodexWrapper:
         on_stderr: Optional[Callable[[str], None]] = None,
     ) -> CodexResult:
         """Execute a Codex CLI command with retry logic."""
+        tool = self._cli_routing.get(session_type.value, "codex")
         last_result = None
         for attempt in range(1, self._max_retries + 2):
             logger.info(
-                "Codex exec attempt %d/%d for %s",
-                attempt, self._max_retries + 1, session_type.value,
+                "CLI exec attempt %d/%d for %s (tool=%s)",
+                attempt, self._max_retries + 1, session_type.value, tool,
             )
             result = self._run_once(prompt, working_dir, session_type, on_stdout, on_stderr)
             last_result = result
@@ -93,16 +132,16 @@ class CodexWrapper:
                 return result
 
             if result.timed_out:
-                logger.warning("Codex exec timed out for %s (attempt %d)", session_type.value, attempt)
+                logger.warning("CLI exec timed out for %s/%s (attempt %d)", tool, session_type.value, attempt)
             else:
                 logger.warning(
-                    "Codex exec failed for %s with exit code %d (attempt %d)",
-                    session_type.value, result.exit_code, attempt,
+                    "CLI exec failed for %s/%s with exit code %d (attempt %d)",
+                    tool, session_type.value, result.exit_code, attempt,
                 )
                 # Log the actual output so the error is visible in server logs
                 if result.stdout:
                     for line in result.stdout.splitlines()[-30:]:
-                        logger.warning("[codex output] %s", line)
+                        logger.warning("[%s output] %s", tool, line)
 
             if attempt <= self._max_retries:
                 logger.info("Retrying...")
@@ -158,11 +197,19 @@ class CodexWrapper:
             from ..config.env import build_codex_env
             env = build_codex_env(self._openai_api_key, self._project_root)
 
-            # Inject the configured GitHub token as GITHUB_TOKEN so that
-            # api_adapter-backed tools (copilot, etc.) use the account
-            # configured in Settings UI rather than any inherited VS Code terminal token.
-            if self._github_token:
-                env["GITHUB_TOKEN"] = self._github_token
+            # GITHUB_TOKEN in os.environ (copied by build_codex_env) is a PAT.
+            # api.githubcopilot.com rejects PATs — it requires the OAuth token
+            # stored by `gh auth login`.  Whenever the copilot tool is active,
+            # replace GITHUB_TOKEN with the OAuth token from gh's keychain.
+            # This also covers the case where self._github_token is empty but
+            # GITHUB_TOKEN leaked in via os.environ.
+            if tool == "copilot" or "GITHUB_TOKEN" in env:
+                _oauth_token = _get_gh_oauth_token()
+                if _oauth_token:
+                    env["GITHUB_TOKEN"] = _oauth_token
+                elif self._github_token:
+                    env["GITHUB_TOKEN"] = self._github_token
+                # else: leave whatever build_codex_env put there
 
             if _IS_WINDOWS:
                 # On Windows, npm/pip global CLIs are installed as .cmd wrappers.
