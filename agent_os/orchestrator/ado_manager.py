@@ -53,10 +53,18 @@ class ADOWorkItemManager:
         if story_id and str(story_id).isdigit():
             work_item_ids: list[int] = [int(story_id)]
         else:
-            # For activate: use current story if GHR, else all items
+            # For activate: only the current story should transition, not ALL items.
+            # For close without explicit story_id: close all (pipeline-complete scenario).
             current_story = self._state_mgr.state.current_story_id
-            if target_state == "Active" and current_story and str(current_story).isdigit():
+            if current_story and str(current_story).isdigit():
                 work_item_ids = [int(current_story)]
+            elif target_state == "Active":
+                # Safety: never activate ALL items at once in GHR mode.
+                # If current_story is unavailable, skip activation.
+                logger.warning(
+                    "[ADO] Cannot determine current story for activation — skipping"
+                )
+                return
             else:
                 work_item_ids = meta.get("ado_work_item_ids", [])
 

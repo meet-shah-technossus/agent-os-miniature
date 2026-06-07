@@ -1,18 +1,18 @@
-﻿/* CommandCenter â€” Phase 4
+﻿/* CommandCenter — Phase 4
    Main workspace: left pane (prompt editor + review viewer) + right pane
    (CLI terminal grid with framer-motion dynamic expansion).
 
    Layout:
-     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
-     â”‚  LEFT PANE           â”‚  RIGHT PANE                 â”‚
-     â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”‚  â”Œâ”€â”€â”€â”€â” â”Œâ”€â”€â”€â”€â” â”Œâ”€â”€â”€â”€â”      â”‚
-     â”‚  â”‚ Prompt Editorâ”‚    â”‚  â”‚CLI â”‚ â”‚CLI â”‚ â”‚CLI â”‚      â”‚
-     â”‚  â”‚              â”‚    â”‚  â”‚    â”‚ â”‚    â”‚ â”‚    â”‚      â”‚
-     â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â”‚  â””â”€â”€â”€â”€â”˜ â””â”€â”€â”€â”€â”˜ â””â”€â”€â”€â”€â”˜      â”‚
-     â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”    â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”‚
-     â”‚  â”‚ Review JSON  â”‚    â”‚  â”‚  Active (expanded) â”‚     â”‚
-     â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜    â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â”‚
-     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+     ┌──────────────────────┬─────────────────────────────┐
+     │  LEFT PANE           │  RIGHT PANE                 │
+     │  ┌──────────────┐    │  ┌────┐ ┌────┐ ┌────┐      │
+     │  │ Prompt Editor│    │  │CLI │ │CLI │ │CLI │      │
+     │  │              │    │  │    │ │    │ │    │      │
+     │  └──────────────┘    │  └────┘ └────┘ └────┘      │
+     │  ┌──────────────┐    │  ┌────────────────────┐     │
+     │  │ Review JSON  │    │  │  Active (expanded) │     │
+     │  └──────────────┘    │  └────────────────────┘     │
+     └──────────────────────┴─────────────────────────────┘
 */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -24,7 +24,7 @@ import PromptEditor, { CLI_TOOL_KEYS, CLI_DISPLAY, CLI_ICON, type CliToolKey } f
 import ReviewViewer from './ReviewViewer';
 import { TOOL_MODELS } from '../constants';
 
-// â”€â”€â”€ Constants â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 // Map CLI tool keys to PIPELINE_POST keys used by terminal states
 const CLI_TO_POST: Record<CliToolKey, string> = {
@@ -38,12 +38,12 @@ const CLI_TO_POST: Record<CliToolKey, string> = {
 };
 
 const SYSTEM_TERMINALS = [
-  { key: 'PROMPT_GENERATOR' as const, label: 'Prompt Generator', icon: 'âŠ•' },
-  { key: 'CODE_REVIEWER'    as const, label: 'Code Reviewer',    icon: 'âŠ—' },
+  { key: 'PROMPT_GENERATOR' as const, label: 'Prompt Generator', icon: '⊕' },
+  { key: 'CODE_REVIEWER'    as const, label: 'Code Reviewer',    icon: '⊗' },
 ];
 type SystemTerminalKey = 'PROMPT_GENERATOR' | 'CODE_REVIEWER';
 
-// â”€â”€â”€ Pill badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Pill badge ───────────────────────────────────────────────────────────────
 
 function StatusPill({ status }: { status: string }) {
   const map: Record<string, string> = {
@@ -61,7 +61,7 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-// â”€â”€â”€ Compact CLI Card (collapsed state) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Compact CLI Card (collapsed state) ──────────────────────────────────────
 
 interface CliCardProps {
   toolKey: CliToolKey;
@@ -116,7 +116,7 @@ function CliCard({ toolKey, toolStatus, isSelected, terminalState, onClick }: Cl
   );
 }
 
-// â”€â”€â”€ Expanded Terminal Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Expanded Terminal Panel ──────────────────────────────────────────────────
 
 interface ExpandedTerminalProps {
   toolKey: CliToolKey;
@@ -177,7 +177,7 @@ function ExpandedTerminal({ toolKey, terminalState, onCollapse }: ExpandedTermin
           onClick={onCollapse}
           className="text-slate-500 hover:text-white transition-colors text-xs px-2 py-1 rounded hover:bg-white/5"
         >
-          Collapse â†‘
+          Collapse ↑
         </button>
       </div>
       {/* Terminal output */}
@@ -197,7 +197,7 @@ function ExpandedTerminal({ toolKey, terminalState, onCollapse }: ExpandedTermin
   );
 }
 
-// â”€â”€â”€ System Terminal Card (collapsed) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── System Terminal Card (collapsed) ───────────────────────────────────────────
 
 interface SystemTerminalCardProps {
   termKey: SystemTerminalKey;
@@ -232,7 +232,7 @@ function SystemTerminalCard({ termKey, label, icon, terminalState, onClick }: Sy
   );
 }
 
-// â”€â”€â”€ Expanded System Terminal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Expanded System Terminal ──────────────────────────────────────────────────
 
 interface ExpandedSystemTerminalProps {
   termKey: SystemTerminalKey;
@@ -294,7 +294,7 @@ function ExpandedSystemTerminal({ termKey, label, icon, terminalState, onCollaps
           onClick={onCollapse}
           className="text-slate-500 hover:text-white transition-colors text-xs px-2 py-1 rounded hover:bg-white/5"
         >
-          Collapse â†‘
+          Collapse ↑
         </button>
       </div>
       <div className="flex-1 min-h-0">
@@ -312,7 +312,7 @@ function ExpandedSystemTerminal({ termKey, label, icon, terminalState, onCollaps
     </motion.div>
   );
 }
-// â”€â”€â”€ Right pane: CLI terminal grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Right pane: CLI terminal grid ────────────────────────────────────────────
 
 interface CliGridProps {
   terminalStates: Record<string, AgentTerminalState>;
@@ -399,7 +399,7 @@ function CliGrid({ terminalStates, toolStatuses, activeTool, expandedSystemKeys,
   );
 }
 
-// â”€â”€â”€ Main CommandCenter â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── Main CommandCenter ────────────────────────────────────────────────────────
 
 interface Props {
   terminalStates: Record<string, AgentTerminalState>;
@@ -408,7 +408,7 @@ interface Props {
 }
 
 export default function CommandCenter({ terminalStates, wsConnected, messages }: Props) {
-  // â”€â”€ State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── State ────────────────────────────────────────────────────────────────────
   const [promptContent, setPromptContent] = useState('');
   const [, setReviewContent] = useState('');
   const [reviewOriginalContent, setReviewOriginalContent] = useState('');
@@ -435,8 +435,10 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reviewUserModifiedRef = useRef(false);
   const promptUserModifiedRef = useRef(false);
+  const promptIterationRef = useRef(0);
+  const reviewIterationRef = useRef(0);
 
-  // â”€â”€ Polling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Polling ───────────────────────────────────────────────────────────────────
 
   const refresh = useCallback(async () => {
     try {
@@ -457,10 +459,11 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
       if (promptRes && promptRes.content) {
         // Always update when iteration advances (new prompt from code review loop).
         // Only suppress if user manually edited the *current* iteration.
-        const isNewIteration = promptRes.iteration > promptIteration;
+        const isNewIteration = promptRes.iteration > promptIterationRef.current;
         if (isNewIteration || !promptUserModifiedRef.current) {
           setPromptContent(promptRes.content);
           setPromptIteration(promptRes.iteration);
+          promptIterationRef.current = promptRes.iteration;
           if (isNewIteration) {
             promptUserModifiedRef.current = false;
           }
@@ -476,13 +479,14 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
         })();
         setReviewContent(pretty);
         setReviewOriginalContent(pretty);
-        // Always update the Monaco editor when a new iteration arrives (new review
+        // Always update the editor when a new iteration arrives (new review
         // from backend after a retry loop). Only suppress if user is editing the
         // *current* iteration.
-        const isNewReviewIteration = reviewRes.iteration > reviewIteration;
+        const isNewReviewIteration = reviewRes.iteration > reviewIterationRef.current;
         if (isNewReviewIteration || !reviewUserModifiedRef.current) {
           setReviewEditedContent(pretty);
           setReviewIteration(reviewRes.iteration);
+          reviewIterationRef.current = reviewRes.iteration;
           if (isNewReviewIteration) {
             reviewUserModifiedRef.current = false;
           }
@@ -521,14 +525,26 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     }
   }, [pipelineStatus, toolStatuses]);
 
-  // Immediately update state from WebSocket pipeline events â€” no poll needed
+  // Auto-expand the active tool terminal when code generation starts
+  useEffect(() => {
+    const codeGenState = terminalStates['CODE_GENERATOR'];
+    if (!codeGenState) return;
+    const runningTool = codeGenState.activeTool as CliToolKey | null;
+    if (runningTool && CLI_TOOL_KEYS.includes(runningTool) && runningTool !== activeTool) {
+      setActiveTool(runningTool);
+      setSelectedTool(runningTool);
+      setSelectedModel(TOOL_MODELS[runningTool]?.[0] ?? '');
+    }
+  }, [terminalStates]);
+
+  // Immediately update state from WebSocket pipeline events — no poll needed
   const prevMsgLen = useRef(0);
   useEffect(() => {
     const newMsgs = messages.slice(prevMsgLen.current);
     prevMsgLen.current = messages.length;
     if (newMsgs.length === 0) return;
 
-    // Every pipeline message carries pipeline_status â€” apply it immediately
+    // Every pipeline message carries pipeline_status — apply it immediately
     // so the Approve button enables without waiting for the 3-second poll.
     for (const m of newMsgs) {
       if (m.channel === 'pipeline' && m.pipeline_status) {
@@ -553,7 +569,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages]);
 
-  // â”€â”€ Handlers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Handlers ──────────────────────────────────────────────────────────────────
 
 
   const handleApprovePrompt = async () => {
@@ -561,6 +577,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     setError(null);
     try {
       await api.approvePrompt(promptContent, selectedTool, selectedModel);
+      promptUserModifiedRef.current = false;
       setActiveTool(selectedTool);
       await refresh();
     } catch (e) {
@@ -670,7 +687,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     setError(null);
     try {
       await api.retryPR();
-      // Don't optimistically clear prFailed here â€” let refresh() pull the
+      // Don't optimistically clear prFailed here — let refresh() pull the
       // actual backend state. If the retry succeeded, pr_failed will be false;
       // if an operational step failed (git push, PR creation, etc.) the updated
       // pr_error will still be shown and the button remains usable.
@@ -751,7 +768,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     });
   };
 
-  // â”€â”€ Render â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
     <div className="h-full flex flex-col">
@@ -760,7 +777,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
         <div>
           <h2 className="text-2xl font-bold text-white">Command Center</h2>
           <p className="text-sm text-[var(--text-secondary)] mt-0.5">
-            Prompt editor Â· Review JSON Â· CLI terminal grid
+            Prompt editor · Review JSON · CLI terminal grid
           </p>
         </div>
         <div className="flex-1" />
@@ -790,14 +807,14 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             className="mb-3 px-4 py-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-center gap-2 shrink-0"
           >
             <span className="flex-1">{error}</span>
-            <button onClick={() => setError(null)} className="hover:text-white transition-colors">âœ•</button>
+            <button onClick={() => setError(null)} className="hover:text-white transition-colors">✕</button>
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Main split layout */}
       <div className="flex-1 min-h-0 flex gap-4">
-        {/* â”€â”€ Left pane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── Left pane ─────────────────────────────────────────────────── */}
         <div className="flex flex-col gap-4 min-h-0 overflow-y-auto" style={{ width: '45%', minWidth: 320 }}>
           {/* Prompt editor */}
           <PromptEditor
@@ -830,6 +847,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             onReset={handleReviewReset}
             onContentChange={handleReviewEdit}
             onRetryPR={handleRetryPR}
+            onRetryCodeGenerator={handleRetryCodeGenerator}
             isLoading={isLoading}
             prFailed={prFailed}
             prError={prError}
@@ -840,10 +858,10 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
           />
         </div>
 
-        {/* â”€â”€ Divider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── Divider ────────────────────────────────────────────────────── */}
         <div className="w-px shrink-0 bg-[var(--border-glass)]" />
 
-        {/* â”€â”€ Right pane â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+        {/* ── Right pane ────────────────────────────────────────────────── */}
         <div className="flex-1 min-h-0 flex flex-col">
           <div className="mb-2 shrink-0 flex items-center gap-2">
             <h3 className="text-sm font-semibold text-white">CLI Terminals</h3>
@@ -864,7 +882,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
           {pipelineStatus === 'CODE_GEN_FAILED' && (
             <div className="mb-2 shrink-0 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex flex-col gap-2">
               <div className="flex items-start gap-2">
-                <span className="mt-0.5">âš </span>
+                <span className="mt-0.5">⚠</span>
                 <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
@@ -880,8 +898,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
                 >
                   {CLI_TOOL_KEYS.filter((k) => {
                     const ts = toolStatuses.find((t) => t.key === k);
-                    // If status not yet loaded, show all; otherwise only ready tools
-                    return !ts || ts.available;
+                    return ts?.available === true;
                   }).map((k) => (
                     <option key={k} value={k}>{CLI_DISPLAY[k]}</option>
                   ))}
@@ -909,7 +926,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             <div className="mb-2 shrink-0 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2 text-amber-400 text-xs font-semibold">
                 <span className="w-2 h-2 rounded-sm bg-amber-400 inline-block" />
-                Code generation stopped â€” partial changes preserved on disk
+                Code generation stopped — partial changes preserved on disk
               </div>
               <p className="text-[11px] text-slate-400 leading-relaxed">
                 The CLI session was killed. Any files written up to this point are still on disk.

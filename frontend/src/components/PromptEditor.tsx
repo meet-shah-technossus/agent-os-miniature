@@ -2,7 +2,9 @@
    Renders the prompt editing panel with tool/model selection and approve button.
 */
 
-import { useRef, useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import Editor, { type Monaco } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
 import type { CliToolStatus } from '../types';
 
 /* ── Exported constants ──────────────────────────────────────────────────── */
@@ -70,19 +72,40 @@ export default function PromptEditor({
   promptGenError,
   onRetryPromptGenerator,
 }: PromptEditorProps) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  // Auto-resize textarea
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
-  }, [content]);
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  // Track the last externally-set content so we only push updates when it actually changes
+  const lastExternalContent = useRef<string>('');
 
   const isHitlGate = pipelineStatus === 'HITL_PROMPT_REVIEW';
   const isGenerating = pipelineStatus === 'PROMPT_GENERATION' || pipelineStatus === 'STORY_PROMPT_GENERATION';
   const hasContent = !!content.trim();
+
+  // Push external content changes into the editor without resetting cursor position
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (content === lastExternalContent.current) return;
+    lastExternalContent.current = content;
+    const model = editor.getModel();
+    if (!model) return;
+    // Use pushEditOperations to replace content while preserving cursor / selection
+    const fullRange = model.getFullModelRange();
+    model.pushEditOperations(
+      editor.getSelections() ?? [],
+      [{ range: fullRange, text: content }],
+      () => null,
+    );
+  }, [content]);
+
+  // Sync readOnly state without re-mounting the editor
+  useEffect(() => {
+    editorRef.current?.updateOptions({ readOnly: !isHitlGate });
+  }, [isHitlGate]);
+
+  function handleEditorMount(editorInstance: MonacoEditor.IStandaloneCodeEditor, _monaco: Monaco) {
+    editorRef.current = editorInstance;
+    lastExternalContent.current = content;
+  }
 
   return (
     <div className="flex flex-col rounded-xl border border-[var(--border-glass)] bg-[var(--bg-secondary)] overflow-hidden">
@@ -104,7 +127,7 @@ export default function PromptEditor({
         >
           {CLI_TOOL_KEYS.filter((k) => {
             const ts = toolStatuses.find((t) => t.key === k);
-            return !ts || ts.available;
+            return ts?.available === true;
           }).map((k) => (
             <option key={k} value={k}>{CLI_DISPLAY[k]}</option>
           ))}
@@ -123,15 +146,15 @@ export default function PromptEditor({
       </div>
 
       {/* Editor area */}
-      <div className="flex-1 min-h-0 p-4">
+      <div className="flex-1 min-h-0">
         {isGenerating && !hasContent && (
-          <div className="flex items-center gap-2 text-sm text-slate-400 animate-pulse">
+          <div className="flex items-center gap-2 px-4 py-4 text-sm text-slate-400 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" />
             Generating prompt…
           </div>
         )}
         {promptGenFailed && (
-          <div className="mb-3 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+          <div className="mx-4 mt-3 mb-1 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
             <span className="flex-1">Prompt generation failed{promptGenError ? `: ${promptGenError}` : ''}</span>
             <button
               onClick={onRetryPromptGenerator}
@@ -142,18 +165,45 @@ export default function PromptEditor({
             </button>
           </div>
         )}
-        <textarea
-          ref={textareaRef}
-          value={content}
-          onChange={(e) => onContentChange(e.target.value)}
-          placeholder="Prompt will appear here when generated…"
-          className="w-full min-h-[120px] max-h-[400px] bg-transparent text-sm text-white/90 placeholder:text-white/20 resize-none focus:outline-none font-mono leading-relaxed"
-          readOnly={!isHitlGate}
+        <Editor
+          height="280px"
+          language="markdown"
+          defaultValue={content}
+          theme="vs-dark"
+          onMount={handleEditorMount}
+          onChange={(v) => {
+            const val = v ?? '';
+            lastExternalContent.current = val;
+            onContentChange(val);
+          }}
+          options={{
+            readOnly: !isHitlGate,
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            lineNumbers: 'off',
+            glyphMargin: false,
+            folding: false,
+            lineDecorationsWidth: 8,
+            renderLineHighlight: 'none',
+            overviewRulerLanes: 0,
+            scrollbar: { verticalScrollbarSize: 6 },
+          }}
         />
       </div>
 
       {/* Footer with approve */}
       <div className="flex items-center gap-2 px-4 py-2.5 border-t border-[var(--border-glass)]">
+        {isHitlGate && (
+          <button
+            onClick={onRetryPromptGenerator}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600/80 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Regenerate Prompt
+          </button>
+        )}
         <div className="flex-1" />
         <button
           onClick={onApprove}

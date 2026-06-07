@@ -2,6 +2,10 @@
    Renders the code-review JSON viewer with approve/edit/reset controls.
 */
 
+import { useEffect, useRef } from 'react';
+import Editor, { type Monaco } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
+
 /* ── Props ───────────────────────────────────────────────────────────────── */
 
 export interface ReviewViewerProps {
@@ -15,6 +19,7 @@ export interface ReviewViewerProps {
   onReset: () => void;
   onContentChange: (v: string) => void;
   onRetryPR: () => void;
+  onRetryCodeGenerator: () => void;
   isLoading: boolean;
   prFailed: boolean;
   prError: string;
@@ -37,6 +42,7 @@ export default function ReviewViewer({
   onReset,
   onContentChange,
   onRetryPR,
+  onRetryCodeGenerator,
   isLoading,
   prFailed,
   prError,
@@ -45,10 +51,44 @@ export default function ReviewViewer({
   onRetryCodeReviewer,
   reviewJsonExists,
 }: ReviewViewerProps) {
-  const isReviewGate = pipelineStatus === 'HITL_REVIEW_APPROVAL';
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  // Track the last externally-set content so we only push updates when it actually changes
+  const lastExternalContent = useRef<string>('');
+
+  const isReviewGate = pipelineStatus === 'HITL_REVIEW_DECISION';
   const isReviewing = pipelineStatus === 'CODE_REVIEW' || pipelineStatus === 'STORY_CODE_REVIEW';
   const isPRCreation = pipelineStatus === 'PR_CREATION' || pipelineStatus === 'STORY_PR_CREATION';
   const isStoryComplete = pipelineStatus === 'STORY_COMPLETE';
+
+  // Push external content changes into the editor without resetting cursor position
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (content === lastExternalContent.current) return;
+    lastExternalContent.current = content;
+    const model = editor.getModel();
+    if (!model) return;
+    // Use pushEditOperations to replace content while preserving cursor / selection
+    const fullRange = model.getFullModelRange();
+    model.pushEditOperations(
+      editor.getSelections() ?? [],
+      [{ range: fullRange, text: content }],
+      () => null,
+    );
+  }, [content]);
+
+  // Sync readOnly state without re-mounting the editor
+  useEffect(() => {
+    editorRef.current?.updateOptions({
+      readOnly: !isReviewGate,
+      renderLineHighlight: isReviewGate ? 'line' : 'none',
+    });
+  }, [isReviewGate]);
+
+  function handleEditorMount(editorInstance: MonacoEditor.IStandaloneCodeEditor, _monaco: Monaco) {
+    editorRef.current = editorInstance;
+    lastExternalContent.current = content;
+  }
 
   return (
     <div className="flex flex-col rounded-xl border border-[var(--border-glass)] bg-[var(--bg-secondary)] overflow-hidden">
@@ -82,21 +122,21 @@ export default function ReviewViewer({
       </div>
 
       {/* Review content area */}
-      <div className="flex-1 min-h-0 p-4">
+      <div className="flex-1 min-h-0">
         {isReviewing && !reviewJsonExists && (
-          <div className="flex items-center gap-2 text-sm text-slate-400 animate-pulse">
+          <div className="flex items-center gap-2 px-4 py-4 text-sm text-slate-400 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-bounce" />
             Running code review…
           </div>
         )}
         {isPRCreation && (
-          <div className="flex items-center gap-2 text-sm text-slate-400 animate-pulse">
+          <div className="flex items-center gap-2 px-4 py-4 text-sm text-slate-400 animate-pulse">
             <span className="w-2 h-2 rounded-full bg-blue-400 animate-bounce" />
             Creating pull request…
           </div>
         )}
         {codeReviewFailed && (
-          <div className="mb-3 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+          <div className="mx-4 mt-3 mb-1 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
             <span className="flex-1">Code review failed{codeReviewError ? `: ${codeReviewError}` : ''}</span>
             <button
               onClick={onRetryCodeReviewer}
@@ -108,7 +148,7 @@ export default function ReviewViewer({
           </div>
         )}
         {prFailed && (
-          <div className="mb-3 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs flex items-center gap-2">
+          <div className="mx-4 mt-3 mb-1 px-3 py-2.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs flex items-center gap-2">
             <span className="flex-1">PR creation failed{prError ? `: ${prError}` : ''}</span>
             <button
               onClick={onRetryPR}
@@ -119,18 +159,61 @@ export default function ReviewViewer({
             </button>
           </div>
         )}
-        <textarea
-          value={content}
-          onChange={(e) => onContentChange(e.target.value)}
-          placeholder="Review JSON will appear here after code review…"
-          className="w-full min-h-[120px] max-h-[400px] bg-transparent text-sm text-white/90 placeholder:text-white/20 resize-none focus:outline-none font-mono leading-relaxed"
-          readOnly={!isReviewGate}
+        <Editor
+          height="280px"
+          language="json"
+          defaultValue={content}
+          theme="vs-dark"
+          onMount={handleEditorMount}
+          onChange={(v) => {
+            const val = v ?? '';
+            lastExternalContent.current = val;
+            onContentChange(val);
+          }}
+          options={{
+            readOnly: !isReviewGate,
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            lineNumbers: 'on',
+            glyphMargin: false,
+            folding: true,
+            lineDecorationsWidth: 8,
+            renderLineHighlight: isReviewGate ? 'line' : 'none',
+            overviewRulerLanes: 0,
+            scrollbar: { verticalScrollbarSize: 6 },
+          }}
         />
       </div>
 
       {/* Footer with approve / next story */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-[var(--border-glass)]">
-        <div className="flex-1" />
+      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-[var(--border-glass)] flex-wrap">
+        {isReviewGate && (
+          <>
+            <button
+              onClick={onRetryCodeGenerator}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600/80 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Retry Code Gen
+            </button>
+            <button
+              onClick={onRetryCodeReviewer}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600/80 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Retry Reviewer
+            </button>
+            <button
+              onClick={onMoveToNextStory}
+              disabled={isLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-600 text-white hover:bg-slate-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Skip Story →
+            </button>
+          </>
+        )}
         {isStoryComplete && (
           <button
             onClick={onMoveToNextStory}
@@ -138,6 +221,16 @@ export default function ReviewViewer({
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             Next Story →
+          </button>
+        )}
+        <div className="flex-1" />
+        {isModified && (
+          <button
+            onClick={onReset}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 text-white/70 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Reset
           </button>
         )}
         <button

@@ -23,6 +23,7 @@ import logging
 import re
 import time
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -57,11 +58,11 @@ class ADOVCSClient(VCSClient):
         """
         if not all([org, project, token]):
             raise ValueError("ADO org, project, and token are all required")
-        self._org = org
-        self._project = project
+        self._org = quote(org, safe="")
+        self._project = quote(project, safe="")
         self._token = token
         # Base URL for Git REST APIs
-        self._base = f"https://dev.azure.com/{org}/{project}/_apis/git"
+        self._base = f"https://dev.azure.com/{self._org}/{self._project}/_apis/git"
         # Cached repo ID (fetched lazily on first use)
         self._repo_id: Optional[str] = None
 

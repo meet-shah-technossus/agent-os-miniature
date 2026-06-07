@@ -1,4 +1,4 @@
-/* Settings â€” professional tabbed layout with real CLI-tool management */
+/* Settings — professional tabbed layout with real CLI-tool management */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -17,22 +17,22 @@ import PipelineTab from './PipelineTab';
 const label = labelClass;
 const input = inputClass;
 
-/* â”€â”€ Tab types â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Tab types ─────────────────────────────────────────────────────────────── */
 type Tab = 'ai-tools' | 'github' | 'project' | 'pipeline' | 'requirements';
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
-  { key: 'ai-tools',     label: 'AI Tools',        icon: 'âš¡' },
-  { key: 'github',       label: 'VCS / Git',        icon: 'ðŸ”—' },
-  { key: 'project',      label: 'Project',          icon: 'ðŸ“' },
-  { key: 'pipeline',     label: 'Pipeline',         icon: 'ðŸ”„' },
-  { key: 'requirements', label: 'Requirements',     icon: 'ðŸ“‹' },
+  { key: 'ai-tools',     label: 'AI Tools',        icon: '⚡' },
+  { key: 'github',       label: 'VCS / Git',        icon: '🔗' },
+  { key: 'project',      label: 'Project',          icon: '📁' },
+  { key: 'pipeline',     label: 'Pipeline',         icon: '🔄' },
+  { key: 'requirements', label: 'Requirements',     icon: '📋' },
 ];
 
 const emptyCredential = (): AIToolCredential => ({
   enabled: false, auth_method: '', api_key: '', email: '', account_id: '', endpoint: '',
 });
 
-/* â”€â”€ Requirements preview sub-components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Requirements preview sub-components ─────────────────────────────────── */
 
 import type { ReqEpic, ReqFeature, ReqStory } from '../hooks/api';
 
@@ -129,17 +129,17 @@ function ReqEpicBlock({ epic }: { epic: ReqEpic }) {
   );
 }
 
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+/* ═════════════════════════════════════════════════════════════════════════════ */
 
 export default function SettingsView() {
-  /* â”€â”€ Top-level state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Top-level state ────────────────────────────────────────────────────── */
   const [settings, setSettings]     = useState<SettingsType | null>(null);
   const [saving, setSaving]         = useState(false);
   const [toast, setToast]           = useState('');
   const [activeTab, setActiveTab]   = useState<Tab>('ai-tools');
   const [ghTest, setGhTest]         = useState<TestGitHubResponse | null>(null);
 
-  /* â”€â”€ Editable fields â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Editable fields ────────────────────────────────────────────────────── */
   const [ghToken, setGhToken]             = useState('');
   const [ghOwner, setGhOwner]             = useState('');
   const [ghRepo, setGhRepo]               = useState('');
@@ -156,7 +156,7 @@ export default function SettingsView() {
   const [convergence, setConvergence]     = useState('no_high_severity');
   const [autoApprove, setAutoApprove]     = useState(false);
 
-  /* â”€â”€ AI Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── AI Tools ───────────────────────────────────────────────────────────── */
   const [aiTools, setAiTools] = useState<Record<ToolKey, AIToolCredential>>({
     codex: emptyCredential(), claude: emptyCredential(), gemini: emptyCredential(),
     qwen: emptyCredential(), deepseek: emptyCredential(), cursor: emptyCredential(),
@@ -169,7 +169,7 @@ export default function SettingsView() {
   const [apiKeyInputs, setApiKeyInputs]   = useState<Record<string, string>>({});
   const [copiedCmd, setCopiedCmd]         = useState<Record<string, boolean>>({});
 
-  /* â”€â”€ Requirements â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Requirements ───────────────────────────────────────────────────────── */
   const [reqSource, setReqSource] = useState<'device' | 'jira' | 'asana' | 'ado'>('device');
   const [reqPath, setReqPath]     = useState('');
   const [reqStats, setReqStats]   = useState<{ epics: number; features: number; stories: number } | null>(null);
@@ -197,26 +197,26 @@ export default function SettingsView() {
   const [adoProjectsFetchError, setAdoProjectsFetchError] = useState('');
   const [adoMcpOpen, setAdoMcpOpen]       = useState<Record<string, boolean>>({});
 
-  /* â”€â”€ Pipeline mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Pipeline mode ──────────────────────────────────────────────────────── */
   const [pipelineMode, setPipelineMode]   = useState<'standard' | 'github_review'>('standard');
   const [ghReviewUrl, setGhReviewUrl]     = useState('');
   const [ghReviewForkName, setGhReviewForkName] = useState('');
   const [ghReviewBranch, setGhReviewBranch]     = useState('story-');
 
-  /* â”€â”€ Prompt Generator / Ollama â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Prompt Generator / Ollama ──────────────────────────────────────────── */
   const [pgProvider, setPgProvider]         = useState<'ollama' | 'openai'>('ollama');
   const [pgOllamaModel, setPgOllamaModel]   = useState('llama3.1:8b');
   const [pgOpenAIModel, setPgOpenAIModel]   = useState('gpt-4.1-mini');
   const [ollamaBaseUrl, setOllamaBaseUrl]   = useState('http://localhost:11434');
   const [ollamaTimeout, setOllamaTimeout]   = useState(300);
 
-  /* â”€â”€ Code Reviewer LLM Provider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Code Reviewer LLM Provider ─────────────────────────────────────────── */
   const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama'>('openai');
   const [crModel, setCrModel]               = useState('gpt-4.1-mini');
   const [crOllamaModel, setCrOllamaModel]   = useState('llama3.1:8b');
 
 
-  /* â”€â”€ Load settings â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Load settings ──────────────────────────────────────────────────────── */
   useEffect(() => {
     api.getSettings().then((s) => {
       setSettings(s);
@@ -291,7 +291,7 @@ export default function SettingsView() {
     }).catch(() => {});
   }, []);
 
-  /* â”€â”€ Load CLI tool statuses â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Load CLI tool statuses ──────────────────────────────────────────────── */
   const loadToolStatuses = useCallback(() => {
     api.getCliTools().then(({ tools }) => {
       const map: Record<string, CliToolStatus> = {};
@@ -302,7 +302,7 @@ export default function SettingsView() {
 
   useEffect(() => { loadToolStatuses(); }, [loadToolStatuses]);
 
-  /* â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Helpers ─────────────────────────────────────────────────────────────── */
   const flash = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(''), 3000);
@@ -392,7 +392,7 @@ export default function SettingsView() {
   };
 
   const fetchAdoProjects = async (org: string, token: string) => {
-    if (!org) return;  // token may be '***' â€” backend resolves the saved PAT automatically
+    if (!org) return;  // token may be '***' — backend resolves the saved PAT automatically
     setAdoProjectsLoading(true);
     setAdoProjectsFetchError('');
     try {
@@ -411,33 +411,33 @@ export default function SettingsView() {
     }
   };
 
-  /* â”€â”€ Loading state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Loading state ──────────────────────────────────────────────────────── */
   if (!settings) {
     return (
       <div className="flex items-center justify-center h-64 text-white/40 text-sm">
-        Loading settingsâ€¦
+        Loading settings…
       </div>
     );
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
   /* RENDER                                                                     */
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   return (
     <div className="max-w-5xl mx-auto">
-      {/* â”€â”€ Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-lg font-semibold text-white">Settings</h2>
           <p className="text-xs text-white/40 mt-0.5">Configure AI tools, integrations, and pipeline behavior</p>
         </div>
         <button onClick={handleSave} disabled={saving} className={btnPrimary}>
-          {saving ? 'Savingâ€¦' : 'Save Changes'}
+          {saving ? 'Saving…' : 'Save Changes'}
         </button>
       </div>
 
-      {/* â”€â”€ Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Toast ────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -451,7 +451,7 @@ export default function SettingsView() {
         )}
       </AnimatePresence>
 
-      {/* â”€â”€ Tab navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Tab navigation ───────────────────────────────────────────────── */}
       <div className="flex gap-1 mb-6 border-b border-white/[0.06] pb-px">
         {TABS.map((t) => (
           <button
@@ -475,7 +475,7 @@ export default function SettingsView() {
         ))}
       </div>
 
-      {/* â”€â”€ Tab content â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Tab content ──────────────────────────────────────────────────── */}
       <AnimatePresence mode="wait">
         <motion.div
           key={activeTab}
@@ -492,13 +492,13 @@ export default function SettingsView() {
         </motion.div>
       </AnimatePresence>
 
-      {/* â”€â”€ Global Requirements Preview Modal (shared across tabs) â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
+      {/* ── Global Requirements Preview Modal (shared across tabs) ───────── */}
       {renderReqPreviewModal()}
     </div>
   );
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
   /* TAB: GitHub                                                                */
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   function renderGitHub() {
     return (
@@ -513,8 +513,8 @@ export default function SettingsView() {
           </p>
           <div className="flex gap-3">
             {[
-              ['github', 'ðŸ™', 'GitHub'] as const,
-              ['ado', 'ðŸ”·', 'Azure DevOps'] as const,
+              ['github', '🐙', 'GitHub'] as const,
+              ['ado', '🔷', 'Azure DevOps'] as const,
             ].map(([val, icon, name]) => (
               <button
                 key={val}
@@ -548,7 +548,7 @@ export default function SettingsView() {
                     className={input}
                     value={ghToken}
                     onChange={(e) => setGhToken(e.target.value)}
-                    placeholder="ghp_â€¦ or github_pat_â€¦"
+                    placeholder="ghp_… or github_pat_…"
                   />
                   <button onClick={handleTestGH} className={btnSecondary}>
                     Test
@@ -637,10 +637,10 @@ export default function SettingsView() {
                     disabled={adoProjectsLoading}
                   >
                     {adoProjects.length === 0 ? (
-                      <option value="">{adoProjectsLoading ? 'Loadingâ€¦' : 'â€” fetch projects â€”'}</option>
+                      <option value="">{adoProjectsLoading ? 'Loading…' : '— fetch projects —'}</option>
                     ) : (
                       <>
-                        <option value="">â€” select a project â€”</option>
+                        <option value="">— select a project —</option>
                         {adoProjects.map((p) => (
                           <option key={p} value={p}>{p}</option>
                         ))}
@@ -653,7 +653,7 @@ export default function SettingsView() {
                     onClick={() => fetchAdoProjects(adoOrg, adoToken)}
                     className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
                   >
-                    {adoProjectsLoading ? 'â€¦' : 'Fetch'}
+                    {adoProjectsLoading ? '…' : 'Fetch'}
                   </button>
                 </div>
                 {adoProjectsFetchError && <p className="text-[10px] text-red-400/80 mt-1">{adoProjectsFetchError}</p>}
@@ -675,9 +675,9 @@ export default function SettingsView() {
     );
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
   /* TAB: Project                                                               */
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   function renderProject() {
     return (
@@ -748,9 +748,9 @@ export default function SettingsView() {
     );
   }
 
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
   /* TAB: Requirements                                                          */
-  /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
+  /* ═══════════════════════════════════════════════════════════════════════════ */
 
   function renderRequirements() {
     return (
@@ -767,10 +767,10 @@ export default function SettingsView() {
           <label className={label}>Source</label>
           <div className="grid grid-cols-4 gap-2">
             {([
-              ['device', 'ðŸ“', 'From Device'],
-              ['jira',   'ðŸŸ¦', 'JIRA'],
-              ['asana',  'ðŸŸ§', 'Asana'],
-              ['ado',    'ðŸŸ¦', 'Azure DevOps'],
+              ['device', '📁', 'From Device'],
+              ['jira',   '🟦', 'JIRA'],
+              ['asana',  '🟧', 'Asana'],
+              ['ado',    '🟦', 'Azure DevOps'],
             ] as [typeof reqSource, string, string][]).map(([val, icon, name]) => (
               <button
                 key={val}
@@ -822,9 +822,9 @@ export default function SettingsView() {
               }}
             />
             <button onClick={() => fileInputRef.current?.click()} disabled={reqUploading} className={btnSecondary}>
-              {reqUploading ? 'Uploadingâ€¦' : 'Browse & Uploadâ€¦'}
+              {reqUploading ? 'Uploading…' : 'Browse & Upload…'}
             </button>
-            <p className="text-[10px] text-white/25">Accepted: .xlsx Â· .csv Â· .txt Â· .yaml / .yml (up to 5 MB)</p>
+            <p className="text-[10px] text-white/25">Accepted: .xlsx · .csv · .txt · .yaml / .yml (up to 5 MB)</p>
           </div>
         )}
 
@@ -869,7 +869,7 @@ export default function SettingsView() {
                 }}
                 className={`${btnPrimary} !bg-slate-700 hover:!bg-slate-600`}
               >
-                {reqValidating ? 'Validatingâ€¦' : 'Validate Connection'}
+                {reqValidating ? 'Validating…' : 'Validate Connection'}
               </button>
               <button
                 disabled={reqIngesting || !jiraUrl || !jiraEmail || !jiraToken || !jiraProject}
@@ -890,7 +890,7 @@ export default function SettingsView() {
                 }}
                 className={btnPrimary}
               >
-                {reqIngesting ? 'Importingâ€¦' : 'Import from JIRA'}
+                {reqIngesting ? 'Importing…' : 'Import from JIRA'}
               </button>
             </div>
           </div>
@@ -927,7 +927,7 @@ export default function SettingsView() {
                 }}
                 className={`${btnPrimary} !bg-slate-700 hover:!bg-slate-600`}
               >
-                {reqValidating ? 'Validatingâ€¦' : 'Validate Connection'}
+                {reqValidating ? 'Validating…' : 'Validate Connection'}
               </button>
               <button
                 disabled={reqIngesting || !asanaToken || !asanaProjectId}
@@ -948,7 +948,7 @@ export default function SettingsView() {
                 }}
                 className={btnPrimary}
               >
-                {reqIngesting ? 'Importingâ€¦' : 'Import from Asana'}
+                {reqIngesting ? 'Importing…' : 'Import from Asana'}
               </button>
             </div>
           </div>
@@ -977,10 +977,10 @@ export default function SettingsView() {
                     disabled={adoProjectsLoading}
                   >
                     {adoProjects.length === 0 ? (
-                      <option value="">{adoProjectsLoading ? 'Loadingâ€¦' : 'â€” fetch projects â€”'}</option>
+                      <option value="">{adoProjectsLoading ? 'Loading…' : '— fetch projects —'}</option>
                     ) : (
                       <>
-                        <option value="">â€” select a project â€”</option>
+                        <option value="">— select a project —</option>
                         {adoProjects.map((p) => (
                           <option key={p} value={p}>{p}</option>
                         ))}
@@ -993,7 +993,7 @@ export default function SettingsView() {
                     onClick={() => fetchAdoProjects(adoOrg, adoToken)}
                     className="px-3 py-1.5 text-xs rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-40 disabled:cursor-not-allowed text-white whitespace-nowrap"
                   >
-                    {adoProjectsLoading ? 'â€¦' : 'Fetch'}
+                    {adoProjectsLoading ? '…' : 'Fetch'}
                   </button>
                 </div>
                 {adoProjectsFetchError && <p className="text-[10px] text-red-400/80 mt-1">{adoProjectsFetchError}</p>}
@@ -1008,7 +1008,7 @@ export default function SettingsView() {
                 onChange={(e) => { setAdoToken(e.target.value); setAdoProjects([]); setAdoProjectsFetchError(''); }}
                 placeholder="ADO PAT"
               />
-              <p className="text-[10px] text-white/25 mt-1">Generate at: dev.azure.com â†’ User settings â†’ Personal access tokens</p>
+              <p className="text-[10px] text-white/25 mt-1">Generate at: dev.azure.com → User settings → Personal access tokens</p>
             </div>
             <div className="flex gap-2">
               <button
@@ -1029,7 +1029,7 @@ export default function SettingsView() {
                 }}
                 className={`${btnPrimary} !bg-slate-700 hover:!bg-slate-600`}
               >
-                {reqValidating ? 'Validatingâ€¦' : 'Validate Connection'}
+                {reqValidating ? 'Validating…' : 'Validate Connection'}
               </button>
               <button
                 disabled={reqIngesting || !adoOrg || !adoToken || !adoProject}
@@ -1050,7 +1050,7 @@ export default function SettingsView() {
                 }}
                 className={btnPrimary}
               >
-                {reqIngesting ? 'Importingâ€¦' : 'Import from ADO'}
+                {reqIngesting ? 'Importing…' : 'Import from ADO'}
               </button>
             </div>
           </div>
@@ -1059,7 +1059,7 @@ export default function SettingsView() {
         {/* Feedback */}
         {reqValidationResult && reqValidationResult.valid && (
           <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-xs text-green-400/80 mt-4">
-            âœ“ Connection validated successfully.
+            ✓ Connection validated successfully.
             {reqValidationResult.warnings.length > 0 && (
               <span className="text-yellow-400/80 ml-2">
                 Warnings: {reqValidationResult.warnings.join('; ')}
@@ -1069,7 +1069,7 @@ export default function SettingsView() {
         )}
         {reqStats && (
           <motion.p initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-xs text-green-400/80 mt-4">
-            Loaded: {reqStats.epics} epics Â· {reqStats.features} features Â· {reqStats.stories} stories
+            Loaded: {reqStats.epics} epics · {reqStats.features} features · {reqStats.stories} stories
           </motion.p>
         )}
         {reqError && <p className="text-xs text-red-400/80 mt-4">{reqError}</p>}
@@ -1079,9 +1079,9 @@ export default function SettingsView() {
           <div className="mt-5 pt-4 border-t border-white/[0.04] flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase tracking-widest text-white/25">Active:</span>
             <span className="text-xs font-medium text-white/60 px-2 py-0.5 rounded bg-white/[0.06]">
-              {settings.requirements.source === 'device' ? 'ðŸ“ From Device' :
-               settings.requirements.source === 'jira'   ? 'ðŸŸ¦ JIRA' :
-               settings.requirements.source === 'asana'  ? 'ðŸŸ§ Asana' : 'ðŸŸ¦ Azure DevOps'}
+              {settings.requirements.source === 'device' ? '📁 From Device' :
+               settings.requirements.source === 'jira'   ? '🟦 JIRA' :
+               settings.requirements.source === 'asana'  ? '🟧 Asana' : '🟦 Azure DevOps'}
             </span>
             {settings.requirements.source === 'device' && settings.requirements.path && (
               <span className="text-xs font-mono text-white/30 truncate max-w-xs">{settings.requirements.path.split('/').pop()}</span>
@@ -1113,12 +1113,12 @@ export default function SettingsView() {
           </div>
         )}
 
-        {/* Requirements Preview Modal is rendered globally â€” see renderReqPreviewModal() */}
+        {/* Requirements Preview Modal is rendered globally — see renderReqPreviewModal() */}
       </section>
     );
   }
 
-  /* â”€â”€ Requirements preview modal (shared â€” rendered at root level) â”€â”€â”€â”€â”€â”€â”€ */
+  /* ── Requirements preview modal (shared — rendered at root level) ─────── */
   function renderReqPreviewModal() {
     return (
       <AnimatePresence>
@@ -1150,7 +1150,7 @@ export default function SettingsView() {
                       const nAC    = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.reduce((c, s) => c + s.acceptance_criteria.length, 0), 0), 0);
                       return (
                         <p className="text-[11px] text-white/40 mt-0.5">
-                          {nEpics} epic{nEpics !== 1 ? 's' : ''} Â· {nFeat} feature{nFeat !== 1 ? 's' : ''} Â· {nStory} stor{nStory !== 1 ? 'ies' : 'y'} Â· {nAC} acceptance criteria
+                          {nEpics} epic{nEpics !== 1 ? 's' : ''} · {nFeat} feature{nFeat !== 1 ? 's' : ''} · {nStory} stor{nStory !== 1 ? 'ies' : 'y'} · {nAC} acceptance criteria
                         </p>
                       );
                     })()}
@@ -1173,7 +1173,7 @@ export default function SettingsView() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
                       </svg>
-                      Loadingâ€¦
+                      Loading…
                     </div>
                   )}
                   {reqViewError && (

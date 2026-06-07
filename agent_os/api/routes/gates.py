@@ -57,7 +57,7 @@ def move_to_next_story(orch: Orchestrator = Depends(get_orchestrator)) -> Approv
     if not ok:
         raise HTTPException(
             status_code=409,
-            detail="Cannot move to next story — pipeline is not at HITL_REVIEW_DECISION.",
+            detail="Cannot move to next story — pipeline is not at HITL_REVIEW_DECISION or STORY_COMPLETE.",
         )
     return ApproveGateResponse(approved=True, message="Merging PR and advancing to next story")
 
@@ -91,12 +91,12 @@ def retry_pr(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateRespo
 
 @router.post("/retry-prompt-generator", response_model=ApproveGateResponse)
 def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
-    """Retry prompt generation after a failure."""
+    """Re-run prompt generation from the HITL_PROMPT_REVIEW gate."""
     ok = orch.retry_prompt_generator()
     if not ok:
         raise HTTPException(
             status_code=409,
-            detail="Cannot retry prompt generator — not at HITL_PROMPT_REVIEW with a failure.",
+            detail="Cannot regenerate prompt — pipeline is not at HITL_PROMPT_REVIEW.",
         )
     return ApproveGateResponse(approved=True, message="Prompt generator retry started")
 

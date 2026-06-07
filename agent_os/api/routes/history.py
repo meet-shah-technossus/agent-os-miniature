@@ -111,7 +111,8 @@ def get_current_prompt(orch: Orchestrator = Depends(get_orchestrator)) -> Curren
     state = orch.state_mgr.state
     prompt_content: str = state.metadata.get("prompt_content", "") or ""
     prompt_path: str = getattr(orch.config.project, "prompt_file_path", "") or ""
-    iteration: int = state.current_iteration or 0
+    # In GHR mode, current_iteration stays 0 — use story_iteration instead
+    iteration: int = state.current_iteration or state.metadata.get("story_iteration", 0) or 0
 
     if not prompt_content and prompt_path:
         from pathlib import Path as _Path
@@ -132,7 +133,8 @@ def get_current_review(orch: Orchestrator = Depends(get_orchestrator)) -> Curren
     """Return the latest code review JSON."""
     state = orch.state_mgr.state
     review_content: str = state.metadata.get("review_json_content", "") or ""
-    iteration: int = max(0, (state.current_iteration or 1) - 1)
+    # In GHR mode, use story_iteration; standard mode uses current_iteration - 1
+    iteration: int = state.metadata.get("story_iteration", 0) or max(0, (state.current_iteration or 1) - 1)
 
     return CurrentReviewResponse(
         iteration=iteration,

@@ -499,27 +499,32 @@ class Orchestrator:
     def move_to_next_story(self) -> bool:
         """Force-advance to the next story: merge current PR, delete branch, then resume.
 
-        Intended to be triggered by the frontend "Move to Next Story" button.
-        Only valid when the pipeline is paused at ``HITL_REVIEW_DECISION``
-        (i.e. after the code reviewer has completed and produced a review JSON).
+        Intended to be triggered by the frontend "Move to Next Story" / "Skip Story" button.
+        Valid when the pipeline is at ``HITL_REVIEW_DECISION`` or ``STORY_COMPLETE``.
 
-        Steps performed:
-          1. Merge the PR for the current story via the GitHub VCS client.
-          2. Delete the feature branch.
-          3. Mark the story as complete in the queue.
-          4. Transition to ``STORY_COMPLETE``.
-          5. Resume the pipeline loop (``_step_story_complete`` picks the next story
+        Steps performed (asynchronously in a background thread):
+          1. Resolve open review threads on the PR.
+          2. Merge the PR for the current story via the GitHub VCS client.
+          3. Delete the feature branch.
+          4. Mark the story as complete in the queue.
+          5. Transition to ``STORY_COMPLETE``.
+          6. Resume the pipeline loop (``_step_story_complete`` picks the next story
              or transitions to ``PIPELINE_COMPLETE`` if the queue is exhausted).
 
         Returns True if the action was triggered, False if not in the right state.
         """
-        from ..vcs.factory import make_vcs_client
-        from ..orchestrator.story_queue import StoryQueueManager
+        current = self.state_mgr.current_status
 
-        if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
-            logger.warning("move_to_next_story() called but pipeline is not at HITL_REVIEW_DECISION")
+        # If already at STORY_COMPLETE (e.g. pipeline stuck), just resume the loop
+        if current == PipelineStatus.STORY_COMPLETE:
+            self._resume_in_thread()
+            return True
+
+        if current != PipelineStatus.HITL_REVIEW_DECISION:
+            logger.warning("move_to_next_story() called but pipeline is at %s", current)
             return False
 
+        # Capture state snapshot needed by the background work
         state = self.state_mgr.state
         story_id = state.current_story_id
         feature_branch = self.config.project.feature_branch or (f"story-{story_id}" if story_id else "dev")
@@ -531,6 +536,33 @@ class Orchestrator:
                 pr_number = int(pr_raw)
             except (TypeError, ValueError):
                 pass
+
+        # Transition to STORY_COMPLETE immediately so the API returns fast
+        self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+        self._emit("story_completed", {
+            "story_id": story_id,
+            "reason": "move_to_next_story",
+        })
+
+        # Run the heavy GitHub/VCS work + resume in a background thread
+        def _finalize_and_resume():
+            self._finalize_story_merge(story_id, feature_branch, pr_number, state)
+            self._resume_in_thread()
+
+        t = threading.Thread(target=_finalize_and_resume, daemon=True, name="move-to-next-story")
+        t.start()
+        return True
+
+    def _finalize_story_merge(
+        self,
+        story_id: Optional[str],
+        feature_branch: str,
+        pr_number: Optional[int],
+        state,
+    ) -> None:
+        """Perform the slow GitHub operations for move-to-next-story in background."""
+        from ..vcs.factory import make_vcs_client
+        from ..orchestrator.story_queue import StoryQueueManager
 
         def _project_vcs():
             vcs = make_vcs_client(self.config)
@@ -600,16 +632,6 @@ class Orchestrator:
 
         # Close the ADO work item for this specific story (Active → Closed)
         self._close_ado_work_items(story_id=story_id)
-
-        self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
-        self._emit("story_completed", {
-            "story_id": story_id,
-            "reason": "move_to_next_story",
-            "pr_merged": merged,
-            "branch_deleted": branch_deleted,
-        })
-        self._resume_in_thread()
-        return True
 
     def pause(self) -> bool:
         """Request the pipeline to pause after the current step completes."""
@@ -1031,19 +1053,21 @@ class Orchestrator:
             return True  # attempted but failed — 200 so frontend refreshes
 
     def retry_prompt_generator(self) -> bool:
-        """Retry prompt generation after a failure.
+        """Re-run prompt generation from the HITL_PROMPT_REVIEW gate.
 
-        Only callable when at HITL_PROMPT_REVIEW with prompt_gen_failed metadata.
-        Clears the failure flag and resumes from PROMPT_GENERATION.
+        Callable when at HITL_PROMPT_REVIEW, whether or not a prior failure occurred.
+        This covers both "retry after failure" and "regenerate prompt on demand".
+        Clears any failure flag and resumes from PROMPT_GENERATION.
         """
         if self.state_mgr.current_status != PipelineStatus.HITL_PROMPT_REVIEW:
             logger.warning("retry_prompt_generator() called but not at HITL_PROMPT_REVIEW")
             return False
-        if not self.state_mgr.state.metadata.get("prompt_gen_failed"):
-            logger.warning("retry_prompt_generator() called but prompt_gen_failed not set")
-            return False
+        is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
+        next_status = (
+            PipelineStatus.STORY_PROMPT_GENERATION if is_ghr else PipelineStatus.PROMPT_GENERATION
+        )
         self.state_mgr.transition_to(
-            PipelineStatus.PROMPT_GENERATION,
+            next_status,
             metadata={"prompt_gen_failed": False, "prompt_gen_error": ""},
         )
         self._emit(EventType.STATE_CHANGED, {"retry": "prompt_generator"})
