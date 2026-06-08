@@ -331,26 +331,35 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
         # On Windows the CLI outputs JSON; on Unix it outputs plain text.
         # Handle both formats.
         rc, out, err = _run(["claude", "auth", "status"])
+        logger.debug("claude _detect_auth: rc=%r  out=%r  err=%r", rc, out[:500] if out else out, err[:200] if err else err)
         combined = out + "\n" + err
 
         if rc == 0:
             # Try JSON output first (Windows / newer CLI versions)
             try:
                 data = json.loads(out.strip())
+                logger.debug("claude _detect_auth: JSON parse succeeded, data=%r", data)
                 if data.get("loggedIn") or data.get("logged_in"):
                     email = data.get("email", "Anthropic account")
                     method = data.get("authMethod", "account")
+                    logger.debug("claude _detect_auth: returning True via JSON loggedIn, email=%r method=%r", email, method)
                     return True, email, method
-            except (json.JSONDecodeError, AttributeError):
-                pass
+                logger.debug("claude _detect_auth: JSON parsed but loggedIn/logged_in not truthy")
+            except (json.JSONDecodeError, AttributeError) as exc:
+                logger.debug("claude _detect_auth: JSON parse failed (%s), falling back to plain-text", exc)
 
             # Plain-text output fallback (Unix / older CLI versions)
             combined_lower = combined.lower()
             if "logged in" in combined_lower or "authenticated" in combined_lower:
                 for line in combined.splitlines():
                     if "@" in line or "account" in line.lower():
+                        logger.debug("claude _detect_auth: returning True via plain-text match, line=%r", line.strip())
                         return True, line.strip(), "account"
+                logger.debug("claude _detect_auth: returning True via plain-text (no email line found)")
                 return True, "Anthropic account", "account"
+            logger.debug("claude _detect_auth: rc==0 but no auth indicators in output")
+        else:
+            logger.debug("claude _detect_auth: rc=%r (non-zero), skipping CLI output auth check", rc)
 
         # Fallback: credential file detection.
         # The CLI writes `.credentials.json` (dot-prefixed) on all platforms.
@@ -359,16 +368,23 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
             home / ".claude" / ".credentials.json",   # current Claude Code (all OS)
             home / ".claude" / "credentials.json",    # older versions / api_key flow
         ]
+        logger.debug("claude _detect_auth: checking credential file candidates: %s", [str(c) for c in cred_candidates])
         p = _first_existing(cred_candidates)
+        logger.debug("claude _detect_auth: first existing cred file: %r", str(p) if p else None)
         if p:
             data = _read_json(p)
+            logger.debug("claude _detect_auth: cred file keys=%r", list(data.keys()))
             # OAuth flow writes access_token / oauth_token
             if data.get("access_token") or data.get("oauth_token"):
+                logger.debug("claude _detect_auth: returning True via cred file (oauth token)")
                 return True, "Anthropic account", "oauth"
             # API key flow writes api_key
             if data.get("api_key"):
+                logger.debug("claude _detect_auth: returning True via cred file (api_key)")
                 return True, "Anthropic account", "api_key"
+            logger.debug("claude _detect_auth: cred file exists but no recognised token fields")
 
+        logger.debug("claude _detect_auth: returning False (no auth evidence found)")
         return False, "", ""
 
     if meta.key == "codex":
