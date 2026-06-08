@@ -330,8 +330,12 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
         # Primary: run `claude auth status`.
         # On Windows the CLI outputs JSON; on Unix it outputs plain text.
         # Handle both formats.
-        rc, out, err = _run(["claude", "auth", "status"])
-        logger.debug("claude _detect_auth: rc=%r  out=%r  err=%r", rc, out[:500] if out else out, err[:200] if err else err)
+        if _which("claude"):
+            rc, out, err = _run(["claude", "auth", "status"])
+            logger.debug("claude _detect_auth: rc=%r  out=%r  err=%r", rc, out[:500] if out else out, err[:200] if err else err)
+        else:
+            logger.debug("claude _detect_auth: claude binary not on PATH, skipping CLI check")
+            rc, out, err = -1, "", ""
         combined = out + "\n" + err
 
         if rc == 0:
@@ -374,14 +378,15 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
         if p:
             data = _read_json(p)
             logger.debug("claude _detect_auth: cred file keys=%r", list(data.keys()))
-            # OAuth flow writes access_token / oauth_token
-            if data.get("access_token") or data.get("oauth_token"):
-                logger.debug("claude _detect_auth: returning True via cred file (oauth token)")
+            # OAuth flow — Claude Code stores tokens under claudeAiOauth (current format)
+            oauth_data = data.get("claudeAiOauth")
+            if oauth_data and (oauth_data.get("accessToken") or oauth_data.get("refreshToken")):
+                logger.debug("claude _detect_auth: returning True via cred file (claudeAiOauth)")
                 return True, "Anthropic account", "oauth"
-            # API key flow writes api_key
-            if data.get("api_key"):
-                logger.debug("claude _detect_auth: returning True via cred file (api_key)")
-                return True, "Anthropic account", "api_key"
+            # Legacy / api_key flow fields
+            if data.get("access_token") or data.get("oauth_token") or data.get("api_key"):
+                logger.debug("claude _detect_auth: returning True via cred file (legacy token field)")
+                return True, "Anthropic account", "oauth"
             logger.debug("claude _detect_auth: cred file exists but no recognised token fields")
 
         logger.debug("claude _detect_auth: returning False (no auth evidence found)")
