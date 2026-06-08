@@ -297,16 +297,93 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
     - Being *installed* is NOT the same as being *authenticated*.
     - Only return True when we have real evidence of a stored credential.
     """
-    # 1. Check env-var API key first (fastest, works for all tools)
+    import json
+
+    # ── Shared helpers ────────────────────────────────────────────────────
+
+    def _read_json(p: Path) -> dict:
+        """Read a JSON file; return {} on any error."""
+        try:
+            return json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return {}
+
+    def _first_existing(paths: list[Path]) -> Path | None:
+        """Return the first path that exists and has non-zero size."""
+        for p in paths:
+            try:
+                if p.exists() and p.stat().st_size > 0:
+                    return p
+            except Exception:
+                pass
+        return None
+
+    home = Path.home()
+
+    # 1. Env-var API key (fastest, works for all tools)
     if meta.env_key and _check_env_key(meta.env_key):
         return True, f"via ${meta.env_key}", "api_key"
 
-    # 2. Per-tool auth detection
+    # ── Per-tool detection ────────────────────────────────────────────────
+
+    if meta.key == "claude":
+        # Primary: run `claude auth status`.
+        # On Windows the CLI outputs JSON; on Unix it outputs plain text.
+        # Handle both formats.
+        rc, out, err = _run(["claude", "auth", "status"])
+        combined = out + "\n" + err
+
+        if rc == 0:
+            # Try JSON output first (Windows / newer CLI versions)
+            try:
+                data = json.loads(out.strip())
+                if data.get("loggedIn") or data.get("logged_in"):
+                    email = data.get("email", "Anthropic account")
+                    method = data.get("authMethod", "account")
+                    return True, email, method
+            except (json.JSONDecodeError, AttributeError):
+                pass
+
+            # Plain-text output fallback (Unix / older CLI versions)
+            combined_lower = combined.lower()
+            if "logged in" in combined_lower or "authenticated" in combined_lower:
+                for line in combined.splitlines():
+                    if "@" in line or "account" in line.lower():
+                        return True, line.strip(), "account"
+                return True, "Anthropic account", "account"
+
+        # Fallback: credential file detection.
+        # The CLI writes `.credentials.json` (dot-prefixed) on all platforms.
+        # Also check the non-dot variant for forward compatibility.
+        cred_candidates = [
+            home / ".claude" / ".credentials.json",   # current Claude Code (all OS)
+            home / ".claude" / "credentials.json",    # older versions / api_key flow
+        ]
+        p = _first_existing(cred_candidates)
+        if p:
+            data = _read_json(p)
+            # OAuth flow writes access_token / oauth_token
+            if data.get("access_token") or data.get("oauth_token"):
+                return True, "Anthropic account", "oauth"
+            # API key flow writes api_key
+            if data.get("api_key"):
+                return True, "Anthropic account", "api_key"
+
+        return False, "", ""
+
+    if meta.key == "codex":
+        # ~/.codex/auth.json: {"auth_mode": ..., "OPENAI_API_KEY": "sk-..."}
+        p = home / ".codex" / "auth.json"
+        if p.exists():
+            data = _read_json(p)
+            api_key = data.get("OPENAI_API_KEY", "")
+            if api_key and not api_key.startswith("***"):
+                return True, "OpenAI account", data.get("auth_mode", "account")
+        return False, "", ""
+
     if meta.key == "copilot":
-        # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN in the environment.
-        # When those env vars are present, gh uses them for API calls but reports
-        # no stored OAuth credential (exit code 1) — causing a false "not authenticated".
-        # Stripping them here lets us check whether a real gh OAuth session exists.
+        # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN so we check the
+        # stored OAuth credential rather than the env-var PAT.
         rc, out, err = _run_no_gh_token(["gh", "auth", "status"])
         if rc == 0:
             for line in (out + "\n" + err).splitlines():
@@ -315,86 +392,45 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
                     if parts:
                         return True, parts[-1].strip("()"), "oauth"
             return True, "GitHub account", "oauth"
-        return False, "", ""
 
-    if meta.key == "codex":
-        # ~/.codex/auth.json contains {"auth_mode": ..., "OPENAI_API_KEY": "sk-..."}
-        # File existing alone is not enough — the key inside must be non-empty.
-        codex_auth = os.path.expanduser("~/.codex/auth.json")
-        if os.path.exists(codex_auth):
+        # Fallback: gh stores OAuth token in AppData on Windows
+        gh_candidates = [
+            Path(os.environ.get("APPDATA", "")) / "GitHub CLI" / "hosts.yml",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "GitHub CLI" / "hosts.yml",
+            home / ".config" / "gh" / "hosts.yml",   # macOS / Linux
+        ]
+        p = _first_existing(gh_candidates)
+        if p:
             try:
-                import json
-                with open(codex_auth) as f:
-                    data = json.load(f)
-                api_key = data.get("OPENAI_API_KEY", "")
-                if api_key and not api_key.startswith("***"):
-                    return True, "OpenAI account", data.get("auth_mode", "account")
+                text = p.read_text(encoding="utf-8", errors="replace")
+                if "oauth_token" in text or "user:" in text:
+                    return True, "GitHub account", "oauth"
             except Exception:
                 pass
-        return False, "", ""
 
-    if meta.key == "claude":
-        # Use the CLI's own status command — most reliable
-        rc, out, err = _run(["claude", "auth", "status"])
-        combined = (out + "\n" + err).lower()
-        if rc == 0 and ("logged in" in combined or "authenticated" in combined):
-            # Try to extract email/account name
-            for line in (out + "\n" + err).splitlines():
-                if "@" in line or "account" in line.lower():
-                    return True, line.strip(), "account"
-            return True, "Anthropic account", "account"
-        # Fallback: dedicated OAuth credentials file (not settings)
-        claude_creds = os.path.expanduser("~/.claude/credentials.json")
-        if os.path.exists(claude_creds):
-            try:
-                import json
-                with open(claude_creds) as f:
-                    data = json.load(f)
-                if data.get("access_token") or data.get("oauth_token"):
-                    return True, "Anthropic account", "oauth"
-            except Exception:
-                pass
         return False, "", ""
 
     if meta.key == "gemini":
-        # Gemini CLI has no `auth status` subcommand — use file detection only.
+        # Gemini CLI has no `auth status` subcommand.
         # Primary credential file: ~/.gemini/oauth_creds.json
         # Active account email:    ~/.gemini/google_accounts.json
-        import json
-        creds_path = os.path.expanduser("~/.gemini/oauth_creds.json")
-        if os.path.exists(creds_path):
-            try:
-                with open(creds_path) as f:
-                    data = json.load(f)
-                if data.get("access_token") or data.get("refresh_token"):
-                    # Try to get the email from the accounts file
-                    email = ""
-                    accounts_path = os.path.expanduser("~/.gemini/google_accounts.json")
-                    if os.path.exists(accounts_path):
-                        try:
-                            with open(accounts_path) as af:
-                                acc = json.load(af)
-                            email = acc.get("active", "")
-                        except Exception:
-                            pass
-                    return True, email or "Google account", "oauth"
-            except Exception:
-                pass
-        # Fallback paths for older Gemini CLI versions
-        for token_path in [
-            "~/.gemini/oauth_token.json",
-            "~/.config/gemini/oauth_token.json",
-            "~/.config/gemini/credentials.json",
-        ]:
-            p = os.path.expanduser(token_path)
-            if os.path.exists(p):
-                try:
-                    with open(p) as f:
-                        data = json.load(f)
-                    if data.get("access_token") or data.get("token") or data.get("refresh_token"):
-                        return True, "Google account", "oauth"
-                except Exception:
-                    pass
+        cred_candidates = [
+            home / ".gemini" / "oauth_creds.json",
+            home / ".gemini" / "oauth_token.json",
+            home / ".config" / "gemini" / "oauth_token.json",
+            home / ".config" / "gemini" / "credentials.json",
+        ]
+        p = _first_existing(cred_candidates)
+        if p:
+            data = _read_json(p)
+            if data.get("access_token") or data.get("refresh_token") or data.get("token"):
+                email = ""
+                accounts_path = home / ".gemini" / "google_accounts.json"
+                if accounts_path.exists():
+                    acc = _read_json(accounts_path)
+                    email = acc.get("active", "")
+                return True, email or "Google account", "oauth"
+
         return False, "", ""
 
     if meta.key == "qwen":
@@ -410,31 +446,28 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
             return True, "Alibaba account", method
         return False, "", ""
 
-    if meta.key == "cursor":
-        # Cursor stores auth in a system keychain / app data directory
-        for token_path in [
-            "~/Library/Application Support/Cursor/User/globalStorage/cursor.cursor/auth.json",
-            "~/.config/cursor/auth.json",
-        ]:
-            p = os.path.expanduser(token_path)
-            if os.path.exists(p):
-                try:
-                    import json
-                    with open(p) as f:
-                        data = json.load(f)
-                    if data.get("accessToken") or data.get("token") or data.get("email"):
-                        user = data.get("email", "Cursor account")
-                        return True, user, "account"
-                except Exception:
-                    pass
-        return False, "", ""
-
     if meta.key == "deepseek":
-        # DeepSeek CLI only has env-var auth (already checked above)
+        # DeepSeek CLI only supports env-var auth (already checked above).
         return False, "", ""
 
-    # No handler matched — do NOT fall back to running --version
-    # (binary being present ≠ authenticated)
+    if meta.key == "cursor":
+        cursor_candidates = [
+            # macOS
+            home / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "cursor.cursor" / "auth.json",
+            # Linux
+            home / ".config" / "cursor" / "auth.json",
+            # Windows (Cursor stores data in AppData\Roaming)
+            Path(os.environ.get("APPDATA", "")) / "Cursor" / "User" / "globalStorage" / "cursor.cursor" / "auth.json",
+            Path(os.environ.get("APPDATA", "")) / "Cursor" / "auth.json",
+        ]
+        p = _first_existing(cursor_candidates)
+        if p:
+            data = _read_json(p)
+            if data.get("accessToken") or data.get("token") or data.get("email"):
+                return True, data.get("email", "Cursor account"), "account"
+        return False, "", ""
+
+    # No handler matched
     return False, "", ""
 
 
