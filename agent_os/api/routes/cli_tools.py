@@ -136,9 +136,9 @@ TOOL_REGISTRY: dict[str, _ToolMeta] = {
         display_name="GitHub Copilot CLI",
         binary="gh",
         install_cmd=(
-            "winget install GitHub.cli ; gh extension install github/gh-copilot"
+            "winget install GitHub.cli"
             if _IS_WINDOWS
-            else "brew install gh && gh extension install github/gh-copilot"
+            else "brew install gh"
         ),
         docs_url="https://docs.github.com/en/copilot/github-copilot-in-the-cli",
         auth_check_cmd=["gh", "auth", "status"],
@@ -185,7 +185,17 @@ class ToolActionResponse(BaseModel):
 
 def _which(binary: str) -> str | None:
     """Return absolute path, or None if not on PATH."""
-    return shutil.which(binary)
+    found = shutil.which(binary)
+    if found:
+        return found
+    if sys.platform == "win32" and binary == "gh":
+        for candidate in [
+            r"C:\Program Files\GitHub CLI\gh.exe",
+            os.path.expandvars(r"%PROGRAMFILES%\GitHub CLI\gh.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -232,6 +242,18 @@ def _run_no_gh_token(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         return -3, "", str(exc)
 
 
+def _inject_path_refresh(cmd: str) -> str:
+    PATH_REFRESH = (
+        '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")'
+        ' + ";" + '
+        '[System.Environment]::GetEnvironmentVariable("PATH","User")'
+    )
+    if "winget install" in cmd and ";" in cmd:
+        parts = cmd.split(";", 1)
+        return parts[0].rstrip() + "; " + PATH_REFRESH + "; " + parts[1].lstrip()
+    return cmd
+
+
 def _open_in_terminal(cmd: str) -> None:
     """
     Open a command in the native terminal emulator so it runs interactively.
@@ -258,7 +280,12 @@ def _open_in_terminal(cmd: str) -> None:
         subprocess.Popen(["osascript", "-e", script])
 
     elif sys.platform == "win32":
-        full_cmd = cmd  # Windows: no bash profile sourcing
+        path_refresh = (
+            '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")'
+            ' + ";" + '
+            '[System.Environment]::GetEnvironmentVariable("PATH","User"); '
+        )
+        full_cmd = path_refresh + _inject_path_refresh(cmd)
         # Encode the command as Base64 UTF-16LE so all inner quotes/special chars
         # survive subprocess argument passing without any escaping issues.
         import base64 as _b64
@@ -400,31 +427,41 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
             api_key = data.get("OPENAI_API_KEY", "")
             if api_key and not api_key.startswith("***"):
                 return True, "OpenAI account", data.get("auth_mode", "account")
+
+            # ChatGPT OAuth flow stores tokens under a "tokens" dict
+            # with access_token/refresh_token instead of a raw API key
+            tokens = data.get("tokens", {})
+            if isinstance(tokens, dict) and (
+                tokens.get("access_token") or tokens.get("refresh_token")
+            ):
+                auth_mode = data.get("auth_mode", "chatgpt")
+                return True, "OpenAI account (ChatGPT OAuth)", auth_mode
+
         return False, "", ""
 
     if meta.key == "copilot":
-        # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN so we check the
-        # stored OAuth credential rather than the env-var PAT.
-        rc, out, err = _run_no_gh_token(["gh", "auth", "status"])
+        # Check stored OAuth credential (without env var interference)
+        rc, out, err = _run_no_gh_token([_which("gh") or "gh", "auth", "status"])
         if rc == 0:
-            for line in (out + "\n" + err).splitlines():
-                if "account" in line.lower():
+            combined = out + "\n" + err
+            for line in combined.splitlines():
+                if "logged in" in line.lower() or "account" in line.lower():
                     parts = line.strip().split()
                     if parts:
                         return True, parts[-1].strip("()"), "oauth"
             return True, "GitHub account", "oauth"
 
-        # Fallback: gh stores OAuth token in AppData on Windows
+        # Fallback: check hosts.yml credential file
         gh_candidates = [
             Path(os.environ.get("APPDATA", "")) / "GitHub CLI" / "hosts.yml",
             Path(os.environ.get("LOCALAPPDATA", "")) / "GitHub CLI" / "hosts.yml",
-            home / ".config" / "gh" / "hosts.yml",   # macOS / Linux
+            home / ".config" / "gh" / "hosts.yml",
         ]
         p = _first_existing(gh_candidates)
         if p:
             try:
                 text = p.read_text(encoding="utf-8", errors="replace")
-                if "oauth_token" in text or "user:" in text:
+                if "github.com" in text:
                     return True, "GitHub account", "oauth"
             except Exception:
                 pass
@@ -780,8 +817,10 @@ def _start_mcp_session(session_key: str, first_cmd: str) -> None:
     # Escape backslashes for embedding inside a PowerShell single-quoted string
     cmd_file_ps = str(cmd_file).replace("\\", "\\\\")
 
-    # Bootstrap: run the first command, then poll cmd_file for subsequent ones.
+    # Bootstrap: refresh PATH so recently-installed tools are visible, then run
+    # the first command and poll cmd_file for subsequent ones.
     bootstrap = (
+        f'$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")\n'
         f"$_cmdFile = '{cmd_file_ps}'\n"
         f"# --- initial command ---\n"
         f"{first_cmd}\n"
@@ -979,6 +1018,8 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
             # prevent gh from storing real OAuth credentials.  Unset them in the
             # terminal session so the browser flow runs and writes to gh's keychain.
             # The env vars remain intact for all other processes (git, API calls).
+            # Note: if user is authenticating via GITHUB_TOKEN env var,
+            # they are already authenticated — this flow is for OAuth login only.
             if tool_key == "copilot":
                 if _IS_WINDOWS:
                     cmd_str = (
