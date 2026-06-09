@@ -108,7 +108,11 @@ class CodexWrapper:
         tool = self._cli_routing.get(session_type.value, "codex")
         model = self._model_routing.get(session_type.value) or self._default_model
         start_time = time.monotonic()
-        use_stdin_for_prompt = _IS_WINDOWS
+        # Use stdin when on Windows (hard OS limit) OR when the prompt alone
+        # exceeds 8 000 characters — a safe threshold well below the 32 767-char
+        # Windows CreateProcess limit and the ~8 191-char cmd.exe limit.
+        _CMD_LENGTH_THRESHOLD = 8_000
+        use_stdin_for_prompt = _IS_WINDOWS or len(prompt) > _CMD_LENGTH_THRESHOLD
         try:
             cmd = build_command(tool, model, prompt, working_dir=str(working_dir),
                                 use_stdin=use_stdin_for_prompt)

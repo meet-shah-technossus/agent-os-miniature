@@ -37,19 +37,30 @@ class CorrelationMiddleware(BaseHTTPMiddleware):
         # Attach correlation ID to response
         response.headers["X-Request-ID"] = cid
 
-        # Log request summary
-        logger.info(
-            "%s %s %d (%.1fms)",
-            request.method,
-            request.url.path,
-            response.status_code,
-            duration_ms,
-            extra={
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "duration_ms": duration_ms,
-            },
+        # Suppress high-frequency health-check polling noise: skip logging
+        # GET /api/orchestrator/status 304 responses unless the response was
+        # unexpectedly slow (> 500 ms), which is worth knowing about regardless.
+        _is_noisy_status_poll = (
+            request.method == "GET"
+            and request.url.path == "/api/orchestrator/status"
+            and response.status_code == 304
+            and duration_ms < 500
         )
+
+        # Log request summary
+        if not _is_noisy_status_poll:
+            logger.info(
+                "%s %s %d (%.1fms)",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
 
         return response

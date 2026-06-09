@@ -90,7 +90,13 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "",
         cmd = ["claude", "--print"]
         if model:
             cmd.extend(["--model", model])
-        cmd.append(prompt)
+        if use_stdin:
+            # Prompt is piped via stdin — omit the positional argument.
+            # Claude CLI reads from stdin when no prompt argument is supplied,
+            # which avoids the Windows "command line too long" error for large prompts.
+            pass
+        else:
+            cmd.append(prompt)
         return cmd
 
     if tool == "codex":
