@@ -207,30 +207,47 @@ class OllamaConfig(BaseModel):
     timeout_seconds: int = Field(default=300, ge=30)
 
 
+GROQ_MODELS: list[str] = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama-3.1-70b-versatile",
+    "gemma2-9b-it",
+    "mixtral-8x7b-32768",
+]
+
+
+class GroqConfig(BaseModel):
+    """Groq API connection settings (OpenAI-compatible)."""
+    api_key: str = ""
+    model: str = "llama-3.3-70b-versatile"
+
+
 class PromptGeneratorConfig(BaseModel):
     """Which LLM backend to use for prompt generation."""
-    provider: str = "ollama"          # "ollama" | "openai"
+    provider: str = "ollama"          # "ollama" | "openai" | "groq"
     ollama_model: str = "llama3.1:8b"
     openai_model: str = "gpt-4.1-mini"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v: object) -> object:
-        if v not in ("ollama", "openai"):
+        if v not in ("ollama", "openai", "groq"):
             return "ollama"
         return v
 
 
 class CodeReviewerConfig(BaseModel):
     """Which LLM backend to use for code review."""
-    provider: str = "openai"          # "openai" | "copilot" | "ollama"
+    provider: str = "openai"          # "openai" | "copilot" | "ollama" | "groq"
     model: str = "gpt-4.1-mini"       # used for openai and copilot providers
     ollama_model: str = "llama3.1:8b" # used when provider == "ollama"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v: object) -> object:
-        if v not in ("openai", "copilot", "ollama"):
+        if v not in ("openai", "copilot", "ollama", "groq"):
             return "openai"
         return v
 

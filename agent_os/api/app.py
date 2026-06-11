@@ -80,7 +80,7 @@ def _sync_project_config(config, config_path) -> None:
             if name:
                 config.project.name = name
                 slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-                if not config.project.repo_name or config.project.repo_name.lower().startswith("imported"):
+                if not config.project.repo_name:
                     config.project.repo_name = slug
                 logger.info("Project name set from requirements: %s", name)
 

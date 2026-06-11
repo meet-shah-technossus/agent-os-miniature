@@ -50,7 +50,15 @@ class PipelineService:
         with _start_lock:
             status = self._orch.state_mgr.current_status
 
-            if status in RUNNING_STATES:
+            # Also block if a loop thread is already alive — catches the TOCTOU
+            # race where two requests both see IDLE before either thread advances
+            # the state, and guards against calling /start from a HITL gate while
+            # a _resume_in_thread loop is already running.
+            _loop_alive = (
+                self._orch._loop_thread is not None
+                and self._orch._loop_thread.is_alive()
+            )
+            if status in RUNNING_STATES or _loop_alive:
                 raise PipelineAlreadyRunningError("Pipeline is already running")
 
             if status in (PipelineStatus.PIPELINE_COMPLETE, PipelineStatus.FAILED):

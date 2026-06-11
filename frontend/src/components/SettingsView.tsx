@@ -548,6 +548,11 @@ export default function SettingsView() {
                     className={input}
                     value={ghToken}
                     onChange={(e) => setGhToken(e.target.value)}
+                    onBlur={() => {
+                      if (ghToken && !ghToken.startsWith('***') && !ghToken.includes('...')) {
+                        handleTestGH();
+                      }
+                    }}
                     placeholder="ghp_… or github_pat_…"
                   />
                   <button onClick={handleTestGH} className={btnSecondary}>

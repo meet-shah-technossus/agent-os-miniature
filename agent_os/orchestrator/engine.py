@@ -169,6 +169,19 @@ class Orchestrator:
 
         Called in a background thread by the API /start route.
         """
+        # Guard: if a loop thread is already alive (from a previous run() or
+        # _resume_in_thread call), don't start a second concurrent loop.
+        # This closes the TOCTOU window in PipelineService.start() where two
+        # requests can both pass the RUNNING_STATES check before either thread
+        # has advanced the state.
+        if self._loop_thread is not None and self._loop_thread.is_alive():
+            logger.warning(
+                "run() called but loop thread '%s' is already alive — ignoring duplicate start",
+                self._loop_thread.name,
+            )
+            return
+        # Record this thread so _resume_in_thread's guard can detect it.
+        self._loop_thread = threading.current_thread()
         self._stop_event.clear()
         self._pause_event.clear()
         state = self.state_mgr.state
