@@ -211,7 +211,7 @@ export default function SettingsView() {
   const [ollamaTimeout, setOllamaTimeout]   = useState(300);
 
   /* ── Code Reviewer LLM Provider ─────────────────────────────────────────── */
-  const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama'>('openai');
+  const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama' | 'claude'>('openai');
   const [crModel, setCrModel]               = useState('gpt-4.1-mini');
   const [crOllamaModel, setCrOllamaModel]   = useState('llama3.1:8b');
 

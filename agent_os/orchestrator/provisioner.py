@@ -21,7 +21,7 @@ class ProjectProvisioner:
         self._config = config
 
     def provision(self) -> str:
-        """Create (if needed) and return a project folder under ~/Desktop.
+        """Create (if needed) and return a project folder under ~/Desktop/agent-os/.
 
         The folder name is derived from ``config.project.name`` when set, or
         falls back to the first epic title from the requirements file, or
@@ -42,22 +42,34 @@ class ProjectProvisioner:
         slug = re.sub(r"[^a-zA-Z0-9_\-]", "-", raw_name).strip("-")
         slug = re.sub(r"-{2,}", "-", slug)[:60] or "agent-os-project"
 
-        desktop = Path.home() / "Desktop"
-        desktop.mkdir(parents=True, exist_ok=True)
+        agent_os_root = Path.home() / "Desktop" / "agent-os"
+        agent_os_root.mkdir(parents=True, exist_ok=True)
 
         # Collision-safe: find an unused name
-        candidate = desktop / slug
+        candidate = agent_os_root / slug
         counter = 2
-        while candidate.exists():
-            candidate = desktop / f"{slug}-{counter}"
+        while candidate.exists() and candidate != Path(getattr(self._config.project, "root_path", "")):
+            candidate = agent_os_root / f"{slug}-{counter}"
             counter += 1
 
-        candidate.mkdir(parents=True, exist_ok=True)
-        # Ensure owner has full read/write/execute on the directory
-        candidate.chmod(
-            _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH
-        )
-        logger.info("Project directory provisioned: %s", candidate)
+        # Reuse if the directory already exists (e.g. re-running the same project)
+        if candidate.exists():
+            logger.info("Reusing existing project directory: %s", candidate)
+            self._config.project.root_path = str(candidate)
+            if not self._config.project.name:
+                self._config.project.name = slug
+            return str(candidate)
+
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            # Ensure owner has full read/write/execute on the directory
+            candidate.chmod(
+                _stat.S_IRWXU | _stat.S_IRGRP | _stat.S_IXGRP | _stat.S_IROTH | _stat.S_IXOTH
+            )
+            logger.info("Provisioned project directory: %s", candidate)
+        except Exception as exc:
+            logger.error("Failed to create project directory %s: %s", candidate, exc)
+            raise
 
         # Persist so subsequent steps reuse it
         self._config.project.root_path = str(candidate)

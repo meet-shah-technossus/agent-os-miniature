@@ -82,7 +82,7 @@ class CodexWrapper:
                 # Log the actual output so the error is visible in server logs
                 if result.stdout:
                     for line in result.stdout.splitlines()[-30:]:
-                        logger.warning("[codex output] %s", line)
+                        logger.warning("[%s output] %s", tool, line)
 
             if attempt <= self._max_retries:
                 backoff = compute_backoff(attempt - 1, base_delay=2.0, max_delay=30.0)
@@ -150,6 +150,47 @@ class CodexWrapper:
             )
 
             session.stdout_lines = result.stdout_lines
+
+            # One-shot model fallback: if claude exits 1 with a model-related
+            # error message, rebuild the command with the next fallback model
+            # and retry immediately (does not consume an outer retry slot).
+            if (result.exit_code == 1
+                    and not result.timed_out
+                    and tool in ("claude", "claude-code")):
+                output_lower = "\n".join(result.stdout_lines).lower()
+                if any(kw in output_lower for kw in
+                       ("model", "not supported", "invalid", "unknown model")):
+                    from .cli_adapter import CLAUDE_MODEL_FALLBACKS
+                    fallbacks = CLAUDE_MODEL_FALLBACKS.get(model, [])
+                    if fallbacks:
+                        next_model = fallbacks[0]
+                        logger.warning(
+                            "Model %s rejected by claude CLI, retrying once with fallback %s",
+                            model, next_model,
+                        )
+                        fallback_cmd = build_command(
+                            tool, next_model, prompt,
+                            working_dir=str(working_dir),
+                            use_stdin=use_stdin_for_prompt,
+                        )
+                        fallback_result = executor.execute(
+                            cmd=fallback_cmd,
+                            working_dir=working_dir,
+                            env=env,
+                            timeout=self._timeout,
+                            prompt_bytes=prompt_bytes,
+                            on_stdout=on_stdout,
+                            executable_name=_exec_name,
+                        )
+                        session.stdout_lines = fallback_result.stdout_lines
+                        return CodexResult(
+                            exit_code=fallback_result.exit_code,
+                            stdout="\n".join(fallback_result.stdout_lines),
+                            stderr="",
+                            timed_out=fallback_result.timed_out,
+                            duration_seconds=fallback_result.duration_seconds,
+                        )
+
             return CodexResult(
                 exit_code=result.exit_code,
                 stdout="\n".join(result.stdout_lines),

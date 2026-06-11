@@ -6,6 +6,7 @@ import { useEffect, useRef } from 'react';
 import Editor, { type Monaco } from '@monaco-editor/react';
 import type { editor as MonacoEditor } from 'monaco-editor';
 import type { CliToolStatus } from '../types';
+import { MODEL_DISPLAY_NAMES } from '../constants';
 
 /* ── Exported constants ──────────────────────────────────────────────────── */
 
@@ -140,7 +141,7 @@ export default function PromptEditor({
           className="rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs max-w-[160px]"
         >
           {availableModels.map((m) => (
-            <option key={m} value={m}>{m}</option>
+            <option key={m} value={m}>{MODEL_DISPLAY_NAMES[m] ?? m}</option>
           ))}
         </select>
       </div>

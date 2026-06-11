@@ -114,9 +114,9 @@ class WindowsPipeExecutor:
                         if not fatal_event.is_set():
                             fatal_event.set()
                             logger.warning(
-                                "Codex fatal tool-router error detected — "
+                                "%s fatal tool-router error detected — "
                                 "aborting process %d early: %s",
-                                proc.pid, line.strip(),
+                                executable_name, proc.pid, line.strip(),
                             )
                             kill_process(proc)
                         break

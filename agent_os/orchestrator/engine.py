@@ -192,6 +192,7 @@ class Orchestrator:
             PipelineStatus.PROMPT_GENERATION:     _std_runner.step_prompt_generation,
             PipelineStatus.CODE_GENERATION:       _std_runner.step_code_generation,
             PipelineStatus.CODE_REVIEW:           _std_runner.step_code_review,
+            PipelineStatus.STORY_COMPLETE:        self._step_story_complete,
         }
         _GHR_DISPATCH = {
             PipelineStatus.IDLE:                      self._step_idle,

@@ -240,7 +240,7 @@ class PromptGeneratorSettingsResponse(BaseModel):
 
 class CodeReviewerSettingsResponse(BaseModel):
     """Code reviewer LLM provider selection."""
-    provider: str = "openai"       # "openai" | "copilot" | "ollama"
+    provider: str = "openai"       # "openai" | "copilot" | "ollama" | "claude"
     model: str = "gpt-4.1-mini"   # used for openai and copilot
     ollama_model: str = "llama3.1:8b"
 

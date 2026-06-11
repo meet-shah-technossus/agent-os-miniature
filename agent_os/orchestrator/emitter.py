@@ -22,6 +22,7 @@ class WebSocketEmitter:
     def __init__(self, state_mgr: Any) -> None:
         self._state_mgr = state_mgr
         self._ws_queue: Optional[asyncio.Queue] = None
+        self._drop_count: int = 0  # total events dropped since last server start
 
     def set_ws_queue(self, queue: asyncio.Queue) -> None:
         """Inject the asyncio broadcast queue from the API layer."""
@@ -46,8 +47,12 @@ class WebSocketEmitter:
         }
         try:
             self._ws_queue.put_nowait(payload)
-        except Exception:
-            logger.warning("WS pipeline event dropped (queue full/closed): %s", event_type)
+        except asyncio.QueueFull:
+            self._drop_count += 1
+            if self._drop_count % 10 == 1:
+                logger.debug(
+                    "WS pipeline event dropped (queue full) — %d dropped so far", self._drop_count
+                )
 
     def emit_terminal(
         self,
@@ -73,9 +78,9 @@ class WebSocketEmitter:
         }
         try:
             self._ws_queue.put_nowait(payload)
-        except Exception:
-            logger.warning(
-                "WS terminal event dropped (queue full/closed): %s/%s",
-                agent_post,
-                event_type,
-            )
+        except asyncio.QueueFull:
+            self._drop_count += 1
+            if self._drop_count % 10 == 1:
+                logger.debug(
+                    "WS terminal event dropped (queue full) — %d dropped so far", self._drop_count
+                )

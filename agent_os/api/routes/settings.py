@@ -301,7 +301,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             from ...config.schema import CodeReviewerConfig
             cfg.code_reviewer = CodeReviewerConfig()
             code_reviewer_config = cfg.code_reviewer
-        if body.code_reviewer.provider in ('openai', 'copilot', 'ollama'):
+        if body.code_reviewer.provider in ('openai', 'copilot', 'ollama', 'claude'):
             code_reviewer_config.provider = body.code_reviewer.provider
         if body.code_reviewer.model:
             code_reviewer_config.model = body.code_reviewer.model

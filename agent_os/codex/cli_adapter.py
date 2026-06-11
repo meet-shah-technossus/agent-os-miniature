@@ -51,6 +51,20 @@ _API_TOOL_ENV_KEYS: dict[str, str] = {
     "copilot": "GITHUB_TOKEN",
 }
 
+# Ordered fallback chain for Claude models: if a model is rejected by the CLI,
+# try these alternatives in order.  Newer/larger models fall back to the previous
+# generation; models with no fallback have an empty list.
+CLAUDE_MODEL_FALLBACKS: dict[str, list[str]] = {
+    "claude-opus-4-5-20251101":   [],
+    "claude-sonnet-4-5-20251115": [],
+    "claude-opus-4-20250514":     ["claude-opus-4-5-20251101"],
+    "claude-sonnet-4-20250514":   ["claude-sonnet-4-5-20251115"],
+    "claude-3-7-sonnet-20250219": ["claude-sonnet-4-20250514"],
+    "claude-3-5-sonnet-20241022": ["claude-3-7-sonnet-20250219"],
+    "claude-3-5-haiku-20241022":  ["claude-3-5-sonnet-20241022"],
+    "claude-3-opus-20240229":     ["claude-opus-4-20250514"],
+}
+
 
 class UnsupportedToolError(ValueError):
     """Raised when a tool key is not in SUPPORTED_TOOLS."""
@@ -90,19 +104,26 @@ def build_command(tool: str, model: str, prompt: str, working_dir: str = "",
         cmd = ["claude", "--print"]
         if model:
             cmd.extend(["--model", model])
-        if use_stdin:
-            # Prompt is piped via stdin — omit the positional argument.
-            # Claude CLI reads from stdin when no prompt argument is supplied,
-            # which avoids the Windows "command line too long" error for large prompts.
-            pass
-        else:
-            cmd.append(prompt)
+        # Always pipe via stdin — avoids the ~2000-char inline argument limit
+        # on all platforms, not just Windows.
         return cmd
 
     if tool == "codex":
-        # codex exec --full-auto --skip-git-repo-check --sandbox danger-full-access
-        #            [-C <working_dir>] [--add-dir <dir>] [-m <model>] <prompt>
-        cmd = ["codex", "exec", "--full-auto", "--skip-git-repo-check", "--sandbox", "danger-full-access"]
+        # codex exec --full-auto --skip-git-repo-check
+        #            --sandbox danger-full-access
+        #            [-C <working_dir>] [--add-dir <dir>] [-m <model>] -
+        #
+        # --full-auto              — non-interactive mode; implies no approval prompts.
+        # --sandbox danger-full-access — removes filesystem/network sandbox.
+        #
+        # Note: --dangerously-bypass-approvals-and-sandbox is intentionally NOT
+        # passed; it is mutually exclusive with --full-auto and causes exit code 2.
+        # Note: --ignore-user-config is intentionally NOT passed; the user's
+        # config.toml may contain project trust_level entries that are required.
+        # Any MCP connection errors in config.toml (e.g. figmadev on :3845) are
+        # logged by Codex but do NOT block execution.
+        cmd = ["codex", "exec", "--full-auto", "--skip-git-repo-check",
+               "--sandbox", "danger-full-access"]
         if working_dir:
             cmd.extend(["-C", working_dir])          # set working root
             cmd.extend(["--add-dir", working_dir])   # grant write access

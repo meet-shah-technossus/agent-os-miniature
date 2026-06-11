@@ -13,7 +13,7 @@ import yaml
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ...requirements.parser import RequirementsParser
+from ...requirements.parser import RequirementsParser, _flat_list_yaml_to_canonical
 from ...requirements.schema import RequirementsDocument
 from ...storage.models import PipelineStatus
 from ...storage.requirement_repo import RequirementRepository
@@ -170,6 +170,14 @@ async def upload_requirements(
         _text = _text.lstrip("\u200b\u200c\u200d\ufeff")
         content = _text.encode("utf-8")
 
+        # Detect flat-list YAML (e.g. rows with Epic/Feature/User Story columns)
+        # and convert to the canonical epics-nested format before validation.
+        _raw = yaml.safe_load(content.decode("utf-8", errors="replace"))
+        if isinstance(_raw, list):
+            content, _, _ferr = _flat_list_yaml_to_canonical(_raw)
+            if _ferr:
+                raise HTTPException(status_code=422, detail=_ferr)
+
         stats, err = _validate_yaml_requirements(content, fname)
         if err:
             raise HTTPException(status_code=422, detail=err)
@@ -241,28 +249,17 @@ def select_requirements(
     """Point the pipeline at an existing local requirements YAML file.
 
     - The file must already exist on disk.
-    - Accepts only .yaml / .yml files up to 1 MB.
+    - Accepts only .yaml / .yml files up to 5 MB.
     - Validates the YAML against the RequirementsDocument schema.
+    - Flat-list YAML (Epic/Feature/User Story columns) is converted to the canonical
+      nested format and saved to the data directory before the path is persisted.
     - Updates config.requirements.path and persists to config.yaml.
     """
     _assert_pipeline_idle(orch)
 
     path = Path(body.path)
-    if not path.suffix.lower() in (".yaml", ".yml"):
+    if path.suffix.lower() not in (".yaml", ".yml"):
         raise HTTPException(status_code=422, detail="Only .yaml / .yml files are accepted.")
-
-    if not path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
-
-    if path.stat().st_size > _MAX_FILE_BYTES:
-        raise HTTPException(status_code=422, detail="File exceeds 1 MB size limit.")
-
-    content = path.read_bytes()
-    stats, err = _validate_yaml_requirements(content, path.name)
-    if err:
-        raise HTTPException(status_code=422, detail=err)
-
-    _persist_requirements_path(orch, str(path.resolve()))
 
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {body.path}")
@@ -271,6 +268,22 @@ def select_requirements(
         raise HTTPException(status_code=422, detail="File exceeds 5 MB size limit.")
 
     content = path.read_bytes()
+
+    # Detect flat-list YAML and convert to the canonical nested format.
+    # The canonical bytes are saved to the data directory so the pipeline
+    # can read the file later without hitting the same validation error.
+    _raw = yaml.safe_load(content.decode("utf-8-sig", errors="replace"))
+    if isinstance(_raw, list):
+        content, _, _ferr = _flat_list_yaml_to_canonical(_raw)
+        if _ferr:
+            raise HTTPException(status_code=422, detail=_ferr)
+        data_dir = orch.config.storage.data_dir
+        save_dir = data_dir / "requirements"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        safe_stem = re.sub(r"[^a-zA-Z0-9_\-]", "_", path.stem)
+        path = save_dir / f"{safe_stem}.yaml"
+        path.write_bytes(content)
+
     stats, err = _validate_yaml_requirements(content, path.name)
     if err:
         raise HTTPException(status_code=422, detail=err)

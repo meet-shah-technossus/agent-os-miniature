@@ -53,7 +53,7 @@ export interface PipelineTabProps {
   ollamaBaseUrl: string; setOllamaBaseUrl: (v: string) => void;
   ollamaTimeout: number; setOllamaTimeout: (v: number) => void;
   // Code Reviewer LLM
-  crProvider: 'openai' | 'copilot' | 'ollama'; setCrProvider: (v: 'openai' | 'copilot' | 'ollama') => void;
+  crProvider: 'openai' | 'copilot' | 'ollama' | 'claude'; setCrProvider: (v: 'openai' | 'copilot' | 'ollama' | 'claude') => void;
   crModel: string; setCrModel: (v: string) => void;
   crOllamaModel: string; setCrOllamaModel: (v: string) => void;
 }
@@ -284,7 +284,7 @@ export default function PipelineTab(p: PipelineTabProps) {
         <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Code Reviewer</h3>
         <p className="text-[11px] text-white/30 mb-4">Choose the LLM backend for automated PR code review.</p>
         <div className="flex gap-3 mb-5">
-          {([['openai', '✦', 'OpenAI API'] as const, ['copilot', '🤖', 'GitHub Copilot'] as const, ['ollama', '🦙', 'Ollama (GPU)'] as const]).map(([val, icon, name]) => (
+          {([['openai', '✦', 'OpenAI API'] as const, ['copilot', '🤖', 'GitHub Copilot'] as const, ['ollama', '🦙', 'Ollama (GPU)'] as const, ['claude', '✺', 'Claude Code CLI'] as const]).map(([val, icon, name]) => (
             <button key={val} onClick={() => p.setCrProvider(val)} className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm transition-all ${p.crProvider === val ? 'border-indigo-500/50 bg-indigo-500/10 text-white' : 'border-white/[0.08] bg-white/[0.03] text-white/50 hover:border-white/20 hover:text-white/70'}`}>
               <span>{icon}</span>{name}
             </button>
@@ -315,6 +315,21 @@ export default function PipelineTab(p: PipelineTabProps) {
               {['llama3.1:8b', 'llama3.2:3b', 'llama3:latest', 'qwen2.5:7b', 'qwen2.5-coder:32b', 'gemma3:4b', 'mistral-nemo:latest'].map((m) => <option key={m} value={m}>{m}</option>)}
             </select>
             <p className="text-[10px] text-white/25 mt-1.5">Ollama base URL is shared with Prompt Generator settings above.</p>
+          </div></div>
+        )}
+        {p.crProvider === 'claude' && (
+          <div className="space-y-4"><div>
+            <label className={labelClass}>Claude Model</label>
+            <select className={inputClass} value={p.crModel} onChange={(e) => p.setCrModel(e.target.value)}>
+              <option value="claude-sonnet-4-5-20251115">Claude Sonnet 4.5</option>
+              <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+              <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+              <option value="claude-opus-4-20250514">Claude Opus 4</option>
+              <option value="claude-3-7-sonnet-20250219">Claude Sonnet 3.7</option>
+              <option value="claude-3-5-sonnet-20241022">Claude Sonnet 3.5</option>
+              <option value="claude-3-5-haiku-20241022">Claude Haiku 3.5</option>
+            </select>
+            <p className="text-[10px] text-white/25 mt-1.5">Uses the Claude Code CLI — requires an active Claude subscription or API key.</p>
           </div></div>
         )}
       </section>
