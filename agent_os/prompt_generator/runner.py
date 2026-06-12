@@ -249,6 +249,14 @@ writing the final fix prompt."""
                 self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
             return self._stream_openai(system_prompt, user_prompt, model, label, fallback, on_stdout)
 
+        if provider == "groq":
+            groq_key = (
+                getattr(getattr(self._config, "groq", None), "api_key", "")
+                or os.environ.get("GROQ_API_KEY", "")
+            )
+            model = getattr(pg_cfg, "groq_model", None) or "llama-3.3-70b-versatile"
+            return self._stream_groq(system_prompt, user_prompt, groq_key, model, label, fallback, on_stdout)
+
         # Ollama path — try Ollama, then cascade to OpenAI on failure
         ollama_cfg = getattr(self._config, "ollama", None)
         model = getattr(pg_cfg, "ollama_model", None) or \
@@ -351,6 +359,74 @@ writing the final fix prompt."""
         except Exception as exc:
             _emit(f"[prompt-generator] Ollama call failed: {exc} — using fallback.")
             logger.warning("Ollama streaming failed for %s: %s", label, exc)
+
+        return fallback if fallback is not None else None
+
+    # ── Groq streaming ────────────────────────────────────────────────────────
+
+    def _stream_groq(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        api_key: str,
+        model: str,
+        label: str,
+        fallback: Optional[str],
+        on_stdout: Optional[Callable[[str], None]],
+    ) -> Optional[str]:
+        """Call Groq's OpenAI-compatible API with streaming."""
+
+        def _emit(line: str) -> None:
+            if on_stdout:
+                try:
+                    on_stdout(line)
+                except Exception:
+                    pass
+
+        if not api_key:
+            _emit("[prompt-generator] No GROQ_API_KEY found — skipping Groq.")
+            logger.warning("No GROQ_API_KEY — skipping Groq for %s", label)
+            return fallback if fallback is not None else None
+
+        _emit(f"[prompt-generator] Calling Groq {model} …")
+        logger.info("Generating prompt (%s) via Groq %s", label, model)
+
+        try:
+            import openai
+
+            client = openai.OpenAI(
+                api_key=api_key,
+                base_url="https://api.groq.com/openai/v1",
+            )
+
+            resp = client.chat.completions.create(
+                model=model,
+                stream=True,
+                temperature=0.7,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            )
+
+            full_text: list[str] = []
+            for chunk in resp:
+                delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
+                if not delta:
+                    continue
+                full_text.append(delta)
+                _emit(delta)
+
+            generated = "".join(full_text).strip()
+            if generated:
+                logger.info("Groq prompt complete (%s, %d chars)", label, len(generated))
+                return generated
+
+            _emit("[prompt-generator] Empty response from Groq — using fallback.")
+
+        except Exception as exc:
+            _emit(f"[prompt-generator] Groq call failed: {exc} — using fallback.")
+            logger.warning("Groq streaming failed for %s: %s", label, exc)
 
         return fallback if fallback is not None else None
 

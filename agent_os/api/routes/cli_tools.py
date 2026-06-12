@@ -794,6 +794,35 @@ async def get_copilot_models() -> dict:
     return {"models": baseline, "source": "fallback"}
 
 
+@router.get("/groq-models")
+async def get_groq_models() -> dict:
+    """Return available Groq chat models, falling back to the hardcoded list on failure."""
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        from ...config.schema import GROQ_MODELS
+        return {"models": GROQ_MODELS, "source": "fallback"}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                _skip = ("whisper", "guard", "orpheus", "tts", "embed", "compound")
+                models = [
+                    m["id"] for m in data.get("data", [])
+                    if not any(skip in m["id"] for skip in _skip)
+                ]
+                if models:
+                    return {"models": sorted(models), "source": "api"}
+    except Exception as exc:
+        logger.warning("Groq models API failed: %s", exc)
+    from ...config.schema import GROQ_MODELS
+    return {"models": GROQ_MODELS, "source": "fallback"}
+
+
 @router.post("/open-terminal")
 def open_in_terminal_route(body: OpenTerminalRequest) -> dict:
     """Open any shell command in the user's native terminal emulator."""

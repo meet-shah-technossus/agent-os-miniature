@@ -231,18 +231,26 @@ class OllamaSettingsResponse(BaseModel):
     timeout_seconds: int = 300
 
 
+class GroqSettingsResponse(BaseModel):
+    """Groq API connection settings (masked on GET)."""
+    api_key: str = ""
+    model: str = "llama-3.3-70b-versatile"
+
+
 class PromptGeneratorSettingsResponse(BaseModel):
     """Prompt generator LLM provider selection."""
-    provider: str = "ollama"       # "ollama" | "openai"
+    provider: str = "ollama"       # "ollama" | "openai" | "groq"
     ollama_model: str = "llama3.1:8b"
     openai_model: str = "gpt-4.1-mini"
+    groq_model: str = "llama-3.3-70b-versatile"
 
 
 class CodeReviewerSettingsResponse(BaseModel):
     """Code reviewer LLM provider selection."""
-    provider: str = "openai"       # "openai" | "copilot" | "ollama" | "claude"
+    provider: str = "openai"       # "openai" | "copilot" | "ollama" | "claude" | "groq"
     model: str = "gpt-4.1-mini"   # used for openai and copilot
     ollama_model: str = "llama3.1:8b"
+    groq_model: str = "llama-3.3-70b-versatile"
 
 
 class SettingsResponse(BaseModel):
@@ -257,6 +265,7 @@ class SettingsResponse(BaseModel):
     ai_tools: AIToolsSettingsResponse = AIToolsSettingsResponse()
     vcs: VCSSettingsResponse = VCSSettingsResponse()
     ollama: OllamaSettingsResponse = OllamaSettingsResponse()
+    groq: GroqSettingsResponse = GroqSettingsResponse()
     prompt_generator: PromptGeneratorSettingsResponse = PromptGeneratorSettingsResponse()
     code_reviewer: CodeReviewerSettingsResponse = CodeReviewerSettingsResponse()
 
@@ -273,6 +282,7 @@ class SettingsUpdateRequest(BaseModel):
     ai_tools: Optional[AIToolsSettingsResponse] = None
     vcs: Optional[VCSSettingsResponse] = None
     ollama: Optional[OllamaSettingsResponse] = None
+    groq: Optional[GroqSettingsResponse] = None
     prompt_generator: Optional[PromptGeneratorSettingsResponse] = None
     code_reviewer: Optional[CodeReviewerSettingsResponse] = None
 

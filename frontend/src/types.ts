@@ -165,10 +165,23 @@ export interface OllamaSettings {
   timeout_seconds: number;
 }
 
+export interface GroqSettings {
+  api_key: string;
+  model: string;
+}
+
 export interface PromptGeneratorSettings {
-  provider: 'ollama' | 'openai';
+  provider: 'ollama' | 'openai' | 'groq';
   ollama_model: string;
   openai_model: string;
+  groq_model: string;
+}
+
+export interface CodeReviewerSettings {
+  provider: 'openai' | 'copilot' | 'ollama' | 'claude' | 'groq';
+  model: string;
+  ollama_model: string;
+  groq_model: string;
 }
 
 export interface Settings {
@@ -183,8 +196,9 @@ export interface Settings {
   ai_tools?: AIToolsSettings;
   vcs?: VCSSettings;
   ollama?: OllamaSettings;
+  groq?: GroqSettings;
   prompt_generator?: PromptGeneratorSettings;
-  code_reviewer?: { provider: string; model: string; ollama_model?: string };
+  code_reviewer?: CodeReviewerSettings;
 }
 
 export interface TestGitHubResponse {

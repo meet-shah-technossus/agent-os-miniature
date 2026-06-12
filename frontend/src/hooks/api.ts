@@ -456,4 +456,7 @@ export const api = {
         body: JSON.stringify({ content }),
       }
     ),
+
+  getGroqModels: () =>
+    fetchJson<{ models: string[]; source: string }>('/cli-tools/groq-models'),
 };

@@ -204,16 +204,21 @@ export default function SettingsView() {
   const [ghReviewBranch, setGhReviewBranch]     = useState('story-');
 
   /* ── Prompt Generator / Ollama ──────────────────────────────────────────── */
-  const [pgProvider, setPgProvider]         = useState<'ollama' | 'openai'>('ollama');
+  const [pgProvider, setPgProvider]         = useState<'ollama' | 'openai' | 'groq'>('ollama');
   const [pgOllamaModel, setPgOllamaModel]   = useState('llama3.1:8b');
   const [pgOpenAIModel, setPgOpenAIModel]   = useState('gpt-4.1-mini');
+  const [pgGroqModel, setPgGroqModel]       = useState('llama-3.3-70b-versatile');
   const [ollamaBaseUrl, setOllamaBaseUrl]   = useState('http://localhost:11434');
   const [ollamaTimeout, setOllamaTimeout]   = useState(300);
 
   /* ── Code Reviewer LLM Provider ─────────────────────────────────────────── */
-  const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama' | 'claude'>('openai');
+  const [crProvider, setCrProvider]         = useState<'openai' | 'copilot' | 'ollama' | 'claude' | 'groq'>('openai');
   const [crModel, setCrModel]               = useState('gpt-4.1-mini');
   const [crOllamaModel, setCrOllamaModel]   = useState('llama3.1:8b');
+  const [crGroqModel, setCrGroqModel]       = useState('llama-3.3-70b-versatile');
+
+  /* ── Groq ────────────────────────────────────────────────────────────────── */
+  const [groqToken, setGroqToken]           = useState('');
 
 
   /* ── Load settings ──────────────────────────────────────────────────────── */
@@ -283,10 +288,17 @@ export default function SettingsView() {
         setPgOpenAIModel(s.prompt_generator.openai_model || 'gpt-4.1-mini');
       }
       if (s.code_reviewer) {
-        const p = (s.code_reviewer.provider as 'openai' | 'copilot' | 'ollama') || 'openai';
+        const p = (s.code_reviewer.provider as 'openai' | 'copilot' | 'ollama' | 'claude' | 'groq') || 'openai';
         setCrProvider(p);
         setCrModel(s.code_reviewer.model || 'gpt-4.1-mini');
         setCrOllamaModel(s.code_reviewer.ollama_model || 'llama3.1:8b');
+        setCrGroqModel(s.code_reviewer.groq_model || 'llama-3.3-70b-versatile');
+      }
+      if (s.prompt_generator) {
+        setPgGroqModel(s.prompt_generator.groq_model || 'llama-3.3-70b-versatile');
+      }
+      if (s.groq) {
+        setGroqToken(s.groq.api_key || '');
       }
     }).catch(() => {});
   }, []);
@@ -351,15 +363,21 @@ export default function SettingsView() {
           model: pgOllamaModel,
           timeout_seconds: ollamaTimeout,
         },
+        groq: {
+          api_key: groqToken.startsWith('***') ? '' : groqToken,
+          model: pgGroqModel,
+        },
         prompt_generator: {
           provider: pgProvider,
           ollama_model: pgOllamaModel,
           openai_model: pgOpenAIModel,
+          groq_model: pgGroqModel,
         },
         code_reviewer: {
           provider: crProvider,
           model: crModel,
           ollama_model: crOllamaModel,
+          groq_model: crGroqModel,
         },
       });
       setSettings(updated);
@@ -484,10 +502,31 @@ export default function SettingsView() {
           exit={{ opacity: 0, y: -6 }}
           transition={{ duration: 0.15 }}
         >
-          {activeTab === 'ai-tools' && <AIToolsTab aiTools={aiTools} setAiTools={setAiTools} expandedTool={expandedTool} setExpandedTool={setExpandedTool} toolStatuses={toolStatuses} setToolStatuses={setToolStatuses} toolLoading={toolLoading} setToolLoading={setToolLoading} toolMessage={toolMessage} setToolMessage={setToolMessage} apiKeyInputs={apiKeyInputs} setApiKeyInputs={setApiKeyInputs} copiedCmd={copiedCmd} setCopiedCmd={setCopiedCmd} adoOrg={adoOrg} adoMcpOpen={adoMcpOpen} setAdoMcpOpen={setAdoMcpOpen} />}
+          {activeTab === 'ai-tools' && (
+            <div className="space-y-6">
+              {/* Groq API Key — shared credential for Prompt Generator and Code Reviewer */}
+              <section className={card}>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-4">Groq API Key</h3>
+                <div>
+                  <label className={label}>Groq API Key</label>
+                  <input
+                    type="password"
+                    className={input}
+                    value={groqToken}
+                    onChange={(e) => setGroqToken(e.target.value)}
+                    placeholder="gsk_…"
+                  />
+                  <p className="text-[10px] text-white/25 mt-1.5">
+                    Used when Prompt Generator or Code Reviewer is set to Groq. Also reads from GROQ_API_KEY env var or .env file.
+                  </p>
+                </div>
+              </section>
+              <AIToolsTab aiTools={aiTools} setAiTools={setAiTools} expandedTool={expandedTool} setExpandedTool={setExpandedTool} toolStatuses={toolStatuses} setToolStatuses={setToolStatuses} toolLoading={toolLoading} setToolLoading={setToolLoading} toolMessage={toolMessage} setToolMessage={setToolMessage} apiKeyInputs={apiKeyInputs} setApiKeyInputs={setApiKeyInputs} copiedCmd={copiedCmd} setCopiedCmd={setCopiedCmd} adoOrg={adoOrg} adoMcpOpen={adoMcpOpen} setAdoMcpOpen={setAdoMcpOpen} />
+            </div>
+          )}
           {activeTab === 'github' && renderGitHub()}
           {activeTab === 'project' && renderProject()}
-          {activeTab === 'pipeline' && <PipelineTab maxIter={maxIter} setMaxIter={setMaxIter} convergence={convergence} setConvergence={setConvergence} autoApprove={autoApprove} setAutoApprove={setAutoApprove} pipelineMode={pipelineMode} setPipelineMode={setPipelineMode} ghReviewUrl={ghReviewUrl} setGhReviewUrl={setGhReviewUrl} ghReviewForkName={ghReviewForkName} setGhReviewForkName={setGhReviewForkName} ghReviewBranch={ghReviewBranch} setGhReviewBranch={setGhReviewBranch} reqSource={reqSource} setReqSource={setReqSource} reqPath={reqPath} setReqPath={setReqPath} reqStats={reqStats} setReqStats={setReqStats} reqError={reqError} setReqError={setReqError} reqUploading={reqUploading} setReqUploading={setReqUploading} reqIngesting={reqIngesting} setReqIngesting={setReqIngesting} reqValidationResult={reqValidationResult} setReqValidationResult={setReqValidationResult} reqViewOpen={reqViewOpen} setReqViewOpen={setReqViewOpen} reqViewDoc={reqViewDoc} setReqViewDoc={setReqViewDoc} reqViewLoading={reqViewLoading} setReqViewLoading={setReqViewLoading} reqViewError={reqViewError} setReqViewError={setReqViewError} fileInputRef={fileInputRef} jiraUrl={jiraUrl} setJiraUrl={setJiraUrl} jiraEmail={jiraEmail} setJiraEmail={setJiraEmail} jiraToken={jiraToken} setJiraToken={setJiraToken} jiraProject={jiraProject} setJiraProject={setJiraProject} asanaToken={asanaToken} setAsanaToken={setAsanaToken} asanaProjectId={asanaProjectId} setAsanaProjectId={setAsanaProjectId} adoOrg={adoOrg} setAdoOrg={setAdoOrg} adoToken={adoToken} setAdoToken={setAdoToken} adoProject={adoProject} setAdoProject={setAdoProject} adoProjects={adoProjects} setAdoProjects={setAdoProjects} adoProjectsLoading={adoProjectsLoading} adoProjectsFetchError={adoProjectsFetchError} setAdoProjectsFetchError={setAdoProjectsFetchError} fetchAdoProjects={fetchAdoProjects} pgProvider={pgProvider} setPgProvider={setPgProvider} pgOllamaModel={pgOllamaModel} setPgOllamaModel={setPgOllamaModel} pgOpenAIModel={pgOpenAIModel} setPgOpenAIModel={setPgOpenAIModel} ollamaBaseUrl={ollamaBaseUrl} setOllamaBaseUrl={setOllamaBaseUrl} ollamaTimeout={ollamaTimeout} setOllamaTimeout={setOllamaTimeout} crProvider={crProvider} setCrProvider={setCrProvider} crModel={crModel} setCrModel={setCrModel} crOllamaModel={crOllamaModel} setCrOllamaModel={setCrOllamaModel} />}
+          {activeTab === 'pipeline' && <PipelineTab maxIter={maxIter} setMaxIter={setMaxIter} convergence={convergence} setConvergence={setConvergence} autoApprove={autoApprove} setAutoApprove={setAutoApprove} pipelineMode={pipelineMode} setPipelineMode={setPipelineMode} ghReviewUrl={ghReviewUrl} setGhReviewUrl={setGhReviewUrl} ghReviewForkName={ghReviewForkName} setGhReviewForkName={setGhReviewForkName} ghReviewBranch={ghReviewBranch} setGhReviewBranch={setGhReviewBranch} reqSource={reqSource} setReqSource={setReqSource} reqPath={reqPath} setReqPath={setReqPath} reqStats={reqStats} setReqStats={setReqStats} reqError={reqError} setReqError={setReqError} reqUploading={reqUploading} setReqUploading={setReqUploading} reqIngesting={reqIngesting} setReqIngesting={setReqIngesting} reqValidationResult={reqValidationResult} setReqValidationResult={setReqValidationResult} reqViewOpen={reqViewOpen} setReqViewOpen={setReqViewOpen} reqViewDoc={reqViewDoc} setReqViewDoc={setReqViewDoc} reqViewLoading={reqViewLoading} setReqViewLoading={setReqViewLoading} reqViewError={reqViewError} setReqViewError={setReqViewError} fileInputRef={fileInputRef} jiraUrl={jiraUrl} setJiraUrl={setJiraUrl} jiraEmail={jiraEmail} setJiraEmail={setJiraEmail} jiraToken={jiraToken} setJiraToken={setJiraToken} jiraProject={jiraProject} setJiraProject={setJiraProject} asanaToken={asanaToken} setAsanaToken={setAsanaToken} asanaProjectId={asanaProjectId} setAsanaProjectId={setAsanaProjectId} adoOrg={adoOrg} setAdoOrg={setAdoOrg} adoToken={adoToken} setAdoToken={setAdoToken} adoProject={adoProject} setAdoProject={setAdoProject} adoProjects={adoProjects} setAdoProjects={setAdoProjects} adoProjectsLoading={adoProjectsLoading} adoProjectsFetchError={adoProjectsFetchError} setAdoProjectsFetchError={setAdoProjectsFetchError} fetchAdoProjects={fetchAdoProjects} pgProvider={pgProvider} setPgProvider={setPgProvider} pgOllamaModel={pgOllamaModel} setPgOllamaModel={setPgOllamaModel} pgOpenAIModel={pgOpenAIModel} setPgOpenAIModel={setPgOpenAIModel} pgGroqModel={pgGroqModel} setPgGroqModel={setPgGroqModel} ollamaBaseUrl={ollamaBaseUrl} setOllamaBaseUrl={setOllamaBaseUrl} ollamaTimeout={ollamaTimeout} setOllamaTimeout={setOllamaTimeout} crProvider={crProvider} setCrProvider={setCrProvider} crModel={crModel} setCrModel={setCrModel} crOllamaModel={crOllamaModel} setCrOllamaModel={setCrOllamaModel} crGroqModel={crGroqModel} setCrGroqModel={setCrGroqModel} groqToken={groqToken} setGroqToken={setGroqToken} />}
           {activeTab === 'requirements' && renderRequirements()}
         </motion.div>
       </AnimatePresence>

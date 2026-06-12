@@ -210,9 +210,11 @@ class OllamaConfig(BaseModel):
 GROQ_MODELS: list[str] = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "llama-3.1-70b-versatile",
-    "gemma2-9b-it",
-    "mixtral-8x7b-32768",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-safeguard-20b",
 ]
 
 
@@ -304,6 +306,7 @@ class AgentOSConfig(BaseModel):
     ai_tools: AIToolsConfig = AIToolsConfig()
     vcs: VCSConfig = VCSConfig()
     ollama: OllamaConfig = OllamaConfig()
+    groq: GroqConfig = GroqConfig()
     prompt_generator: PromptGeneratorConfig = PromptGeneratorConfig()
     code_reviewer: CodeReviewerConfig = CodeReviewerConfig()
 

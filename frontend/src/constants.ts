@@ -84,6 +84,14 @@ export const MODEL_DISPLAY_NAMES: Record<string, string> = {
   'claude-3-5-sonnet-20241022': 'Claude Sonnet 3.5',
   'claude-3-5-haiku-20241022':  'Claude Haiku 3.5',
   'claude-3-opus-20240229':     'Claude Opus 3',
+  // Groq models
+  'llama-3.3-70b-versatile':                   'Llama 3.3 70B',
+  'llama-3.1-8b-instant':                      'Llama 3.1 8B (Fast)',
+  'openai/gpt-oss-120b':                       'GPT OSS 120B',
+  'openai/gpt-oss-20b':                        'GPT OSS 20B (Fast)',
+  'meta-llama/llama-4-scout-17b-16e-instruct': 'Llama 4 Scout 17B',
+  'qwen/qwen3-32b':                            'Qwen3 32B',
+  'openai/gpt-oss-safeguard-20b':              'GPT OSS Safety 20B',
 };
 
 export const MODEL_GROUPS: Record<string, string[]> = {

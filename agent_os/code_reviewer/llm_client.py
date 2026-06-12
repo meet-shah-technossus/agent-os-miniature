@@ -131,6 +131,18 @@ def resolve_provider_config(
             getattr(config.ollama, "model", "") or "llama3.1:8b"
         )
 
+    elif provider == "groq":
+        base_url = "https://api.groq.com/openai/v1"
+        api_key = (
+            getattr(getattr(config, "groq", None), "api_key", "")
+            or os.environ.get("GROQ_API_KEY", "")
+        )
+        model = (
+            getattr(code_reviewer_config, "groq_model", "") if code_reviewer_config else ""
+        ) or "llama-3.3-70b-versatile"
+        if not api_key:
+            emit("[code-reviewer] No GROQ_API_KEY — cannot run Groq review")
+
     else:  # "openai" (default)
         base_url = "https://api.openai.com/v1"
         api_key = (
