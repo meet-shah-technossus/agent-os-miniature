@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class OrchestratorStatusResponse(BaseModel):
@@ -62,8 +62,7 @@ class ApprovePromptRequest(BaseModel):
     cli_tool: str | None = None
     cli_model: str | None = None
 
-    class Config:
-        max_anystr_length = 1_000_000  # 1MB max for prompt content
+    model_config = ConfigDict(str_max_length=1_000_000)  # 1MB max for prompt content
 
 
 class RequirementResponse(BaseModel):
