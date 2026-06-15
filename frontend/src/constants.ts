@@ -2,17 +2,17 @@
 
 export const TOOL_MODELS: Record<string, string[]> = {
   codex: [
-    // GPT-5 family
-    'gpt-5.5', 'gpt-5.4', 'gpt-5.3',
-    'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.2-codex-mini',
-    'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.1-codex-mini',
-    'gpt-5', 'gpt-5-mini',
-    // GPT-4.1 family
-    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
-    // o-series reasoning
-    'o4-mini', 'o4', 'o3', 'o3-mini', 'o1', 'o1-mini',
-    // codex classic
-    'codex-davinci-002',
+    'gpt-5.5',        // default — works with ChatGPT OAuth
+    'gpt-5',
+    'o4-mini',
+    'o3',
+    'o3-mini',
+    'o1',
+    'o1-mini',
+    'gpt-4.1',
+    'gpt-4.1-mini',
+    'gpt-4o',
+    'gpt-4o-mini',
   ],
   aider: [
     'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
@@ -63,3 +63,44 @@ export const WS_RECONNECT_BASE_MS     = 1_000;
 export const WS_RECONNECT_MAX_MS      = 30_000;
 export const NOTIFICATION_DISMISS_MS  = 5_000;
 export const MAX_TERMINAL_HISTORY     = 500;
+
+export const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  codex:    'OpenAI Codex CLI',
+  claude:   'Claude Code CLI',
+  gemini:   'Gemini CLI',
+  aider:    'Aider',
+  copilot:  'GitHub Copilot CLI',
+  qwen:     'Qwen Coder CLI',
+  deepseek: 'DeepSeek CLI',
+  cursor:   'Cursor CLI',
+};
+
+export const MODEL_DISPLAY_NAMES: Record<string, string> = {
+  'claude-opus-4-5-20251101':   'Claude Opus 4.5',
+  'claude-sonnet-4-5-20251115': 'Claude Sonnet 4.5',
+  'claude-opus-4-20250514':     'Claude Opus 4',
+  'claude-sonnet-4-20250514':   'Claude Sonnet 4',
+  'claude-3-7-sonnet-20250219': 'Claude Sonnet 3.7',
+  'claude-3-5-sonnet-20241022': 'Claude Sonnet 3.5',
+  'claude-3-5-haiku-20241022':  'Claude Haiku 3.5',
+  'claude-3-opus-20240229':     'Claude Opus 3',
+  // Groq models
+  'llama-3.3-70b-versatile':                   'Llama 3.3 70B',
+  'llama-3.1-8b-instant':                      'Llama 3.1 8B (Fast)',
+  'openai/gpt-oss-120b':                       'GPT OSS 120B',
+  'openai/gpt-oss-20b':                        'GPT OSS 20B (Fast)',
+  'meta-llama/llama-4-scout-17b-16e-instruct': 'Llama 4 Scout 17B',
+  'qwen/qwen3-32b':                            'Qwen3 32B',
+  'openai/gpt-oss-safeguard-20b':              'GPT OSS Safety 20B',
+};
+
+export const MODEL_GROUPS: Record<string, string[]> = {
+  'Claude Opus 4.5':   ['claude-opus-4-5-20251101'],
+  'Claude Sonnet 4.5': ['claude-sonnet-4-5-20251115'],
+  'Claude Opus 4':     ['claude-opus-4-20250514'],
+  'Claude Sonnet 4':   ['claude-sonnet-4-20250514'],
+  'Claude Sonnet 3.7': ['claude-3-7-sonnet-20250219'],
+  'Claude Sonnet 3.5': ['claude-3-5-sonnet-20241022'],
+  'Claude Haiku 3.5':  ['claude-3-5-haiku-20241022'],
+  'Claude Opus 3':     ['claude-3-opus-20240229'],
+};

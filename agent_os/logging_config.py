@@ -116,7 +116,7 @@ class StepTimer:
         self.duration_ms: float = 0.0
         self._start: float = 0.0
 
-    def __enter__(self) -> "StepTimer":
+    def __enter__(self) -> StepTimer:
         self._start = time.perf_counter()
         return self
 

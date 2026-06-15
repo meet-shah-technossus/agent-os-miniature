@@ -16,6 +16,10 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+venv311/
+venv/
+.claude/
+server_restart.log
 *.egg-info/
 dist/
 build/

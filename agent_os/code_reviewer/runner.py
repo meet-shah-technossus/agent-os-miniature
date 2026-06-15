@@ -24,11 +24,12 @@ The reviewer has NO local codebase access — all code is read from VCS.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from ..config.schema import AgentOSConfig
 from ..constants import (
@@ -204,9 +205,9 @@ class CodeReviewerRunner:
         self,
         pr_number: int,
         iteration: int,
-        feature_branch: Optional[str] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict] = None,
+        feature_branch: str | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        story_context: dict | None = None,
     ) -> ReviewRunResult:
         """Run a full PR review.
 
@@ -222,10 +223,8 @@ class CodeReviewerRunner:
         """
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         _emit(f"[code-reviewer] Starting review of PR #{pr_number} (iteration {iteration})")
 
@@ -317,7 +316,7 @@ class CodeReviewerRunner:
         pr_info: dict,
         iteration: int,
         emit: Callable[[str], None],
-        story_context: Optional[dict] = None,
+        story_context: dict | None = None,
     ) -> str:
         """Stream LLM review of the diff; return the full raw text.
 

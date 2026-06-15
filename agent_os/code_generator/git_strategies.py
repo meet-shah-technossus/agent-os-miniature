@@ -8,9 +8,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from ..constants import GIT_AUTHOR_NAME, DEFAULT_GITIGNORE_PATTERNS
+from ..constants import DEFAULT_GITIGNORE_PATTERNS, GIT_AUTHOR_NAME
 from ..git_ops.manager import GitOpsManager
 from ..vcs.base import VCSClient
 
@@ -25,7 +25,7 @@ class GitOpsContext:
     """All parameters needed by a git ops strategy."""
     working_dir: Path
     iteration: int
-    pr_number: Optional[int]
+    pr_number: int | None
     feature_branch: str
     repo_name: str
     vcs_client: VCSClient
@@ -39,7 +39,7 @@ class GitOpsContext:
 class GitOpsResult:
     """All return values from a git ops strategy."""
     errors: list[str] = field(default_factory=list)
-    pr_number: Optional[int] = None
+    pr_number: int | None = None
     pr_url: str = ""
     branch_pushed: str = ""
 

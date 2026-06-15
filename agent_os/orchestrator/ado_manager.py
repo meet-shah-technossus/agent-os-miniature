@@ -6,7 +6,7 @@ Handles transitioning Azure DevOps work items between states
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ class ADOWorkItemManager:
         """
         self._transition_work_items("Active")
 
-    def close_work_items(self, story_id: Optional[str] = None) -> None:
+    def close_work_items(self, story_id: str | None = None) -> None:
         """Transition ADO work items to Closed.
 
         When *story_id* is given (GHR per-story completion), only that item is
@@ -38,7 +38,7 @@ class ADOWorkItemManager:
     def _transition_work_items(
         self,
         target_state: str,
-        story_id: Optional[str] = None,
+        story_id: str | None = None,
     ) -> None:
         """Generic work item state transition via ADO REST API."""
         meta = self._state_mgr.state.metadata
@@ -74,8 +74,9 @@ class ADOWorkItemManager:
 
         try:
             import base64
-            import httpx
             from urllib.parse import quote
+
+            import httpx
 
             token_b64 = base64.b64encode(f":{ado_token}".encode()).decode()
             headers = {

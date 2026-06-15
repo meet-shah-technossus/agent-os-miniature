@@ -23,7 +23,11 @@ import argparse
 import os
 import sys
 
-from ..constants import COPILOT_API_BASE, COPILOT_INTEGRATION_ID, COPILOT_EDITOR_VERSION, GH_CLI_TIMEOUT
+from ..constants import (
+    COPILOT_API_BASE,
+    COPILOT_EDITOR_VERSION,
+    COPILOT_INTEGRATION_ID,
+)
 
 # (base_url, env_var_for_api_key, default_model)
 TOOL_ENDPOINTS: dict[str, tuple[str, str, str]] = {
@@ -96,10 +100,7 @@ def stream_chat(tool: str, model: str, prompt: str) -> int:
         return 1
 
     base_url, env_key, default_model = TOOL_ENDPOINTS[tool]
-    if tool == "copilot":
-        api_key = _get_copilot_token()
-    else:
-        api_key = os.environ.get(env_key, "")
+    api_key = _get_copilot_token() if tool == "copilot" else os.environ.get(env_key, "")
     if not api_key:
         print(
             f"Error: {env_key} is not set. "

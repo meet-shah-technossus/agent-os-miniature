@@ -2,9 +2,20 @@
    Renders the Pipeline configuration tab: Execution, Mode, LLM providers.
 */
 
+import { useState, useEffect } from 'react';
 import { api } from '../hooks/api';
 import type { RequirementsUploadResponse, RequirementsPreviewDoc } from '../hooks/api';
 import { card, labelClass, inputClass, btnPrimary, btnSecondary, toggleBase, toggleDot } from './AIToolsTab';
+
+const GROQ_MODELS_FALLBACK: string[] = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+  'openai/gpt-oss-120b',
+  'openai/gpt-oss-20b',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'qwen/qwen3-32b',
+  'openai/gpt-oss-safeguard-20b',
+];
 
 /* ── Props ─────────────────────────────────────────────────────────────────── */
 export interface PipelineTabProps {
@@ -47,19 +58,31 @@ export interface PipelineTabProps {
   adoProjectsFetchError: string; setAdoProjectsFetchError: (v: string) => void;
   fetchAdoProjects: (org: string, token: string) => void;
   // Prompt Generator LLM
-  pgProvider: 'ollama' | 'openai'; setPgProvider: (v: 'ollama' | 'openai') => void;
+  pgProvider: 'ollama' | 'openai' | 'groq'; setPgProvider: (v: 'ollama' | 'openai' | 'groq') => void;
   pgOllamaModel: string; setPgOllamaModel: (v: string) => void;
   pgOpenAIModel: string; setPgOpenAIModel: (v: string) => void;
+  pgGroqModel: string; setPgGroqModel: (v: string) => void;
   ollamaBaseUrl: string; setOllamaBaseUrl: (v: string) => void;
   ollamaTimeout: number; setOllamaTimeout: (v: number) => void;
   // Code Reviewer LLM
-  crProvider: 'openai' | 'copilot' | 'ollama'; setCrProvider: (v: 'openai' | 'copilot' | 'ollama') => void;
+  crProvider: 'openai' | 'copilot' | 'ollama' | 'claude' | 'groq'; setCrProvider: (v: 'openai' | 'copilot' | 'ollama' | 'claude' | 'groq') => void;
   crModel: string; setCrModel: (v: string) => void;
   crOllamaModel: string; setCrOllamaModel: (v: string) => void;
+  crGroqModel: string; setCrGroqModel: (v: string) => void;
+  // Groq API key (shared between PG and CR)
+  groqToken: string; setGroqToken: (v: string) => void;
 }
 
 /* ── Component ─────────────────────────────────────────────────────────────── */
 export default function PipelineTab(p: PipelineTabProps) {
+  const [groqModels, setGroqModels] = useState<string[]>(GROQ_MODELS_FALLBACK);
+
+  useEffect(() => {
+    api.getGroqModels()
+      .then((res) => { if (res.models && res.models.length > 0) setGroqModels(res.models); })
+      .catch(() => { /* keep fallback */ });
+  }, [p.groqToken]);
+
   return (
     <div className="space-y-6">
       {/* Execution settings */}
@@ -242,8 +265,8 @@ export default function PipelineTab(p: PipelineTabProps) {
       <section className={card}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Prompt Generator</h3>
         <p className="text-[11px] text-white/30 mb-4">Choose the LLM backend used when generating implementation and fix prompts.</p>
-        <div className="flex gap-3 mb-5">
-          {([['ollama', '🦙', 'Ollama (GPU)'] as const, ['openai', '✦', 'OpenAI API'] as const]).map(([val, icon, name]) => (
+        <div className="flex gap-3 mb-5 flex-wrap">
+          {([['ollama', '🦙', 'Ollama (GPU)'] as const, ['openai', '✦', 'OpenAI API'] as const, ['groq', '⚡', 'Groq'] as const]).map(([val, icon, name]) => (
             <button key={val} onClick={() => p.setPgProvider(val)} className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm transition-all ${p.pgProvider === val ? 'border-indigo-500/50 bg-indigo-500/10 text-white' : 'border-white/[0.08] bg-white/[0.03] text-white/50 hover:border-white/20 hover:text-white/70'}`}>
               <span>{icon}</span>{name}
             </button>
@@ -277,14 +300,35 @@ export default function PipelineTab(p: PipelineTabProps) {
             </div>
           </div>
         )}
+        {p.pgProvider === 'groq' && (
+          <div className="space-y-4">
+            <div>
+              <label className={labelClass}>Groq Model</label>
+              <select className={inputClass} value={p.pgGroqModel} onChange={(e) => p.setPgGroqModel(e.target.value)}>
+                {groqModels.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Groq API Key</label>
+              <input
+                type="password"
+                className={inputClass}
+                value={p.groqToken}
+                onChange={(e) => p.setGroqToken(e.target.value)}
+                placeholder="gsk_…"
+              />
+              <p className="text-[10px] text-white/25 mt-1.5">Also reads from GROQ_API_KEY env var or .env file.</p>
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ── Code Reviewer LLM Provider ─────────────────────────────────── */}
       <section className={card}>
         <h3 className="text-xs font-semibold uppercase tracking-wider text-white/50 mb-1">Code Reviewer</h3>
         <p className="text-[11px] text-white/30 mb-4">Choose the LLM backend for automated PR code review.</p>
-        <div className="flex gap-3 mb-5">
-          {([['openai', '✦', 'OpenAI API'] as const, ['copilot', '🤖', 'GitHub Copilot'] as const, ['ollama', '🦙', 'Ollama (GPU)'] as const]).map(([val, icon, name]) => (
+        <div className="flex gap-3 mb-5 flex-wrap">
+          {([['openai', '✦', 'OpenAI API'] as const, ['copilot', '🤖', 'GitHub Copilot'] as const, ['ollama', '🦙', 'Ollama (GPU)'] as const, ['claude', '✺', 'Claude Code CLI'] as const, ['groq', '⚡', 'Groq'] as const]).map(([val, icon, name]) => (
             <button key={val} onClick={() => p.setCrProvider(val)} className={`flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm transition-all ${p.crProvider === val ? 'border-indigo-500/50 bg-indigo-500/10 text-white' : 'border-white/[0.08] bg-white/[0.03] text-white/50 hover:border-white/20 hover:text-white/70'}`}>
               <span>{icon}</span>{name}
             </button>
@@ -316,6 +360,42 @@ export default function PipelineTab(p: PipelineTabProps) {
             </select>
             <p className="text-[10px] text-white/25 mt-1.5">Ollama base URL is shared with Prompt Generator settings above.</p>
           </div></div>
+        )}
+        {p.crProvider === 'claude' && (
+          <div className="space-y-4"><div>
+            <label className={labelClass}>Claude Model</label>
+            <select className={inputClass} value={p.crModel} onChange={(e) => p.setCrModel(e.target.value)}>
+              <option value="claude-sonnet-4-5-20251115">Claude Sonnet 4.5</option>
+              <option value="claude-opus-4-5-20251101">Claude Opus 4.5</option>
+              <option value="claude-sonnet-4-20250514">Claude Sonnet 4</option>
+              <option value="claude-opus-4-20250514">Claude Opus 4</option>
+              <option value="claude-3-7-sonnet-20250219">Claude Sonnet 3.7</option>
+              <option value="claude-3-5-sonnet-20241022">Claude Sonnet 3.5</option>
+              <option value="claude-3-5-haiku-20241022">Claude Haiku 3.5</option>
+            </select>
+            <p className="text-[10px] text-white/25 mt-1.5">Uses the Claude Code CLI — requires an active Claude subscription or API key.</p>
+          </div></div>
+        )}
+        {p.crProvider === 'groq' && (
+          <div className="space-y-4">
+            <div>
+              <label className={labelClass}>Groq Model</label>
+              <select className={inputClass} value={p.crGroqModel} onChange={(e) => p.setCrGroqModel(e.target.value)}>
+                {groqModels.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className={labelClass}>Groq API Key</label>
+              <input
+                type="password"
+                className={inputClass}
+                value={p.groqToken}
+                onChange={(e) => p.setGroqToken(e.target.value)}
+                placeholder="gsk_…"
+              />
+              <p className="text-[10px] text-white/25 mt-1.5">Shared with Prompt Generator. Also reads from GROQ_API_KEY env var.</p>
+            </div>
+          </div>
         )}
       </section>
     </div>

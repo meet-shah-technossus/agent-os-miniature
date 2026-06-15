@@ -6,6 +6,7 @@ executor based on the current OS.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -14,10 +15,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
+from ..constants import PTY_COLS, PTY_ROWS
 from .streaming import kill_process, stream_pty
-from ..constants import PTY_ROWS, PTY_COLS
 
 _IS_WINDOWS = sys.platform == "win32"
 if not _IS_WINDOWS:
@@ -65,8 +66,8 @@ class WindowsPipeExecutor:
         working_dir: Path,
         env: dict[str, str],
         timeout: int,
-        prompt_bytes: Optional[bytes],
-        on_stdout: Optional[Callable[[str], None]],
+        prompt_bytes: bytes | None,
+        on_stdout: Callable[[str], None] | None,
         executable_name: str,
     ) -> ExecutionResult:
         start_time = time.monotonic()
@@ -106,17 +107,15 @@ class WindowsPipeExecutor:
                         line = str(raw).rstrip("\r\n")
                     line_buffer.append(line)
                     if callback:
-                        try:
+                        with contextlib.suppress(Exception):
                             callback(line)
-                        except Exception:
-                            pass
                     if any(p in line for p in _FATAL_STDOUT_PATTERNS):
                         if not fatal_event.is_set():
                             fatal_event.set()
                             logger.warning(
-                                "Codex fatal tool-router error detected — "
+                                "%s fatal tool-router error detected — "
                                 "aborting process %d early: %s",
-                                proc.pid, line.strip(),
+                                executable_name, proc.pid, line.strip(),
                             )
                             kill_process(proc)
                         break
@@ -170,8 +169,8 @@ class UnixPTYExecutor:
         working_dir: Path,
         env: dict[str, str],
         timeout: int,
-        prompt_bytes: Optional[bytes],
-        on_stdout: Optional[Callable[[str], None]],
+        prompt_bytes: bytes | None,
+        on_stdout: Callable[[str], None] | None,
         executable_name: str,
     ) -> ExecutionResult:
         start_time = time.monotonic()
@@ -217,10 +216,8 @@ class UnixPTYExecutor:
                 duration_seconds=time.monotonic() - start_time,
             )
         finally:
-            try:
+            with contextlib.suppress(OSError):
                 os.close(master_fd)
-            except OSError:
-                pass
 
         pty_thread.join(timeout=10)
         if pty_thread.is_alive():

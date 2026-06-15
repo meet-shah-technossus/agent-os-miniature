@@ -5,6 +5,7 @@ Uses tempfile + os.replace for atomicity on both Unix and Windows.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import tempfile
 from pathlib import Path
@@ -38,8 +39,6 @@ def atomic_write(path: str | Path, content: str, encoding: str = "utf-8") -> Non
         os.replace(tmp_path, str(target))
     except BaseException:
         # Clean up temp file on any failure
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(tmp_path)
-        except OSError:
-            pass
         raise

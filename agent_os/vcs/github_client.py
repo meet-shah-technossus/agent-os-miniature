@@ -53,7 +53,7 @@ class GitHubVCSClient(VCSClient):
         self._owner = owner
         self._repo = repo
 
-    def for_repo(self, repo_name: str) -> "GitHubVCSClient":
+    def for_repo(self, repo_name: str) -> GitHubVCSClient:
         """Return a new client targeting *repo_name* (same owner and token).
 
         Use this when the project repo is derived at runtime (e.g. from the
@@ -165,6 +165,7 @@ class GitHubVCSClient(VCSClient):
             True if fork is accessible within the timeout, False otherwise.
         """
         import time
+
         from ..github.client import GitHubClient
 
         checker = GitHubClient(token=self._token, owner=fork_owner, repo=fork_repo)

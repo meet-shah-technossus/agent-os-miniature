@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Callable, Optional, TypeVar
+from typing import Callable, TypeVar
 
 T = TypeVar("T")
 
@@ -43,7 +43,7 @@ def retry_with_backoff(
     base_delay: float = 1.0,
     max_delay: float = 30.0,
     retryable_exceptions: tuple[type[BaseException], ...] = (Exception,),
-    on_retry: Optional[Callable[[int, BaseException], None]] = None,
+    on_retry: Callable[[int, BaseException], None] | None = None,
 ) -> T:
     """Execute ``fn()`` with retries and exponential backoff.
 

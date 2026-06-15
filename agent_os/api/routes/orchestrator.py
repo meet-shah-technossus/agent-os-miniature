@@ -7,9 +7,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from .pipeline import router as _pipeline_router
 from .gates import router as _gates_router
 from .history import router as _history_router
+from .pipeline import router as _pipeline_router
 
 # Combine all three into a single router for backward-compat imports
 router = APIRouter()

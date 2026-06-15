@@ -41,6 +41,11 @@ def load_config(config_path: str | Path) -> AgentOSConfig:
         if resolved:
             config.secrets.github_token = resolved
 
+    if not config.groq.api_key:
+        resolved = resolve_secret("groq_api_key", "", project_root)
+        if resolved:
+            config.groq.api_key = resolved
+
     return config
 
 

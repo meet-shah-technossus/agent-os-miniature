@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-from typing import Optional
 
 from ..constants import GH_CLI_TIMEOUT
 
@@ -41,7 +40,7 @@ def get_copilot_token(config_token: str = "") -> str:
     return os.environ.get("GITHUB_TOKEN", "")
 
 
-def _get_gh_cli_token() -> Optional[str]:
+def _get_gh_cli_token() -> str | None:
     """Attempt to get token from gh CLI. Returns None on failure."""
     try:
         clean_env = {
