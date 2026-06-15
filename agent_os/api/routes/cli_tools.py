@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64 as _b64
+import contextlib
 import logging
 import os
+import re as _re
 import shlex
 import shutil
 import subprocess
@@ -136,9 +138,9 @@ TOOL_REGISTRY: dict[str, _ToolMeta] = {
         display_name="GitHub Copilot CLI",
         binary="gh",
         install_cmd=(
-            "winget install GitHub.cli ; gh extension install github/gh-copilot"
+            "winget install GitHub.cli"
             if _IS_WINDOWS
-            else "brew install gh && gh extension install github/gh-copilot"
+            else "brew install gh"
         ),
         docs_url="https://docs.github.com/en/copilot/github-copilot-in-the-cli",
         auth_check_cmd=["gh", "auth", "status"],
@@ -185,7 +187,17 @@ class ToolActionResponse(BaseModel):
 
 def _which(binary: str) -> str | None:
     """Return absolute path, or None if not on PATH."""
-    return shutil.which(binary)
+    found = shutil.which(binary)
+    if found:
+        return found
+    if sys.platform == "win32" and binary == "gh":
+        for candidate in [
+            r"C:\Program Files\GitHub CLI\gh.exe",
+            os.path.expandvars(r"%PROGRAMFILES%\GitHub CLI\gh.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                return candidate
+    return None
 
 
 def _run(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
@@ -232,6 +244,18 @@ def _run_no_gh_token(cmd: list[str], timeout: int = 15) -> tuple[int, str, str]:
         return -3, "", str(exc)
 
 
+def _inject_path_refresh(cmd: str) -> str:
+    PATH_REFRESH = (
+        '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")'
+        ' + ";" + '
+        '[System.Environment]::GetEnvironmentVariable("PATH","User")'
+    )
+    if "winget install" in cmd and ";" in cmd:
+        parts = cmd.split(";", 1)
+        return parts[0].rstrip() + "; " + PATH_REFRESH + "; " + parts[1].lstrip()
+    return cmd
+
+
 def _open_in_terminal(cmd: str) -> None:
     """
     Open a command in the native terminal emulator so it runs interactively.
@@ -258,7 +282,12 @@ def _open_in_terminal(cmd: str) -> None:
         subprocess.Popen(["osascript", "-e", script])
 
     elif sys.platform == "win32":
-        full_cmd = cmd  # Windows: no bash profile sourcing
+        path_refresh = (
+            '$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine")'
+            ' + ";" + '
+            '[System.Environment]::GetEnvironmentVariable("PATH","User"); '
+        )
+        full_cmd = path_refresh + _inject_path_refresh(cmd)
         # Encode the command as Base64 UTF-16LE so all inner quotes/special chars
         # survive subprocess argument passing without any escaping issues.
         import base64 as _b64
@@ -297,104 +326,171 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
     - Being *installed* is NOT the same as being *authenticated*.
     - Only return True when we have real evidence of a stored credential.
     """
-    # 1. Check env-var API key first (fastest, works for all tools)
+    import json
+
+    # ── Shared helpers ────────────────────────────────────────────────────
+
+    def _read_json(p: Path) -> dict:
+        """Read a JSON file; return {} on any error."""
+        try:
+            return json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return {}
+
+    def _first_existing(paths: list[Path]) -> Path | None:
+        """Return the first path that exists and has non-zero size."""
+        for p in paths:
+            try:
+                if p.exists() and p.stat().st_size > 0:
+                    return p
+            except Exception:
+                pass
+        return None
+
+    home = Path.home()
+
+    # 1. Env-var API key (fastest, works for all tools)
     if meta.env_key and _check_env_key(meta.env_key):
         return True, f"via ${meta.env_key}", "api_key"
 
-    # 2. Per-tool auth detection
-    if meta.key == "copilot":
-        # Run gh auth status WITHOUT GITHUB_TOKEN / GH_TOKEN in the environment.
-        # When those env vars are present, gh uses them for API calls but reports
-        # no stored OAuth credential (exit code 1) — causing a false "not authenticated".
-        # Stripping them here lets us check whether a real gh OAuth session exists.
-        rc, out, err = _run_no_gh_token(["gh", "auth", "status"])
+    # ── Per-tool detection ────────────────────────────────────────────────
+
+    if meta.key == "claude":
+        # Primary: run `claude auth status`.
+        # On Windows the CLI outputs JSON; on Unix it outputs plain text.
+        # Handle both formats.
+        if _which("claude"):
+            rc, out, err = _run(["claude", "auth", "status"])
+            logger.debug("claude _detect_auth: rc=%r  out=%r  err=%r", rc, out[:500] if out else out, err[:200] if err else err)
+        else:
+            logger.debug("claude _detect_auth: claude binary not on PATH, skipping CLI check")
+            rc, out, err = -1, "", ""
+        combined = out + "\n" + err
+
         if rc == 0:
-            for line in (out + "\n" + err).splitlines():
-                if "account" in line.lower():
+            # Try JSON output first (Windows / newer CLI versions)
+            try:
+                data = json.loads(out.strip())
+                logger.debug("claude _detect_auth: JSON parse succeeded, data=%r", data)
+                if data.get("loggedIn") or data.get("logged_in"):
+                    email = data.get("email", "Anthropic account")
+                    method = data.get("authMethod", "account")
+                    logger.debug("claude _detect_auth: returning True via JSON loggedIn, email=%r method=%r", email, method)
+                    return True, email, method
+                logger.debug("claude _detect_auth: JSON parsed but loggedIn/logged_in not truthy")
+            except (json.JSONDecodeError, AttributeError) as exc:
+                logger.debug("claude _detect_auth: JSON parse failed (%s), falling back to plain-text", exc)
+
+            # Plain-text output fallback (Unix / older CLI versions)
+            combined_lower = combined.lower()
+            if "logged in" in combined_lower or "authenticated" in combined_lower:
+                for line in combined.splitlines():
+                    if "@" in line or "account" in line.lower():
+                        logger.debug("claude _detect_auth: returning True via plain-text match, line=%r", line.strip())
+                        return True, line.strip(), "account"
+                logger.debug("claude _detect_auth: returning True via plain-text (no email line found)")
+                return True, "Anthropic account", "account"
+            logger.debug("claude _detect_auth: rc==0 but no auth indicators in output")
+        else:
+            logger.debug("claude _detect_auth: rc=%r (non-zero), skipping CLI output auth check", rc)
+
+        # Fallback: credential file detection.
+        # The CLI writes `.credentials.json` (dot-prefixed) on all platforms.
+        # Also check the non-dot variant for forward compatibility.
+        cred_candidates = [
+            home / ".claude" / ".credentials.json",   # current Claude Code (all OS)
+            home / ".claude" / "credentials.json",    # older versions / api_key flow
+        ]
+        logger.debug("claude _detect_auth: checking credential file candidates: %s", [str(c) for c in cred_candidates])
+        p = _first_existing(cred_candidates)
+        logger.debug("claude _detect_auth: first existing cred file: %r", str(p) if p else None)
+        if p:
+            data = _read_json(p)
+            logger.debug("claude _detect_auth: cred file keys=%r", list(data.keys()))
+            # OAuth flow — Claude Code stores tokens under claudeAiOauth (current format)
+            oauth_data = data.get("claudeAiOauth")
+            if oauth_data and (oauth_data.get("accessToken") or oauth_data.get("refreshToken")):
+                logger.debug("claude _detect_auth: returning True via cred file (claudeAiOauth)")
+                return True, "Anthropic account", "oauth"
+            # Legacy / api_key flow fields
+            if data.get("access_token") or data.get("oauth_token") or data.get("api_key"):
+                logger.debug("claude _detect_auth: returning True via cred file (legacy token field)")
+                return True, "Anthropic account", "oauth"
+            logger.debug("claude _detect_auth: cred file exists but no recognised token fields")
+
+        logger.debug("claude _detect_auth: returning False (no auth evidence found)")
+        return False, "", ""
+
+    if meta.key == "codex":
+        # ~/.codex/auth.json: {"auth_mode": ..., "OPENAI_API_KEY": "sk-..."}
+        p = home / ".codex" / "auth.json"
+        if p.exists():
+            data = _read_json(p)
+            api_key = data.get("OPENAI_API_KEY", "")
+            if api_key and not api_key.startswith("***"):
+                return True, "OpenAI account", data.get("auth_mode", "account")
+
+            # ChatGPT OAuth flow stores tokens under a "tokens" dict
+            # with access_token/refresh_token instead of a raw API key
+            tokens = data.get("tokens", {})
+            if isinstance(tokens, dict) and (
+                tokens.get("access_token") or tokens.get("refresh_token")
+            ):
+                auth_mode = data.get("auth_mode", "chatgpt")
+                return True, "OpenAI account (ChatGPT OAuth)", auth_mode
+
+        return False, "", ""
+
+    if meta.key == "copilot":
+        # Check stored OAuth credential (without env var interference)
+        rc, out, err = _run_no_gh_token([_which("gh") or "gh", "auth", "status"])
+        if rc == 0:
+            combined = out + "\n" + err
+            for line in combined.splitlines():
+                if "logged in" in line.lower() or "account" in line.lower():
                     parts = line.strip().split()
                     if parts:
                         return True, parts[-1].strip("()"), "oauth"
             return True, "GitHub account", "oauth"
-        return False, "", ""
 
-    if meta.key == "codex":
-        # ~/.codex/auth.json contains {"auth_mode": ..., "OPENAI_API_KEY": "sk-..."}
-        # File existing alone is not enough — the key inside must be non-empty.
-        codex_auth = os.path.expanduser("~/.codex/auth.json")
-        if os.path.exists(codex_auth):
+        # Fallback: check hosts.yml credential file
+        gh_candidates = [
+            Path(os.environ.get("APPDATA", "")) / "GitHub CLI" / "hosts.yml",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "GitHub CLI" / "hosts.yml",
+            home / ".config" / "gh" / "hosts.yml",
+        ]
+        p = _first_existing(gh_candidates)
+        if p:
             try:
-                import json
-                with open(codex_auth) as f:
-                    data = json.load(f)
-                api_key = data.get("OPENAI_API_KEY", "")
-                if api_key and not api_key.startswith("***"):
-                    return True, "OpenAI account", data.get("auth_mode", "account")
+                text = p.read_text(encoding="utf-8", errors="replace")
+                if "github.com" in text:
+                    return True, "GitHub account", "oauth"
             except Exception:
                 pass
-        return False, "", ""
 
-    if meta.key == "claude":
-        # Use the CLI's own status command — most reliable
-        rc, out, err = _run(["claude", "auth", "status"])
-        combined = (out + "\n" + err).lower()
-        if rc == 0 and ("logged in" in combined or "authenticated" in combined):
-            # Try to extract email/account name
-            for line in (out + "\n" + err).splitlines():
-                if "@" in line or "account" in line.lower():
-                    return True, line.strip(), "account"
-            return True, "Anthropic account", "account"
-        # Fallback: dedicated OAuth credentials file (not settings)
-        claude_creds = os.path.expanduser("~/.claude/credentials.json")
-        if os.path.exists(claude_creds):
-            try:
-                import json
-                with open(claude_creds) as f:
-                    data = json.load(f)
-                if data.get("access_token") or data.get("oauth_token"):
-                    return True, "Anthropic account", "oauth"
-            except Exception:
-                pass
         return False, "", ""
 
     if meta.key == "gemini":
-        # Gemini CLI has no `auth status` subcommand — use file detection only.
+        # Gemini CLI has no `auth status` subcommand.
         # Primary credential file: ~/.gemini/oauth_creds.json
         # Active account email:    ~/.gemini/google_accounts.json
-        import json
-        creds_path = os.path.expanduser("~/.gemini/oauth_creds.json")
-        if os.path.exists(creds_path):
-            try:
-                with open(creds_path) as f:
-                    data = json.load(f)
-                if data.get("access_token") or data.get("refresh_token"):
-                    # Try to get the email from the accounts file
-                    email = ""
-                    accounts_path = os.path.expanduser("~/.gemini/google_accounts.json")
-                    if os.path.exists(accounts_path):
-                        try:
-                            with open(accounts_path) as af:
-                                acc = json.load(af)
-                            email = acc.get("active", "")
-                        except Exception:
-                            pass
-                    return True, email or "Google account", "oauth"
-            except Exception:
-                pass
-        # Fallback paths for older Gemini CLI versions
-        for token_path in [
-            "~/.gemini/oauth_token.json",
-            "~/.config/gemini/oauth_token.json",
-            "~/.config/gemini/credentials.json",
-        ]:
-            p = os.path.expanduser(token_path)
-            if os.path.exists(p):
-                try:
-                    with open(p) as f:
-                        data = json.load(f)
-                    if data.get("access_token") or data.get("token") or data.get("refresh_token"):
-                        return True, "Google account", "oauth"
-                except Exception:
-                    pass
+        cred_candidates = [
+            home / ".gemini" / "oauth_creds.json",
+            home / ".gemini" / "oauth_token.json",
+            home / ".config" / "gemini" / "oauth_token.json",
+            home / ".config" / "gemini" / "credentials.json",
+        ]
+        p = _first_existing(cred_candidates)
+        if p:
+            data = _read_json(p)
+            if data.get("access_token") or data.get("refresh_token") or data.get("token"):
+                email = ""
+                accounts_path = home / ".gemini" / "google_accounts.json"
+                if accounts_path.exists():
+                    acc = _read_json(accounts_path)
+                    email = acc.get("active", "")
+                return True, email or "Google account", "oauth"
+
         return False, "", ""
 
     if meta.key == "qwen":
@@ -410,31 +506,28 @@ def _detect_auth(meta: _ToolMeta) -> tuple[bool, str, str]:
             return True, "Alibaba account", method
         return False, "", ""
 
-    if meta.key == "cursor":
-        # Cursor stores auth in a system keychain / app data directory
-        for token_path in [
-            "~/Library/Application Support/Cursor/User/globalStorage/cursor.cursor/auth.json",
-            "~/.config/cursor/auth.json",
-        ]:
-            p = os.path.expanduser(token_path)
-            if os.path.exists(p):
-                try:
-                    import json
-                    with open(p) as f:
-                        data = json.load(f)
-                    if data.get("accessToken") or data.get("token") or data.get("email"):
-                        user = data.get("email", "Cursor account")
-                        return True, user, "account"
-                except Exception:
-                    pass
-        return False, "", ""
-
     if meta.key == "deepseek":
-        # DeepSeek CLI only has env-var auth (already checked above)
+        # DeepSeek CLI only supports env-var auth (already checked above).
         return False, "", ""
 
-    # No handler matched — do NOT fall back to running --version
-    # (binary being present ≠ authenticated)
+    if meta.key == "cursor":
+        cursor_candidates = [
+            # macOS
+            home / "Library" / "Application Support" / "Cursor" / "User" / "globalStorage" / "cursor.cursor" / "auth.json",
+            # Linux
+            home / ".config" / "cursor" / "auth.json",
+            # Windows (Cursor stores data in AppData\Roaming)
+            Path(os.environ.get("APPDATA", "")) / "Cursor" / "User" / "globalStorage" / "cursor.cursor" / "auth.json",
+            Path(os.environ.get("APPDATA", "")) / "Cursor" / "auth.json",
+        ]
+        p = _first_existing(cursor_candidates)
+        if p:
+            data = _read_json(p)
+            if data.get("accessToken") or data.get("token") or data.get("email"):
+                return True, data.get("email", "Cursor account"), "account"
+        return False, "", ""
+
+    # No handler matched
     return False, "", ""
 
 
@@ -490,7 +583,6 @@ class OpenTerminalRequest(BaseModel):
 
 # ── Copilot available-models endpoint ────────────────────────────────────────
 
-import re as _re
 
 # GitHub Copilot's own model catalog (requires Copilot OAuth token or PAT with copilot scope).
 _COPILOT_API_ENDPOINT   = "https://api.githubcopilot.com/models"
@@ -569,9 +661,7 @@ def _is_chat_model(item: dict, name: str) -> bool:
     if any(t in task.lower() for t in _NON_CHAT_TASKS):
         return False
     name_lower = name.lower()
-    if any(frag in name_lower for frag in _NON_CHAT_NAME_FRAGMENTS):
-        return False
-    return True
+    return not any(frag in name_lower for frag in _NON_CHAT_NAME_FRAGMENTS)
 
 
 def _is_copilot_provider(item: dict, name: str) -> bool:
@@ -593,13 +683,20 @@ def _is_copilot_provider(item: dict, name: str) -> bool:
 def _sort_models(models: list[str]) -> list[str]:
     def _key(m: str) -> tuple[int, str]:
         ml = m.lower()
-        if ml.startswith("gpt-5"):   return (0, ml)
-        if ml.startswith("gpt-4"):   return (1, ml)
-        if ml.startswith("o4"):      return (2, ml)
-        if ml.startswith("o3"):      return (3, ml)
-        if ml.startswith("o"):       return (4, ml)
-        if ml.startswith("claude"):  return (5, ml)
-        if ml.startswith("gemini"):  return (6, ml)
+        if ml.startswith("gpt-5"):
+            return (0, ml)
+        if ml.startswith("gpt-4"):
+            return (1, ml)
+        if ml.startswith("o4"):
+            return (2, ml)
+        if ml.startswith("o3"):
+            return (3, ml)
+        if ml.startswith("o"):
+            return (4, ml)
+        if ml.startswith("claude"):
+            return (5, ml)
+        if ml.startswith("gemini"):
+            return (6, ml)
         return (9, ml)
     return sorted(models, key=_key)
 
@@ -643,7 +740,7 @@ def _merge_models(api_models: list[str], baseline: list[str]) -> list[str]:
 
 
 @router.get("/copilot-models")
-async def get_copilot_models():
+async def get_copilot_models() -> dict:
     """Return chat-completion models for this GitHub Copilot account.
 
     Strategy:
@@ -703,8 +800,37 @@ async def get_copilot_models():
     return {"models": baseline, "source": "fallback"}
 
 
+@router.get("/groq-models")
+async def get_groq_models() -> dict:
+    """Return available Groq chat models, falling back to the hardcoded list on failure."""
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        from ...config.schema import GROQ_MODELS
+        return {"models": GROQ_MODELS, "source": "fallback"}
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                _skip = ("whisper", "guard", "orpheus", "tts", "embed", "compound")
+                models = [
+                    m["id"] for m in data.get("data", [])
+                    if not any(skip in m["id"] for skip in _skip)
+                ]
+                if models:
+                    return {"models": sorted(models), "source": "api"}
+    except Exception as exc:
+        logger.warning("Groq models API failed: %s", exc)
+    from ...config.schema import GROQ_MODELS
+    return {"models": GROQ_MODELS, "source": "fallback"}
+
+
 @router.post("/open-terminal")
-def open_in_terminal_route(body: OpenTerminalRequest):
+def open_in_terminal_route(body: OpenTerminalRequest) -> dict:
     """Open any shell command in the user's native terminal emulator."""
     _open_in_terminal(body.command)
     return {"opened": True}
@@ -726,8 +852,10 @@ def _start_mcp_session(session_key: str, first_cmd: str) -> None:
     # Escape backslashes for embedding inside a PowerShell single-quoted string
     cmd_file_ps = str(cmd_file).replace("\\", "\\\\")
 
-    # Bootstrap: run the first command, then poll cmd_file for subsequent ones.
+    # Bootstrap: refresh PATH so recently-installed tools are visible, then run
+    # the first command and poll cmd_file for subsequent ones.
     bootstrap = (
+        f'$env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH","User")\n'
         f"$_cmdFile = '{cmd_file_ps}'\n"
         f"# --- initial command ---\n"
         f"{first_cmd}\n"
@@ -790,7 +918,7 @@ class McpTerminalRequest(BaseModel):
 
 
 @router.post("/mcp-terminal")
-def run_in_mcp_terminal(body: McpTerminalRequest):
+def run_in_mcp_terminal(body: McpTerminalRequest) -> dict:
     """Run a command in a persistent per-tool terminal session for ADO MCP setup.
     Reuses the existing window when alive; opens a new one otherwise."""
     if _send_to_mcp_session(body.session_key, body.command):
@@ -800,9 +928,8 @@ def run_in_mcp_terminal(body: McpTerminalRequest):
 
 
 @router.get("", response_model=AllToolsStatusResponse)
-async def list_tools():
+async def list_tools() -> AllToolsStatusResponse:
     """Return installation + auth status for every supported CLI tool (parallel)."""
-    import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
     loop = asyncio.get_event_loop()
@@ -816,7 +943,7 @@ async def list_tools():
 
 
 @router.get("/{tool_key}", response_model=ToolStatusResponse)
-def get_tool(tool_key: str):
+def get_tool(tool_key: str) -> ToolStatusResponse:
     """Return status for a single tool."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -826,7 +953,7 @@ def get_tool(tool_key: str):
 
 
 @router.post("/{tool_key}/login", response_model=ToolActionResponse)
-def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)):
+def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)) -> ToolActionResponse:  # noqa: B008
     """
     Trigger authentication for a CLI tool.
 
@@ -925,6 +1052,8 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
             # prevent gh from storing real OAuth credentials.  Unset them in the
             # terminal session so the browser flow runs and writes to gh's keychain.
             # The env vars remain intact for all other processes (git, API calls).
+            # Note: if user is authenticating via GITHUB_TOKEN env var,
+            # they are already authenticated — this flow is for OAuth login only.
             if tool_key == "copilot":
                 if _IS_WINDOWS:
                     cmd_str = (
@@ -968,7 +1097,7 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
 
 
 @router.post("/{tool_key}/logout", response_model=ToolActionResponse)
-def logout_tool(tool_key: str, orch=Depends(get_orchestrator)):
+def logout_tool(tool_key: str, orch=Depends(get_orchestrator)) -> ToolActionResponse:  # noqa: B008
     """Clear credentials for a tool — both env and CLI session."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -1031,7 +1160,7 @@ def logout_tool(tool_key: str, orch=Depends(get_orchestrator)):
 
 
 @router.post("/{tool_key}/refresh", response_model=ToolStatusResponse)
-def refresh_tool(tool_key: str):
+def refresh_tool(tool_key: str) -> ToolStatusResponse:
     """Re-check installation and auth status for a single tool."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -1048,6 +1177,7 @@ def _persist_env_key(env_key: str | None, value: str, orch: Any) -> None:
         return
     try:
         from pathlib import Path
+
         from ..deps import orch_holder
 
         agent_os_root = (
@@ -1149,10 +1279,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing: dict = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["auth_mode"] = "apikey"
         existing["OPENAI_API_KEY"] = api_key
         path.write_text(json.dumps(existing, indent=2))
@@ -1164,10 +1292,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Claude credentials to %s", path)
@@ -1178,10 +1304,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Gemini credentials to %s", path)
@@ -1192,10 +1316,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Qwen credentials to %s", path)
@@ -1206,10 +1328,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote DeepSeek credentials to %s", path)

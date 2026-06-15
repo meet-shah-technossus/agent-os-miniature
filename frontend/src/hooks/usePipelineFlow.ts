@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from './api';
 import { useWebSocket } from './useWebSocket';
+import { POLLING_INTERVAL_MS } from '../constants';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -193,7 +194,7 @@ export function usePipelineFlow() {
     };
 
     load();
-    const id = setInterval(load, 3000);
+    const id = setInterval(load, POLLING_INTERVAL_MS);
     return () => {
       active = false;
       clearInterval(id);

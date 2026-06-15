@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import PipelineState, PipelineStatus
+
+logger = logging.getLogger(__name__)
 
 
 class PipelineRepository:
@@ -25,7 +28,11 @@ class PipelineRepository:
         except ValueError:
             # Stale status value from an old schema — fall back to IDLE
             status = PipelineStatus.IDLE
-        meta = json.loads(row["metadata"])
+        try:
+            meta = json.loads(row["metadata"])
+        except (json.JSONDecodeError, TypeError):
+            logger.error("Corrupt metadata JSON in pipeline_state — resetting to empty")
+            meta = {}
         return PipelineState(
             current_iteration=row["current_iteration"],
             pipeline_status=status,
@@ -50,7 +57,7 @@ class PipelineRepository:
             (
                 state.current_iteration,
                 state.pipeline_status.value,
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 json.dumps(meta),
             ),
         )

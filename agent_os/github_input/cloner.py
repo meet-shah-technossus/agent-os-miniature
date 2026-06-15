@@ -117,7 +117,7 @@ class ClonerResult:
 class RepoCloner:
     """Shallow-clone a GitHub repository and return structured file context."""
 
-    def __init__(self, config: "GitHubInputConfig") -> None:
+    def __init__(self, config: GitHubInputConfig) -> None:
         self._config = config
 
     # ------------------------------------------------------------------

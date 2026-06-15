@@ -13,13 +13,13 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 _ENV_MAP = {
     "openai_api_key": "OPENAI_API_KEY",
     "github_token": "GITHUB_TOKEN",
+    "groq_api_key": "GROQ_API_KEY",
     "ollama_base_url": "OLLAMA_BASE_URL",
 }
 

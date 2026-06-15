@@ -1,0 +1,219 @@
+/* PromptEditor — extracted from CommandCenter (Phase 13.3)
+   Renders the prompt editing panel with tool/model selection and approve button.
+*/
+
+import { useEffect, useRef } from 'react';
+import Editor, { type Monaco } from '@monaco-editor/react';
+import type { editor as MonacoEditor } from 'monaco-editor';
+import type { CliToolStatus } from '../types';
+import { MODEL_DISPLAY_NAMES } from '../constants';
+
+/* ── Exported constants ──────────────────────────────────────────────────── */
+
+export type CliToolKey = 'codex' | 'aider' | 'claude' | 'gemini' | 'qwen' | 'deepseek' | 'copilot';
+
+export const CLI_TOOL_KEYS: CliToolKey[] = ['codex', 'aider', 'claude', 'gemini', 'qwen', 'deepseek', 'copilot'];
+
+export const CLI_DISPLAY: Record<CliToolKey, string> = {
+  codex:    'OpenAI Codex',
+  aider:    'Aider',
+  claude:   'Claude Code',
+  gemini:   'Gemini CLI',
+  qwen:     'Qwen Coder',
+  deepseek: 'DeepSeek',
+  copilot:  'GitHub Copilot',
+};
+
+export const CLI_ICON: Record<CliToolKey, string> = {
+  codex:    '✦',
+  aider:    '⌬',
+  claude:   '◈',
+  gemini:   '◆',
+  qwen:     '◇',
+  deepseek: '◎',
+  copilot:  '⬡',
+};
+
+/* ── Props ───────────────────────────────────────────────────────────────── */
+
+export interface PromptEditorProps {
+  content: string;
+  isLoading: boolean;
+  pipelineStatus: string;
+  iteration: number;
+  selectedTool: CliToolKey;
+  selectedModel: string;
+  availableModels: string[];
+  toolStatuses: CliToolStatus[];
+  onContentChange: (v: string) => void;
+  onApprove: () => void;
+  onToolSelect: (key: CliToolKey) => void;
+  onModelSelect: (model: string) => void;
+  promptGenFailed: boolean;
+  promptGenError: string;
+  onRetryPromptGenerator: () => void;
+}
+
+/* ── Component ───────────────────────────────────────────────────────────── */
+
+export default function PromptEditor({
+  content,
+  isLoading,
+  pipelineStatus,
+  iteration,
+  selectedTool,
+  selectedModel,
+  availableModels,
+  toolStatuses,
+  onContentChange,
+  onApprove,
+  onToolSelect,
+  onModelSelect,
+  promptGenFailed,
+  promptGenError,
+  onRetryPromptGenerator,
+}: PromptEditorProps) {
+  const editorRef = useRef<MonacoEditor.IStandaloneCodeEditor | null>(null);
+  // Track the last externally-set content so we only push updates when it actually changes
+  const lastExternalContent = useRef<string>('');
+
+  const isHitlGate = pipelineStatus === 'HITL_PROMPT_REVIEW';
+  const isGenerating = pipelineStatus === 'PROMPT_GENERATION' || pipelineStatus === 'STORY_PROMPT_GENERATION';
+  const hasContent = !!content.trim();
+
+  // Push external content changes into the editor without resetting cursor position
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    if (content === lastExternalContent.current) return;
+    lastExternalContent.current = content;
+    const model = editor.getModel();
+    if (!model) return;
+    // Use pushEditOperations to replace content while preserving cursor / selection
+    const fullRange = model.getFullModelRange();
+    model.pushEditOperations(
+      editor.getSelections() ?? [],
+      [{ range: fullRange, text: content }],
+      () => null,
+    );
+  }, [content]);
+
+  // Sync readOnly state without re-mounting the editor
+  useEffect(() => {
+    editorRef.current?.updateOptions({ readOnly: !isHitlGate });
+  }, [isHitlGate]);
+
+  function handleEditorMount(editorInstance: MonacoEditor.IStandaloneCodeEditor, _monaco: Monaco) {
+    editorRef.current = editorInstance;
+    lastExternalContent.current = content;
+  }
+
+  return (
+    <div className="flex flex-col rounded-xl border border-[var(--border-glass)] bg-[var(--bg-secondary)] overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-[var(--border-glass)]">
+        <span className="text-sm font-semibold text-white">Prompt</span>
+        {iteration > 0 && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-mono">
+            iter {iteration}
+          </span>
+        )}
+        <div className="flex-1" />
+
+        {/* Tool selector */}
+        <select
+          value={selectedTool}
+          onChange={(e) => onToolSelect(e.target.value as CliToolKey)}
+          className="rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs"
+        >
+          {CLI_TOOL_KEYS.filter((k) => {
+            const ts = toolStatuses.find((t) => t.key === k);
+            return ts?.available === true;
+          }).map((k) => (
+            <option key={k} value={k}>{CLI_DISPLAY[k]}</option>
+          ))}
+        </select>
+
+        {/* Model selector */}
+        <select
+          value={selectedModel}
+          onChange={(e) => onModelSelect(e.target.value)}
+          className="rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs max-w-[160px]"
+        >
+          {availableModels.map((m) => (
+            <option key={m} value={m}>{MODEL_DISPLAY_NAMES[m] ?? m}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Editor area */}
+      <div className="flex-1 min-h-0">
+        {isGenerating && !hasContent && (
+          <div className="flex items-center gap-2 px-4 py-4 text-sm text-slate-400 animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-indigo-400 animate-bounce" />
+            Generating prompt…
+          </div>
+        )}
+        {promptGenFailed && (
+          <div className="mx-4 mt-3 mb-1 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex items-center gap-2">
+            <span className="flex-1">Prompt generation failed{promptGenError ? `: ${promptGenError}` : ''}</span>
+            <button
+              onClick={onRetryPromptGenerator}
+              disabled={isLoading}
+              className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shrink-0"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        <Editor
+          height="280px"
+          language="markdown"
+          defaultValue={content}
+          theme="vs-dark"
+          onMount={handleEditorMount}
+          onChange={(v) => {
+            const val = v ?? '';
+            lastExternalContent.current = val;
+            onContentChange(val);
+          }}
+          options={{
+            readOnly: !isHitlGate,
+            minimap: { enabled: false },
+            wordWrap: 'on',
+            scrollBeyondLastLine: false,
+            fontSize: 12,
+            lineNumbers: 'off',
+            glyphMargin: false,
+            folding: false,
+            lineDecorationsWidth: 8,
+            renderLineHighlight: 'none',
+            overviewRulerLanes: 0,
+            scrollbar: { verticalScrollbarSize: 6 },
+          }}
+        />
+      </div>
+
+      {/* Footer with approve */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-[var(--border-glass)]">
+        {isHitlGate && (
+          <button
+            onClick={onRetryPromptGenerator}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-600/80 text-white hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Regenerate Prompt
+          </button>
+        )}
+        <div className="flex-1" />
+        <button
+          onClick={onApprove}
+          disabled={isLoading || !isHitlGate || !hasContent}
+          className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        >
+          Approve & Generate
+        </button>
+      </div>
+    </div>
+  );
+}

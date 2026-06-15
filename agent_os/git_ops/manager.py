@@ -11,7 +11,6 @@ import logging
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +71,7 @@ class GitOpsManager:
         """Check if the working directory is inside a Git repository."""
         return self._run("rev-parse", "--is-inside-work-tree").success
 
-    def current_branch(self) -> Optional[str]:
+    def current_branch(self) -> str | None:
         """Return the current branch name, or None if not in a repo."""
         result = self._run("rev-parse", "--abbrev-ref", "HEAD")
         return result.stdout if result.success else None
@@ -182,14 +181,14 @@ class GitOpsManager:
 
     # ── Log info ──────────────────────────────────────────────────
 
-    def latest_commit_sha(self) -> Optional[str]:
+    def latest_commit_sha(self) -> str | None:
         """Return the short SHA of the latest commit."""
         result = self._run("rev-parse", "--short", "HEAD")
         return result.stdout if result.success else None
 
     def log_oneline(self, n: int = 5) -> list[str]:
         """Return the last n commits as one-line strings."""
-        result = self._run("log", f"--oneline", f"-{n}")
+        result = self._run("log", "--oneline", f"-{n}")
         if not result.success:
             return []
         return result.stdout.splitlines()
@@ -197,7 +196,7 @@ class GitOpsManager:
     # ── Clone operations ──────────────────────────────────────────
 
     @staticmethod
-    def clone(url: str, dest: str, depth: int = 0) -> "GitResult":
+    def clone(url: str, dest: str, depth: int = 0) -> GitResult:
         """Clone a remote repository to a local destination.
 
         Args:
@@ -291,7 +290,7 @@ class GitOpsManager:
         url: str,
         target_dir: str | Path,
         depth: int = 0,
-    ) -> tuple["GitResult", Optional["GitOpsManager"]]:
+    ) -> tuple[GitResult, GitOpsManager | None]:
         """Clone *url* into *target_dir* and return ``(result, manager)``.
 
         On success the returned :class:`GitOpsManager` is bound to
@@ -304,5 +303,5 @@ class GitOpsManager:
             depth:      Shallow-clone depth (0 = full history).
         """
         result = cls.clone(url, str(target_dir), depth=depth)
-        manager: Optional["GitOpsManager"] = cls(str(target_dir)) if result.success else None
+        manager: GitOpsManager | None = cls(str(target_dir)) if result.success else None
         return result, manager

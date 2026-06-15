@@ -161,16 +161,31 @@ class BrainUpdater:
         Returns empty string on any failure so the caller falls back to
         rule-based entry generation.
         """
-        api_key = self._config.secrets.openai_api_key
+        import os as _os
+        openai_key = self._config.secrets.openai_api_key
+        groq_key = (
+            getattr(getattr(self._config, "groq", None), "api_key", "")
+            or _os.environ.get("GROQ_API_KEY", "")
+        )
+        api_key = openai_key or groq_key
         if not api_key:
             return ""
 
-        # Use the cheapest model in the routing table, defaulting to gpt-4.1-mini
-        model = (
-            self._config.codex.model_routing.get("BRAIN_UPDATER")
-            or self._config.codex.model_routing.get("PROMPT_GENERATOR")
-            or "gpt-4.1-mini"
-        )
+        use_groq = bool(groq_key)
+        if use_groq:
+            base_url = "https://api.groq.com/openai/v1"
+            model = (
+                getattr(getattr(self._config, "groq", None), "model", "")
+                or "llama-3.3-70b-versatile"
+            )
+        else:
+            base_url = None
+            # Use the cheapest model in the routing table, defaulting to gpt-4.1-mini
+            model = (
+                self._config.codex.model_routing.get("BRAIN_UPDATER")
+                or self._config.codex.model_routing.get("PROMPT_GENERATOR")
+                or "gpt-4.1-mini"
+            )
 
         user_msg = _SUMMARISE_USER.format(
             post=post,
@@ -181,7 +196,10 @@ class BrainUpdater:
 
         try:
             import openai
-            client = openai.OpenAI(api_key=api_key)
+            client_kwargs: dict = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = openai.OpenAI(**client_kwargs)
             resp = client.chat.completions.create(
                 model=model,
                 temperature=0.3,
@@ -278,17 +296,35 @@ class BrainUpdater:
         return "".join(parts)
 
     def _llm_compress(self, agent_name: str, old_entries: list[str]) -> str:
-        api_key = self._config.secrets.openai_api_key
+        import os as _os
+        openai_key = self._config.secrets.openai_api_key
+        groq_key = (
+            getattr(getattr(self._config, "groq", None), "api_key", "")
+            or _os.environ.get("GROQ_API_KEY", "")
+        )
+        api_key = openai_key or groq_key
         if not api_key:
             return ""
-        model = (
-            self._config.codex.model_routing.get("BRAIN_UPDATER")
-            or "gpt-4.1-mini"
-        )
+        use_groq = not openai_key and bool(groq_key)
+        if use_groq:
+            base_url = "https://api.groq.com/openai/v1"
+            model = (
+                getattr(getattr(self._config, "groq", None), "model", "")
+                or "llama-3.3-70b-versatile"
+            )
+        else:
+            base_url = None
+            model = (
+                self._config.codex.model_routing.get("BRAIN_UPDATER")
+                or "gpt-4.1-mini"
+            )
         combined = "\n\n---\n\n".join(old_entries)
         try:
             import openai
-            client = openai.OpenAI(api_key=api_key)
+            client_kwargs: dict = {"api_key": api_key}
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            client = openai.OpenAI(**client_kwargs)
             resp = client.chat.completions.create(
                 model=model,
                 temperature=0.2,

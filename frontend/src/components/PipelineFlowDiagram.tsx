@@ -16,7 +16,7 @@
   Idle: subtle glass-morph cards on a hex-grid.
 */
 
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { isTransferringStatus } from '../hooks/usePipelineFlow';
 
@@ -278,7 +278,7 @@ interface Props {
   compact?: boolean;
 }
 
-export default function PipelineFlowDiagram({ pipelineStatus, currentIteration, compact = false }: Props) {
+export default memo(function PipelineFlowDiagram({ pipelineStatus, currentIteration, compact = false }: Props) {
   const [shimmerKey, setShimmerKey] = useState(0);
   const prevStatusRef = useRef(pipelineStatus);
 
@@ -358,4 +358,4 @@ export default function PipelineFlowDiagram({ pipelineStatus, currentIteration, 
       <HoloNodeCard config={NODES.code_reviewer}     isActive={activeNode === 'code_reviewer'}    status={pipelineStatus} iteration={currentIteration} x={reviewX} y={bottomY} width={NW} height={NH} />
     </svg>
   );
-}
+})

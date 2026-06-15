@@ -2,7 +2,13 @@
 
 from .brain import BrainUpdater
 from .context import IdentityContextInjector
-from .store import AgentIdentityStore, AgentNotFoundError, AgentRegistry, AGENT_FILES, BUILTIN_AGENTS
+from .store import (
+    AGENT_FILES,
+    BUILTIN_AGENTS,
+    AgentIdentityStore,
+    AgentNotFoundError,
+    AgentRegistry,
+)
 
 __all__ = [
     "AgentIdentityStore",

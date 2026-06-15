@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
-from typing import Callable, Optional
+from typing import Callable
 
 # Regex to strip ANSI escape sequences (CSI codes, charset selectors, OSC)
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][A-Za-z]|\x1b\][^\x07]*\x07')
@@ -14,7 +15,7 @@ _ANSI_RE = re.compile(r'\x1b\[[0-9;]*[A-Za-z]|\x1b[()][A-Za-z]|\x1b\][^\x07]*\x0
 def stream_pipe(
     pipe,
     line_buffer: list[str],
-    callback: Optional[Callable[[str], None]],
+    callback: Callable[[str], None] | None,
 ) -> None:
     """Read lines from a pipe, store them, and optionally invoke a callback."""
     if pipe is None:
@@ -24,10 +25,8 @@ def stream_pipe(
             stripped = line.rstrip("\n")
             line_buffer.append(stripped)
             if callback:
-                try:
+                with contextlib.suppress(Exception):
                     callback(stripped)
-                except Exception:
-                    pass  # Don't let callback errors break streaming
     except (ValueError, OSError):
         pass  # Pipe closed
 
@@ -35,7 +34,7 @@ def stream_pipe(
 def stream_pty(
     master_fd: int,
     line_buffer: list[str],
-    callback: Optional[Callable[[str], None]],
+    callback: Callable[[str], None] | None,
 ) -> None:
     """Read from a PTY master file descriptor, store lines, invoke callback.
 
@@ -62,10 +61,8 @@ def stream_pty(
                 stripped = _ANSI_RE.sub("", line.rstrip("\r"))
                 line_buffer.append(stripped)
                 if callback:
-                    try:
+                    with contextlib.suppress(Exception):
                         callback(stripped)
-                    except Exception:
-                        pass
 
         # Flush any remaining partial line
         if partial:
@@ -73,17 +70,13 @@ def stream_pty(
             if stripped:
                 line_buffer.append(stripped)
                 if callback:
-                    try:
+                    with contextlib.suppress(Exception):
                         callback(stripped)
-                    except Exception:
-                        pass
     except Exception:
         pass
     finally:
-        try:
+        with contextlib.suppress(OSError):
             os.close(master_fd)
-        except OSError:
-            pass
 
 
 def kill_process(proc: subprocess.Popen) -> None:
@@ -97,19 +90,15 @@ def kill_process(proc: subprocess.Popen) -> None:
         if _platform.system() == "Windows" and proc.pid:
             # Kill the entire process tree so cmd /c + codex children all die.
             import subprocess as _sp
-            try:
+            with contextlib.suppress(Exception):
                 _sp.run(
                     ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                     capture_output=True,
                     timeout=10,
                 )
-            except Exception:
-                pass  # taskkill not available — fall back to terminate
             # Reap the original proc handle regardless
-            try:
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                 proc.wait(timeout=5)
-            except (subprocess.TimeoutExpired, OSError):
-                pass
         else:
             proc.terminate()          # SIGTERM on Unix
             try:

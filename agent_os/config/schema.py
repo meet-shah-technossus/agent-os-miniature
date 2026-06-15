@@ -74,7 +74,7 @@ class StorageConfig(BaseModel):
     db_path: str = "data/agent_os.db"
 
     @property
-    def data_dir(self) -> "Path":
+    def data_dir(self) -> Path:
         """Return the absolute path to the data directory (parent of db_path)."""
         from pathlib import Path
         return Path(self.db_path).resolve().parent
@@ -207,30 +207,49 @@ class OllamaConfig(BaseModel):
     timeout_seconds: int = Field(default=300, ge=30)
 
 
+GROQ_MODELS: list[str] = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "qwen/qwen3-32b",
+    "openai/gpt-oss-safeguard-20b",
+]
+
+
+class GroqConfig(BaseModel):
+    """Groq API connection settings (OpenAI-compatible)."""
+    api_key: str = ""
+    model: str = "llama-3.3-70b-versatile"
+
+
 class PromptGeneratorConfig(BaseModel):
     """Which LLM backend to use for prompt generation."""
-    provider: str = "ollama"          # "ollama" | "openai"
+    provider: str = "ollama"          # "ollama" | "openai" | "groq"
     ollama_model: str = "llama3.1:8b"
     openai_model: str = "gpt-4.1-mini"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v: object) -> object:
-        if v not in ("ollama", "openai"):
+        if v not in ("ollama", "openai", "groq"):
             return "ollama"
         return v
 
 
 class CodeReviewerConfig(BaseModel):
     """Which LLM backend to use for code review."""
-    provider: str = "openai"          # "openai" | "copilot" | "ollama"
+    provider: str = "openai"          # "openai" | "copilot" | "ollama" | "groq"
     model: str = "gpt-4.1-mini"       # used for openai and copilot providers
     ollama_model: str = "llama3.1:8b" # used when provider == "ollama"
+    groq_model: str = "llama-3.3-70b-versatile"
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v: object) -> object:
-        if v not in ("openai", "copilot", "ollama"):
+        if v not in ("openai", "copilot", "ollama", "groq"):
             return "openai"
         return v
 
@@ -287,6 +306,7 @@ class AgentOSConfig(BaseModel):
     ai_tools: AIToolsConfig = AIToolsConfig()
     vcs: VCSConfig = VCSConfig()
     ollama: OllamaConfig = OllamaConfig()
+    groq: GroqConfig = GroqConfig()
     prompt_generator: PromptGeneratorConfig = PromptGeneratorConfig()
     code_reviewer: CodeReviewerConfig = CodeReviewerConfig()
 

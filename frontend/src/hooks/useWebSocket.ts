@@ -3,9 +3,10 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { BusMessage } from '../types';
+import { WS_RECONNECT_BASE_MS, WS_RECONNECT_MAX_MS } from '../constants';
 
-const _BASE_DELAY_MS = 1_000;
-const _MAX_DELAY_MS  = 30_000;
+const _BASE_DELAY_MS = WS_RECONNECT_BASE_MS;
+const _MAX_DELAY_MS  = WS_RECONNECT_MAX_MS;
 
 export function useWebSocket() {
   const [messages, setMessages] = useState<BusMessage[]>([]);
