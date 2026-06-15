@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable
 
 
 class SessionType(str, Enum):
@@ -28,9 +28,9 @@ class CodexResult:
 class CodexSession:
     """Tracks a running Codex CLI session."""
     session_type: SessionType
-    pid: Optional[int] = None
-    process: Optional[subprocess.Popen] = None
+    pid: int | None = None
+    process: subprocess.Popen | None = None
     stdout_lines: list[str] = field(default_factory=list)
     stderr_lines: list[str] = field(default_factory=list)
-    _on_stdout: Optional[Callable[[str], None]] = None
-    _on_stderr: Optional[Callable[[str], None]] = None
+    _on_stdout: Callable[[str], None] | None = None
+    _on_stderr: Callable[[str], None] | None = None

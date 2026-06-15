@@ -8,8 +8,8 @@ These protocols enable:
 from __future__ import annotations
 
 import sqlite3
-from typing import Any, Callable, Optional, Protocol, runtime_checkable
 from pathlib import Path
+from typing import Any, Callable, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -63,10 +63,10 @@ class CodeGeneratorProtocol(Protocol):
         prompt_path: str | Path,
         working_dir: str | Path,
         iteration: int = 1,
-        pr_number: Optional[int] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict[str, Any]] = None,
+        pr_number: int | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
+        story_context: dict[str, Any] | None = None,
     ) -> Any: ...
 
 
@@ -78,9 +78,9 @@ class CodeReviewerProtocol(Protocol):
         self,
         pr_number: int,
         iteration: int,
-        feature_branch: Optional[str] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict[str, Any]] = None,
+        feature_branch: str | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        story_context: dict[str, Any] | None = None,
     ) -> Any: ...
 
 

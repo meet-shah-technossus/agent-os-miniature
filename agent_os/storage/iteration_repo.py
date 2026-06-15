@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from typing import Optional
 
 from .models import IterationRecord, IterationStatus
 
@@ -69,7 +68,7 @@ class IterationRepository:
         )
         self._conn.commit()
 
-    def get(self, module_id: str, iteration_number: int) -> Optional[IterationRecord]:
+    def get(self, module_id: str, iteration_number: int) -> IterationRecord | None:
         row = self._conn.execute(
             "SELECT * FROM iterations WHERE module_id = ? AND iteration_number = ?",
             (module_id, iteration_number),
@@ -93,9 +92,9 @@ class IterationRepository:
             iteration_number=row["iteration_number"],
             status=IterationStatus(row["status"]),
             prompt_path=row["prompt_path"],
-            prompt_content=row["prompt_content"] if "prompt_content" in row.keys() else "",
+            prompt_content=row.get("prompt_content", ""),
             review_json_path=row["review_json_path"],
-            review_content=row["review_content"] if "review_content" in row.keys() else "",
+            review_content=row.get("review_content", ""),
             summary_path=row["summary_path"],
             token_usage=row["token_usage"],
             started_at=datetime.fromisoformat(row["started_at"]),

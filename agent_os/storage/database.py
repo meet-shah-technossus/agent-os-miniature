@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..constants import SQLITE_CONNECT_TIMEOUT, SQLITE_BUSY_TIMEOUT_MS
+from ..constants import SQLITE_BUSY_TIMEOUT_MS, SQLITE_CONNECT_TIMEOUT
 
 if TYPE_CHECKING:
     from .models import PipelineState
@@ -198,11 +198,11 @@ class Database:
 
     # --- Convenience delegates (backward compat with Phase 1 callers) ---
 
-    def get_pipeline_state(self) -> "PipelineState":
+    def get_pipeline_state(self) -> PipelineState:
         from .pipeline_repo import PipelineRepository
         return PipelineRepository(self.conn).get_state()
 
-    def save_pipeline_state(self, state: "PipelineState") -> None:
+    def save_pipeline_state(self, state: PipelineState) -> None:
         from .pipeline_repo import PipelineRepository
         PipelineRepository(self.conn).save_state(state)
 

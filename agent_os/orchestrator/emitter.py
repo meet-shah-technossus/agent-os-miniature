@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as _dt
-from datetime import timezone as _tz
 import logging
-from typing import Any, Optional
+from datetime import timezone as _tz
+from typing import Any
 
 from ..constants import EventChannel
 
@@ -21,7 +21,7 @@ class WebSocketEmitter:
 
     def __init__(self, state_mgr: Any) -> None:
         self._state_mgr = state_mgr
-        self._ws_queue: Optional[asyncio.Queue] = None
+        self._ws_queue: asyncio.Queue | None = None
         self._drop_count: int = 0  # total events dropped since last server start
 
     def set_ws_queue(self, queue: asyncio.Queue) -> None:
@@ -29,7 +29,7 @@ class WebSocketEmitter:
         self._ws_queue = queue
 
     @property
-    def ws_queue(self) -> Optional[asyncio.Queue]:
+    def ws_queue(self) -> asyncio.Queue | None:
         return self._ws_queue
 
     def emit(self, event_type: str, data: dict[str, Any] | None = None) -> None:

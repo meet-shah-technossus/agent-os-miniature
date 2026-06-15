@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,7 @@ _FILE_BLOCK_RE = re.compile(
 def apply_llm_file_output(
     stdout: str,
     working_dir: Path,
-    emit: Optional[Callable[[str], None]] = None,
+    emit: Callable[[str], None] | None = None,
 ) -> list[str]:
     """Parse FILE blocks from LLM stdout and write them to *working_dir*.
 

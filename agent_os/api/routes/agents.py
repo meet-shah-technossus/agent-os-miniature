@@ -72,7 +72,7 @@ def get_registry() -> AgentRegistryResponse:
 
 
 @router.put("/registry", response_model=AgentRegistryResponse)
-def update_registry(body: UpdateRegistryRequest, orch=Depends(get_orchestrator)) -> AgentRegistryResponse:
+def update_registry(body: UpdateRegistryRequest, orch=Depends(get_orchestrator)) -> AgentRegistryResponse:  # noqa: B008
     """Update one or more pipeline-post → agent mappings and persist to DB."""
     reg = _registry()
     reg.update_registry(body.mapping)
@@ -96,7 +96,7 @@ class ModelRoutingResponse(BaseModel):
 
 
 @router.get("/model-routing", response_model=ModelRoutingResponse)
-def get_model_routing(orch=Depends(get_orchestrator)) -> ModelRoutingResponse:
+def get_model_routing(orch=Depends(get_orchestrator)) -> ModelRoutingResponse:  # noqa: B008
     """Return current model routing (DB first, then config fallback)."""
     repo = _cfg_repo(orch)
     routing = repo.get_model_routing()
@@ -108,7 +108,7 @@ def get_model_routing(orch=Depends(get_orchestrator)) -> ModelRoutingResponse:
 
 
 @router.put("/model-routing", response_model=ModelRoutingResponse)
-def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator)) -> ModelRoutingResponse:
+def update_model_routing(body: ModelRoutingBody, orch=Depends(get_orchestrator)) -> ModelRoutingResponse:  # noqa: B008
     """Save model routing to config.yaml AND the database."""
     routing = body.model_routing
     # Apply to live config
@@ -169,7 +169,7 @@ def update_agent_file(
     agent_name: str,
     file_name: str,
     body: UpdateAgentFileRequest,
-    orch=Depends(get_orchestrator),
+    orch=Depends(get_orchestrator),  # noqa: B008
 ) -> AgentFileResponse:
     """Overwrite a single .md file for an agent — writes to disk AND database."""
     if file_name not in AGENT_FILES:
@@ -205,7 +205,7 @@ def create_agent(body: CreateAgentRequest) -> AgentDetailResponse:
 
 
 @router.delete("/{agent_name:path}", status_code=204)
-def delete_agent(agent_name: str, orch=Depends(get_orchestrator)) -> None:
+def delete_agent(agent_name: str, orch=Depends(get_orchestrator)) -> None:  # noqa: B008
     """Delete a custom agent. Built-in agents cannot be deleted."""
     try:
         _store().delete_agent(agent_name)

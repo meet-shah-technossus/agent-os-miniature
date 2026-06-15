@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Callable, Optional
+from typing import Callable
 
 from ..constants import (
-    COPILOT_API_BASE, COPILOT_INTEGRATION_ID, COPILOT_EDITOR_VERSION,
+    COPILOT_API_BASE,
+    COPILOT_EDITOR_VERSION,
+    COPILOT_INTEGRATION_ID,
     NO_TEMPERATURE_MODELS,
 )
 

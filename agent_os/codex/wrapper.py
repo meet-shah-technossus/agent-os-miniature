@@ -6,13 +6,13 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
+from ..constants import DEFAULT_CODEX_TIMEOUT
+from .cli_adapter import UnsupportedToolError, build_command, executable_name
+from .executors import UnixPTYExecutor, WindowsPipeExecutor
 from .session import CodexResult, CodexSession, SessionType
 from .streaming import kill_process
-from .cli_adapter import build_command, executable_name, UnsupportedToolError
-from .executors import WindowsPipeExecutor, UnixPTYExecutor
-from ..constants import DEFAULT_CODEX_TIMEOUT
 
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -48,8 +48,8 @@ class CodexWrapper:
         prompt: str,
         working_dir: str | Path,
         session_type: SessionType,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
     ) -> CodexResult:
         """Execute a Codex CLI command with retry logic and exponential backoff."""
         from ..utils.retry import compute_backoff
@@ -82,7 +82,7 @@ class CodexWrapper:
                 # Log the actual output so the error is visible in server logs
                 if result.stdout:
                     for line in result.stdout.splitlines()[-30:]:
-                        logger.warning("[%s output] %s", tool, line)
+                        logger.warning("[%s output] %s", session_type.value, line)
 
             if attempt <= self._max_retries:
                 backoff = compute_backoff(attempt - 1, base_delay=2.0, max_delay=30.0)
@@ -96,8 +96,8 @@ class CodexWrapper:
         prompt: str,
         working_dir: str | Path,
         session_type: SessionType,
-        on_stdout: Optional[Callable[[str], None]],
-        on_stderr: Optional[Callable[[str], None]],
+        on_stdout: Callable[[str], None] | None,
+        on_stderr: Callable[[str], None] | None,
     ) -> CodexResult:
         """Single invocation of a CLI tool via platform-specific executor."""
         working_dir = Path(working_dir).resolve()
@@ -210,7 +210,7 @@ class CodexWrapper:
         finally:
             self._active_sessions.pop(session_type, None)
 
-    def get_active_session(self, session_type: SessionType) -> Optional[CodexSession]:
+    def get_active_session(self, session_type: SessionType) -> CodexSession | None:
         return self._active_sessions.get(session_type)
 
     def kill_session(self, session_type: SessionType) -> bool:

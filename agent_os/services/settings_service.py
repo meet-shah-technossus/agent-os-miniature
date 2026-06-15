@@ -5,7 +5,6 @@ Extracted from route handlers so the logic is testable without HTTP.
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 from typing import Any
 

@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..config.loader import get_default_config, load_config
 from ..config.env import auto_load_dotenv
+from ..config.loader import get_default_config, load_config
 from ..logging_config import configure_logging
 from .deps import orch_holder
-from .exceptions import PipelineConflictError, InvalidStateError, ValidationError
+from .exceptions import InvalidStateError, PipelineConflictError, ValidationError
 from .middleware import CorrelationMiddleware
 from .routes import agents, cli_tools, metrics, orchestrator, project, requirements, settings
-from .websocket import _broadcast_worker, _setup_bus_subscriptions, router as ws_router, _queue as _ws_queue
+from .websocket import _broadcast_worker, _setup_bus_subscriptions
+from .websocket import _queue as _ws_queue
+from .websocket import router as ws_router
 
 logger = logging.getLogger(__name__)
 

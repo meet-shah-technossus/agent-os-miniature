@@ -74,7 +74,7 @@ class StorageConfig(BaseModel):
     db_path: str = "data/agent_os.db"
 
     @property
-    def data_dir(self) -> "Path":
+    def data_dir(self) -> Path:
         """Return the absolute path to the data directory (parent of db_path)."""
         from pathlib import Path
         return Path(self.db_path).resolve().parent

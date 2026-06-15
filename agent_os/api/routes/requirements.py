@@ -98,7 +98,7 @@ def _persist_requirements_path(orch: Any, path: str) -> None:
 # ---------------------------------------------------------------------------
 
 @router.get("", response_model=list[RequirementResponse])
-def list_requirements(orch=Depends(get_orchestrator)) -> list[RequirementResponse]:
+def list_requirements(orch=Depends(get_orchestrator)) -> list[RequirementResponse]:  # noqa: B008
     repo = RequirementRepository(orch.db.conn)
     reqs = repo.get_all()
     return [
@@ -112,7 +112,7 @@ def list_requirements(orch=Depends(get_orchestrator)) -> list[RequirementRespons
 
 
 @router.get("/preview")
-def preview_requirements(orch=Depends(get_orchestrator)) -> dict:
+def preview_requirements(orch=Depends(get_orchestrator)) -> dict:  # noqa: B008
     """Return the active requirements YAML as structured JSON for the UI preview modal."""
     req_path = getattr(getattr(orch, "config", None), "requirements", None)
     path = getattr(req_path, "path", "") or ""
@@ -125,7 +125,7 @@ def preview_requirements(orch=Depends(get_orchestrator)) -> dict:
         raw = RequirementsParser._read_yaml(path)
         doc = RequirementsDocument.model_validate(raw)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Could not parse requirements file: {exc}")
+        raise HTTPException(status_code=422, detail=f"Could not parse requirements file: {exc}") from exc
     return doc.model_dump()
 
 
@@ -136,7 +136,7 @@ def preview_requirements(orch=Depends(get_orchestrator)) -> dict:
 @router.post("/upload", response_model=RequirementsUploadResponse)
 async def upload_requirements(
     file: UploadFile,
-    orch=Depends(get_orchestrator),
+    orch=Depends(get_orchestrator),  # noqa: B008
 ) -> RequirementsUploadResponse:
     """Upload a local requirements YAML file and set it as the active requirements source.
 
@@ -244,7 +244,7 @@ class SelectRequirementsRequest(BaseModel):
 @router.post("/select", response_model=RequirementsUploadResponse)
 def select_requirements(
     body: SelectRequirementsRequest,
-    orch=Depends(get_orchestrator),
+    orch=Depends(get_orchestrator),  # noqa: B008
 ) -> RequirementsUploadResponse:
     """Point the pipeline at an existing local requirements YAML file.
 
@@ -312,7 +312,7 @@ def _ac_from_list(story_id: str, ac_lines: list[str], desc: str) -> list[dict]:
     Falls back to the story description (split by sentence) if list is empty.
     Always returns at least one entry so the validator doesn't reject the story.
     """
-    lines = [l.strip() for l in ac_lines if l.strip()]
+    lines = [line.strip() for line in ac_lines if line.strip()]
     if not lines and desc:
         # Split by common sentence terminators to produce individual items
         raw = [s.strip() for s in re.split(r'(?<=[.!?])\s+|\n', desc) if s.strip()]
@@ -361,7 +361,7 @@ def _build_yaml_from_items(items: list[dict]) -> tuple[bytes, dict[str, int], st
         orphan_feat = {"id": "F-general", "title": "General", "description": "", "stories": []}
         orphan_epic = {"id": "E-general", "title": _EPIC_TITLE, "description": "", "features": []}
 
-        for feat_id, feat in features.items():
+        for _feat_id, feat in features.items():
             parent_ep = feat.get("parent", "")
             if parent_ep in epics:
                 epics[parent_ep]["features"].append(feat)
@@ -471,7 +471,7 @@ def _csv_to_yaml(content: bytes) -> tuple[bytes, dict[str, int], str]:
 
 def _txt_to_yaml(content: bytes, fname: str) -> tuple[bytes, dict[str, int], str]:
     text = content.decode("utf-8-sig", errors="replace")
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return b"", {}, "Text file is empty."
     items = [{"id": f"S{i + 1}", "title": line, "description": ""} for i, line in enumerate(lines)]
@@ -544,7 +544,7 @@ class RemoteValidationResult(BaseModel):
 
 
 @router.post("/validate-remote", response_model=RemoteValidationResult)
-async def validate_remote_connection(body: RemoteIngestRequest, orch=Depends(get_orchestrator)) -> RemoteValidationResult:
+async def validate_remote_connection(body: RemoteIngestRequest, orch=Depends(get_orchestrator)) -> RemoteValidationResult:  # noqa: B008
     """Test connectivity and credentials for a remote source without ingesting."""
     import httpx
 
@@ -613,8 +613,8 @@ async def validate_remote_connection(body: RemoteIngestRequest, orch=Depends(get
             errors.append("Connection to Asana timed out.")
 
     elif source == "ado":
-        from urllib.parse import quote
         import base64 as b64
+        from urllib.parse import quote
 
         # Fall back to saved config credentials so validation works even when
         # the UI is showing the masked placeholder.
@@ -858,14 +858,15 @@ def _parse_ado_ac(raw: str | None) -> list[str]:
     # Normalise <br> and </p> → newline, strip every other tag
     text = re.sub(r"<br\s*/?>|</p>|</li>", "\n", raw, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
-    lines = [l.strip().lstrip("#-*•··").strip() for l in text.splitlines()]
-    return [l for l in lines if l]
+    lines = [line.strip().lstrip("#-*•··").strip() for line in text.splitlines()]  # noqa: B005
+    return [line for line in lines if line]
 
 
 async def _ingest_ado(body: RemoteIngestRequest, orch: Any) -> RequirementsUploadResponse:
     import base64
-    import httpx
     from urllib.parse import quote
+
+    import httpx
 
     # Fall back to saved config values so the user doesn't have to re-enter the PAT
     cfg_req = getattr(getattr(orch, "config", None), "requirements", None)
@@ -967,8 +968,9 @@ async def _update_ado_work_item_states(
 ) -> None:
     """Update the System.State field of ADO work items via PATCH."""
     import base64 as b64
-    import httpx
     from urllib.parse import quote
+
+    import httpx
 
     if not work_item_ids:
         return
@@ -1006,7 +1008,7 @@ class AdoStateUpdateRequest(BaseModel):
 @router.post("/ado-update-states")
 async def update_ado_work_item_states(
     body: AdoStateUpdateRequest,
-    orch=Depends(get_orchestrator),
+    orch=Depends(get_orchestrator),  # noqa: B008
 ) -> dict:
     """Update the state of all ADO work items ingested in this pipeline run.
 
@@ -1034,7 +1036,7 @@ class AdoProjectsRequest(BaseModel):
 
 
 @router.post("/ado-projects")
-async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrator)) -> dict:
+async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrator)) -> dict:  # noqa: B008
     """Fetch all project names from an Azure DevOps organisation.
 
     Accepts the ADO organisation name and a Personal Access Token (PAT).
@@ -1042,8 +1044,9 @@ async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrat
     config token is used automatically so the user never has to re-enter it.
     """
     import base64 as _b64
-    import httpx
     from urllib.parse import quote
+
+    import httpx
 
     # Fall back to the saved config value so the user does not have to
     # re-enter the PAT after it has been saved once.
@@ -1069,12 +1072,12 @@ async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrat
     try:
         async with httpx.AsyncClient(headers=headers, timeout=15, follow_redirects=False) as client:
             resp = await client.get(url)
-    except httpx.ConnectError:
-        raise HTTPException(status_code=502, detail=f"Cannot connect to Azure DevOps for org '{org}'.")
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Connection to Azure DevOps timed out.")
+    except httpx.ConnectError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot connect to Azure DevOps for org '{org}'.") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="Connection to Azure DevOps timed out.") from exc
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Request failed: {exc}")
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
 
     if resp.status_code == 401:
         raise HTTPException(status_code=401, detail="Invalid Personal Access Token or insufficient permissions.")
@@ -1088,7 +1091,7 @@ async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrat
         data = resp.json()
         projects = [p["name"] for p in data.get("value", []) if p.get("name")]
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Failed to parse ADO response: {exc}")
+        raise HTTPException(status_code=502, detail=f"Failed to parse ADO response: {exc}") from exc
 
     return {"projects": projects}
 
@@ -1096,7 +1099,7 @@ async def get_ado_projects(body: AdoProjectsRequest, orch=Depends(get_orchestrat
 @router.post("/ingest-remote", response_model=RequirementsUploadResponse)
 async def ingest_remote_requirements(
     body: RemoteIngestRequest,
-    orch=Depends(get_orchestrator),
+    orch=Depends(get_orchestrator),  # noqa: B008
 ) -> RequirementsUploadResponse:
     """Ingest requirements from a remote source (JIRA / Asana / ADO).
 

@@ -7,13 +7,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from ...orchestrator.engine import Orchestrator
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import (
     ApproveGateRequest,
     ApproveGateResponse,
     ApprovePromptRequest,
 )
-from ...orchestrator.engine import Orchestrator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 @router.post("/approve-prompt", response_model=ApproveGateResponse)
 def approve_prompt(
     body: ApprovePromptRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> ApproveGateResponse:
     """Approve the generated prompt and optionally supply an edited version."""
     ok = orch.approve_prompt(
@@ -39,7 +39,7 @@ def approve_prompt(
 
 
 @router.post("/approve-review", response_model=ApproveGateResponse)
-def approve_review(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def approve_review(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Approve the code review and continue (loop or complete)."""
     ok = orch.approve_review()
     if not ok:
@@ -51,7 +51,7 @@ def approve_review(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGat
 
 
 @router.post("/move-to-next-story", response_model=ApproveGateResponse)
-def move_to_next_story(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def move_to_next_story(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Merge the current story's PR, delete its branch, then advance to the next story."""
     ok = orch.move_to_next_story()
     if not ok:
@@ -65,7 +65,7 @@ def move_to_next_story(orch: Orchestrator = Depends(get_orchestrator)) -> Approv
 @router.post("/approve-gate", response_model=ApproveGateResponse)
 def approve_gate(
     body: ApproveGateRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> ApproveGateResponse:
     """Generic gate approval — kept for backward compatibility."""
     ok = orch.approve_gate(gate=body.gate)
@@ -78,7 +78,7 @@ def approve_gate(
 
 
 @router.post("/retry-pr", response_model=ApproveGateResponse)
-def retry_pr(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def retry_pr(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Retry pull request creation after a failure."""
     ok = orch.retry_pr()
     if not ok:
@@ -90,7 +90,7 @@ def retry_pr(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateRespo
 
 
 @router.post("/retry-prompt-generator", response_model=ApproveGateResponse)
-def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Re-run prompt generation from the HITL_PROMPT_REVIEW gate."""
     ok = orch.retry_prompt_generator()
     if not ok:
@@ -104,7 +104,7 @@ def retry_prompt_generator(orch: Orchestrator = Depends(get_orchestrator)) -> Ap
 @router.post("/retry-code-generator", response_model=ApproveGateResponse)
 def retry_code_generator(
     body: ApprovePromptRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> ApproveGateResponse:
     """Retry code generation after a failure, optionally with a different tool/model."""
     ok = orch.retry_code_generator(
@@ -120,7 +120,7 @@ def retry_code_generator(
 
 
 @router.post("/retry-code-reviewer", response_model=ApproveGateResponse)
-def retry_code_reviewer(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def retry_code_reviewer(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Retry code review after a failure."""
     ok = orch.retry_code_reviewer()
     if not ok:
@@ -142,10 +142,11 @@ class _UpdateReviewRequest(BaseModel):
 @router.put("/review")
 def update_review(
     body: _UpdateReviewRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> dict:
     """Overwrite the pending review JSON before the user hits approve-review."""
     import json as _json_mod
+
     from ...code_reviewer.schema import ReviewJSON
 
     raw = body.content.strip()
@@ -156,7 +157,7 @@ def update_review(
         data = _json_mod.loads(raw)
         review = ReviewJSON.model_validate(data)
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Invalid ReviewJSON: {exc}")
+        raise HTTPException(status_code=422, detail=f"Invalid ReviewJSON: {exc}") from exc
 
     validated_json = review.model_dump_json()
     orch.state_mgr.update_metadata({
@@ -183,7 +184,7 @@ class _SetCliToolRequest(BaseModel):
 @router.put("/cli-tool")
 def set_cli_tool(
     body: _SetCliToolRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> dict:
     """Persist which CLI tool handles a given agent post."""
     from ...codex.cli_adapter import SUPPORTED_TOOLS

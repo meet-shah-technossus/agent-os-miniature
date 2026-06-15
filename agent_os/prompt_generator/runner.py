@@ -12,10 +12,11 @@ The generated prompt is written to the fixed path configured in
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 from ..config.schema import AgentOSConfig
 
@@ -76,10 +77,10 @@ writing the final fix prompt."""
     def run(
         self,
         iteration: int,
-        requirements_text: Optional[str] = None,
-        review_json: Optional[str] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict] = None,
+        requirements_text: str | None = None,
+        review_json: str | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        story_context: dict | None = None,
     ) -> str:
         """Generate a prompt and write it to the configured output path.
 
@@ -116,8 +117,8 @@ writing the final fix prompt."""
         self,
         requirements_text: str,
         iteration: int,
-        on_stdout: Optional[Callable[[str], None]],
-        story_context: Optional[dict] = None,
+        on_stdout: Callable[[str], None] | None,
+        story_context: dict | None = None,
     ) -> str:
         """Call OpenAI to produce a full implementation prompt from requirements."""
         project_name = self._config.project.name or "the project"
@@ -155,7 +156,7 @@ writing the final fix prompt."""
         fallback = self._fallback_implementation_prompt(
             requirements_text, project_name, language, story_context=story_context
         )
-        model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+        self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
         return self._stream_llm(
             system_prompt=system_prompt,
@@ -169,8 +170,8 @@ writing the final fix prompt."""
         self,
         review_json: str,
         iteration: int,
-        on_stdout: Optional[Callable[[str], None]],
-        story_context: Optional[dict] = None,
+        on_stdout: Callable[[str], None] | None,
+        story_context: dict | None = None,
     ) -> str:
         """Call OpenAI to produce a targeted fix prompt from a review JSON."""
         project_name = self._config.project.name or "the project"
@@ -208,7 +209,7 @@ writing the final fix prompt."""
         fallback = self._fallback_fix_prompt(
             review_json, project_name, iteration, story_context=story_context
         )
-        model = self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
+        self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
 
         return self._stream_llm(
             system_prompt=self._SYSTEM_FIX,
@@ -226,7 +227,7 @@ writing the final fix prompt."""
         user_prompt: str,
         label: str,
         fallback: str,
-        on_stdout: Optional[Callable[[str], None]],
+        on_stdout: Callable[[str], None] | None,
     ) -> str:
         """Route to Ollama or OpenAI based on prompt_generator.provider config.
 
@@ -239,10 +240,8 @@ writing the final fix prompt."""
 
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         if provider == "openai":
             model = getattr(pg_cfg, "openai_model", None) or \
@@ -302,9 +301,9 @@ writing the final fix prompt."""
         base_url: str,
         timeout: int,
         label: str,
-        fallback: Optional[str],
-        on_stdout: Optional[Callable[[str], None]],
-    ) -> Optional[str]:
+        fallback: str | None,
+        on_stdout: Callable[[str], None] | None,
+    ) -> str | None:
         """Call Ollama's OpenAI-compatible /v1/chat/completions with streaming.
 
         Returns the generated text on success, or ``None`` on any failure.
@@ -312,10 +311,8 @@ writing the final fix prompt."""
 
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         # Strip trailing slash; Ollama's OpenAI-compat endpoint lives at /v1
         api_base = base_url.rstrip("/")
@@ -371,17 +368,15 @@ writing the final fix prompt."""
         api_key: str,
         model: str,
         label: str,
-        fallback: Optional[str],
-        on_stdout: Optional[Callable[[str], None]],
-    ) -> Optional[str]:
+        fallback: str | None,
+        on_stdout: Callable[[str], None] | None,
+    ) -> str | None:
         """Call Groq's OpenAI-compatible API with streaming."""
 
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         if not api_key:
             _emit("[prompt-generator] No GROQ_API_KEY found — skipping Groq.")
@@ -438,9 +433,9 @@ writing the final fix prompt."""
         user_prompt: str,
         model: str,
         label: str,
-        fallback: Optional[str],
-        on_stdout: Optional[Callable[[str], None]],
-    ) -> Optional[str]:
+        fallback: str | None,
+        on_stdout: Callable[[str], None] | None,
+    ) -> str | None:
         """Call OpenAI with streaming; pipe tokens to on_stdout; return full text.
 
         Returns the generated text on success, or ``None`` on any failure
@@ -449,10 +444,8 @@ writing the final fix prompt."""
 
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         api_key = (
             getattr(self._config, "secrets", None)
@@ -541,7 +534,7 @@ writing the final fix prompt."""
     @staticmethod
     def _fallback_implementation_prompt(
         requirements: str, project_name: str, language: str,
-        story_context: Optional[dict] = None,
+        story_context: dict | None = None,
     ) -> str:
         fork_note = ""
         if story_context and story_context.get("is_fork_mode"):
@@ -572,7 +565,7 @@ writing the final fix prompt."""
     @staticmethod
     def _fallback_fix_prompt(
         review_json: str, project_name: str, iteration: int,
-        story_context: Optional[dict] = None,
+        story_context: dict | None = None,
     ) -> str:
         pr_note = ""
         if story_context:

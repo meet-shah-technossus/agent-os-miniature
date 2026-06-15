@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import base64 as _b64
+import contextlib
 import logging
 import os
+import re as _re
 import shlex
 import shutil
 import subprocess
@@ -581,7 +583,6 @@ class OpenTerminalRequest(BaseModel):
 
 # ── Copilot available-models endpoint ────────────────────────────────────────
 
-import re as _re
 
 # GitHub Copilot's own model catalog (requires Copilot OAuth token or PAT with copilot scope).
 _COPILOT_API_ENDPOINT   = "https://api.githubcopilot.com/models"
@@ -660,9 +661,7 @@ def _is_chat_model(item: dict, name: str) -> bool:
     if any(t in task.lower() for t in _NON_CHAT_TASKS):
         return False
     name_lower = name.lower()
-    if any(frag in name_lower for frag in _NON_CHAT_NAME_FRAGMENTS):
-        return False
-    return True
+    return not any(frag in name_lower for frag in _NON_CHAT_NAME_FRAGMENTS)
 
 
 def _is_copilot_provider(item: dict, name: str) -> bool:
@@ -684,13 +683,20 @@ def _is_copilot_provider(item: dict, name: str) -> bool:
 def _sort_models(models: list[str]) -> list[str]:
     def _key(m: str) -> tuple[int, str]:
         ml = m.lower()
-        if ml.startswith("gpt-5"):   return (0, ml)
-        if ml.startswith("gpt-4"):   return (1, ml)
-        if ml.startswith("o4"):      return (2, ml)
-        if ml.startswith("o3"):      return (3, ml)
-        if ml.startswith("o"):       return (4, ml)
-        if ml.startswith("claude"):  return (5, ml)
-        if ml.startswith("gemini"):  return (6, ml)
+        if ml.startswith("gpt-5"):
+            return (0, ml)
+        if ml.startswith("gpt-4"):
+            return (1, ml)
+        if ml.startswith("o4"):
+            return (2, ml)
+        if ml.startswith("o3"):
+            return (3, ml)
+        if ml.startswith("o"):
+            return (4, ml)
+        if ml.startswith("claude"):
+            return (5, ml)
+        if ml.startswith("gemini"):
+            return (6, ml)
         return (9, ml)
     return sorted(models, key=_key)
 
@@ -924,7 +930,6 @@ def run_in_mcp_terminal(body: McpTerminalRequest) -> dict:
 @router.get("", response_model=AllToolsStatusResponse)
 async def list_tools() -> AllToolsStatusResponse:
     """Return installation + auth status for every supported CLI tool (parallel)."""
-    import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
     loop = asyncio.get_event_loop()
@@ -948,7 +953,7 @@ def get_tool(tool_key: str) -> ToolStatusResponse:
 
 
 @router.post("/{tool_key}/login", response_model=ToolActionResponse)
-def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)) -> ToolActionResponse:
+def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestrator)) -> ToolActionResponse:  # noqa: B008
     """
     Trigger authentication for a CLI tool.
 
@@ -1092,7 +1097,7 @@ def login_tool(tool_key: str, body: ToolActionRequest, orch=Depends(get_orchestr
 
 
 @router.post("/{tool_key}/logout", response_model=ToolActionResponse)
-def logout_tool(tool_key: str, orch=Depends(get_orchestrator)) -> ToolActionResponse:
+def logout_tool(tool_key: str, orch=Depends(get_orchestrator)) -> ToolActionResponse:  # noqa: B008
     """Clear credentials for a tool — both env and CLI session."""
     meta = TOOL_REGISTRY.get(tool_key)
     if meta is None:
@@ -1172,6 +1177,7 @@ def _persist_env_key(env_key: str | None, value: str, orch: Any) -> None:
         return
     try:
         from pathlib import Path
+
         from ..deps import orch_holder
 
         agent_os_root = (
@@ -1273,10 +1279,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing: dict = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["auth_mode"] = "apikey"
         existing["OPENAI_API_KEY"] = api_key
         path.write_text(json.dumps(existing, indent=2))
@@ -1288,10 +1292,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Claude credentials to %s", path)
@@ -1302,10 +1304,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Gemini credentials to %s", path)
@@ -1316,10 +1316,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote Qwen credentials to %s", path)
@@ -1330,10 +1328,8 @@ def _persist_cli_credentials(tool_key: str, api_key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         existing = {}
         if path.exists():
-            try:
+            with contextlib.suppress(Exception):
                 existing = json.loads(path.read_text())
-            except Exception:
-                pass
         existing["api_key"] = api_key
         path.write_text(json.dumps(existing, indent=2))
         logger.info("Wrote DeepSeek credentials to %s", path)

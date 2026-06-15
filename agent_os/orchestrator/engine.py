@@ -12,18 +12,22 @@ code-reviewer components. For now those steps are stubs.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from rich.console import Console
 
 from ..config.schema import AgentOSConfig
-from ..constants import EventChannel, EventType, PipelineMode, TerminalEvent, PROJECT_NAME_STOP_WORDS
+from ..constants import (
+    EventType,
+    PipelineMode,
+)
 from ..storage.database import Database
-from ..storage.models import PipelineState, PipelineStatus
+from ..storage.models import PipelineStatus
 from .emitter import WebSocketEmitter
 from .state import StateManager
 
@@ -60,7 +64,7 @@ class Orchestrator:
         self._code_gen_stop_requested = threading.Event()
         self._active_codex_wrapper = None  # CodexWrapper instance during code gen steps
         self._wrapper_lock = threading.Lock()  # Protects _active_codex_wrapper
-        self._loop_thread: Optional[threading.Thread] = None
+        self._loop_thread: threading.Thread | None = None
 
         # WebSocket emitter — delegates event broadcasting
         self._emitter = WebSocketEmitter(self.state_mgr)
@@ -138,12 +142,12 @@ class Orchestrator:
         self._emitter.set_ws_queue(queue)
 
     @property
-    def _ws_queue(self) -> Optional[asyncio.Queue]:
+    def _ws_queue(self) -> asyncio.Queue | None:
         """Backward-compat property — delegates to emitter."""
         return self._emitter.ws_queue
 
     @_ws_queue.setter
-    def _ws_queue(self, queue: Optional[asyncio.Queue]) -> None:
+    def _ws_queue(self, queue: asyncio.Queue | None) -> None:
         """Backward-compat setter — delegates to emitter."""
         self._emitter.set_ws_queue(queue)
 
@@ -413,9 +417,9 @@ class Orchestrator:
 
     def approve_prompt(
         self,
-        prompt_content: Optional[str] = None,
-        cli_tool: Optional[str] = None,
-        cli_model: Optional[str] = None,
+        prompt_content: str | None = None,
+        cli_tool: str | None = None,
+        cli_model: str | None = None,
     ) -> bool:
         """HITL checkpoint 1 — user approved the generated prompt.
 
@@ -543,13 +547,11 @@ class Orchestrator:
         story_id = state.current_story_id
         feature_branch = self.config.project.feature_branch or (f"story-{story_id}" if story_id else "dev")
 
-        pr_number: Optional[int] = None
+        pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
         if pr_raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 pr_number = int(pr_raw)
-            except (TypeError, ValueError):
-                pass
 
         # Transition to STORY_COMPLETE immediately so the API returns fast
         self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
@@ -569,14 +571,14 @@ class Orchestrator:
 
     def _finalize_story_merge(
         self,
-        story_id: Optional[str],
+        story_id: str | None,
         feature_branch: str,
-        pr_number: Optional[int],
+        pr_number: int | None,
         state,
     ) -> None:
         """Perform the slow GitHub operations for move-to-next-story in background."""
-        from ..vcs.factory import make_vcs_client
         from ..orchestrator.story_queue import StoryQueueManager
+        from ..vcs.factory import make_vcs_client
 
         def _project_vcs():
             vcs = make_vcs_client(self.config)
@@ -702,8 +704,9 @@ class Orchestrator:
 
         Returns True if the action was performed; False if not at CODE_GEN_STOPPED.
         """
-        from ..git_ops.manager import GitOpsManager
         from pathlib import Path as _Path
+
+        from ..git_ops.manager import GitOpsManager
 
         if self.state_mgr.current_status != PipelineStatus.CODE_GEN_STOPPED:
             logger.warning("rollback_after_stop() called but not at CODE_GEN_STOPPED (current: %s)",
@@ -759,8 +762,9 @@ class Orchestrator:
         Returns True if action was attempted; False if not at CODE_GEN_STOPPED.
         """
         from pathlib import Path as _Path
-        from ..code_generator.runner import CodeGeneratorRunner, CodeGenResult
+
         from ..code_generator.completion import CompletionResult, CompletionStatus
+        from ..code_generator.runner import CodeGeneratorRunner, CodeGenResult
         from ..codex.session import CodexResult
         from ..git_ops.manager import GitOpsManager
         from ..vcs.factory import make_vcs_client
@@ -800,13 +804,11 @@ class Orchestrator:
         iteration = (
             state.metadata.get("story_iteration", 1) if is_ghr else state.current_iteration
         )
-        pr_number: Optional[int] = None
+        pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
         if pr_raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 pr_number = int(pr_raw)
-            except (TypeError, ValueError):
-                pass
 
         # Build a synthetic CodeGenResult so runner git ops can fill in PR fields
         syn_result = CodeGenResult(
@@ -1175,12 +1177,12 @@ class Orchestrator:
         from .ado_manager import ADOWorkItemManager
         ADOWorkItemManager(self.state_mgr, self.config).activate_work_items()
 
-    def _close_ado_work_items(self, story_id: Optional[str] = None) -> None:
+    def _close_ado_work_items(self, story_id: str | None = None) -> None:
         """Transition ADO work items to Closed. Delegates to ADOWorkItemManager."""
         from .ado_manager import ADOWorkItemManager
         ADOWorkItemManager(self.state_mgr, self.config).close_work_items(story_id)
 
-    def approve_gate(self, gate: Optional[str] = None) -> bool:
+    def approve_gate(self, gate: str | None = None) -> bool:
         """Generic gate approval — kept for backward compat with old pipeline routes."""
         status = self.state_mgr.current_status
         if gate:

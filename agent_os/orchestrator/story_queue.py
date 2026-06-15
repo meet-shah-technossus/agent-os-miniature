@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from ..storage.database import Database
 from ..storage.models import StoryQueueItem, StoryStatus
@@ -287,7 +286,7 @@ class StoryQueueManager:
     # Queue operations
     # ------------------------------------------------------------------
 
-    def dequeue(self) -> Optional[StoryQueueItem]:
+    def dequeue(self) -> StoryQueueItem | None:
         """Return the next QUEUED story (lowest position) and mark it IN_PROGRESS.
 
         Returns None if the queue is empty or all stories are done/failed.
@@ -319,7 +318,7 @@ class StoryQueueManager:
 
         return None
 
-    def peek(self) -> Optional[StoryQueueItem]:
+    def peek(self) -> StoryQueueItem | None:
         """Return the next ready story without changing its status."""
         conn = self._db.conn
         completed_ids = {
@@ -339,7 +338,7 @@ class StoryQueueManager:
                 return self._row_to_item(row)
         return None
 
-    def mark_complete(self, story_id: str, pr_number: Optional[int] = None, pr_url: str = "") -> None:
+    def mark_complete(self, story_id: str, pr_number: int | None = None, pr_url: str = "") -> None:
         conn = self._db.conn
         conn.execute(
             """UPDATE story_queue
@@ -385,7 +384,7 @@ class StoryQueueManager:
     # Read / introspection
     # ------------------------------------------------------------------
 
-    def get_item(self, story_id: str) -> Optional[StoryQueueItem]:
+    def get_item(self, story_id: str) -> StoryQueueItem | None:
         conn = self._db.conn
         row = conn.execute(
             "SELECT * FROM story_queue WHERE story_id = ?", (story_id,)

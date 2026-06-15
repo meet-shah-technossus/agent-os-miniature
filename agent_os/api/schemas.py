@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -16,7 +16,7 @@ class OrchestratorStatusResponse(BaseModel):
     is_hitl_gate: bool = False
     # ── GitHub Review mode fields (Phase 8) ──────────────────────────────────
     mode: str = "standard"
-    current_story_id: Optional[str] = None
+    current_story_id: str | None = None
     stories_completed: int = 0
     stories_total: int = 0
 
@@ -26,7 +26,7 @@ PipelineStatusResponse = OrchestratorStatusResponse
 
 
 class IterationResponse(BaseModel):
-    id: Optional[int] = None
+    id: int | None = None
     iteration_number: int
     status: str
     prompt_path: str = ""
@@ -38,7 +38,7 @@ class IterationResponse(BaseModel):
     ci_result: str = ""
     ci_output: str = ""
     started_at: datetime
-    completed_at: Optional[datetime] = None
+    completed_at: datetime | None = None
 
 
 class IterationListResponse(BaseModel):
@@ -58,9 +58,9 @@ class CurrentReviewResponse(BaseModel):
 
 
 class ApprovePromptRequest(BaseModel):
-    prompt_content: Optional[str] = None
-    cli_tool: Optional[str] = None
-    cli_model: Optional[str] = None
+    prompt_content: str | None = None
+    cli_tool: str | None = None
+    cli_model: str | None = None
 
     class Config:
         max_anystr_length = 1_000_000  # 1MB max for prompt content
@@ -69,14 +69,14 @@ class ApprovePromptRequest(BaseModel):
 class RequirementResponse(BaseModel):
     id: str
     type: str
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     title: str
     description: str = ""
     status: str = "active"
 
 
 class ApproveGateRequest(BaseModel):
-    gate: Optional[str] = None
+    gate: str | None = None
 
 
 class StoryQueueDetailResponse(BaseModel):
@@ -89,13 +89,13 @@ class StoryQueueDetailResponse(BaseModel):
     position: int = 0
     status: str = "queued"
     branch_name: str = ""
-    pr_number: Optional[int] = None
+    pr_number: int | None = None
     pr_url: str = ""
     story_iteration: int = 0
     depends_on: list[str] = []
     dependency_reason: str = ""
     created_at: str = ""
-    completed_at: Optional[str] = None
+    completed_at: str | None = None
 
 
 class StoryQueueReorderRequest(BaseModel):
@@ -113,7 +113,7 @@ class BusMessageResponse(BaseModel):
     channel: str
     sender: str
     timestamp: datetime
-    module_id: Optional[str] = None
+    module_id: str | None = None
     iteration: int = 0
     correlation_id: str = ""
     payload: dict[str, Any] = {}
@@ -271,20 +271,20 @@ class SettingsResponse(BaseModel):
 
 
 class SettingsUpdateRequest(BaseModel):
-    secrets: Optional[SecretsSettingsResponse] = None
-    github: Optional[GitHubSettingsResponse] = None
-    project: Optional[ProjectSettingsResponse] = None
-    pipeline: Optional[PipelineSettingsResponse] = None
-    cli_routing: Optional[CliRoutingSettingsResponse] = None
-    requirements: Optional[RequirementsSettingsResponse] = None
-    github_review: Optional[GitHubReviewSettingsResponse] = None
-    pipeline_mode: Optional[str] = None
-    ai_tools: Optional[AIToolsSettingsResponse] = None
-    vcs: Optional[VCSSettingsResponse] = None
-    ollama: Optional[OllamaSettingsResponse] = None
-    groq: Optional[GroqSettingsResponse] = None
-    prompt_generator: Optional[PromptGeneratorSettingsResponse] = None
-    code_reviewer: Optional[CodeReviewerSettingsResponse] = None
+    secrets: SecretsSettingsResponse | None = None
+    github: GitHubSettingsResponse | None = None
+    project: ProjectSettingsResponse | None = None
+    pipeline: PipelineSettingsResponse | None = None
+    cli_routing: CliRoutingSettingsResponse | None = None
+    requirements: RequirementsSettingsResponse | None = None
+    github_review: GitHubReviewSettingsResponse | None = None
+    pipeline_mode: str | None = None
+    ai_tools: AIToolsSettingsResponse | None = None
+    vcs: VCSSettingsResponse | None = None
+    ollama: OllamaSettingsResponse | None = None
+    groq: GroqSettingsResponse | None = None
+    prompt_generator: PromptGeneratorSettingsResponse | None = None
+    code_reviewer: CodeReviewerSettingsResponse | None = None
 
 
 class TestGitHubRequest(BaseModel):
@@ -309,7 +309,7 @@ class AgentMeta(BaseModel):
     is_builtin: bool
     is_custom: bool
     files_present: list[str]
-    post_assignment: Optional[str] = None
+    post_assignment: str | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -334,7 +334,7 @@ class AgentRegistryResponse(BaseModel):
 
 class CreateAgentRequest(BaseModel):
     name: str
-    files: Optional[dict[str, str]] = None  # {filename: initial_content}
+    files: dict[str, str] | None = None  # {filename: initial_content}
 
 
 class UpdateAgentFileRequest(BaseModel):

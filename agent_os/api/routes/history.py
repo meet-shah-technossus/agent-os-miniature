@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json as _json
 import logging
 import time
-from typing import Any, List
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
-from ..deps import get_orchestrator, orch_holder
+from ...orchestrator.engine import Orchestrator
+from ..deps import get_orchestrator
 from ..schemas import (
     ApproveGateResponse,
     CurrentPromptResponse,
@@ -21,7 +23,6 @@ from ..schemas import (
     StoryQueueDetailResponse,
     StoryQueueReorderRequest,
 )
-from ...orchestrator.engine import Orchestrator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
@@ -40,7 +41,7 @@ def invalidate_status_cache() -> None:
 def get_status(
     request: Request,
     response: Response,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> OrchestratorStatusResponse:
     """Return the current pipeline status with ETag + TTL cache."""
     now = time.monotonic()
@@ -88,7 +89,7 @@ def get_status(
 def get_iterations(
     limit: int = Query(default=0, ge=0, description="Max results (0=all)"),
     offset: int = Query(default=0, ge=0, description="Skip N results"),
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> IterationListResponse:
     """Return iteration records with optional pagination."""
     rows = orch.get_iterations()
@@ -106,7 +107,7 @@ def get_iterations(
 
 
 @router.get("/current-prompt", response_model=CurrentPromptResponse)
-def get_current_prompt(orch: Orchestrator = Depends(get_orchestrator)) -> CurrentPromptResponse:
+def get_current_prompt(orch: Orchestrator = Depends(get_orchestrator)) -> CurrentPromptResponse:  # noqa: B008
     """Return the latest generated prompt."""
     state = orch.state_mgr.state
     prompt_content: str = state.metadata.get("prompt_content", "") or ""
@@ -116,10 +117,8 @@ def get_current_prompt(orch: Orchestrator = Depends(get_orchestrator)) -> Curren
 
     if not prompt_content and prompt_path:
         from pathlib import Path as _Path
-        try:
+        with contextlib.suppress(Exception):
             prompt_content = _Path(prompt_path).read_text(encoding="utf-8")
-        except Exception:
-            pass
 
     return CurrentPromptResponse(
         iteration=iteration,
@@ -129,7 +128,7 @@ def get_current_prompt(orch: Orchestrator = Depends(get_orchestrator)) -> Curren
 
 
 @router.get("/current-review", response_model=CurrentReviewResponse)
-def get_current_review(orch: Orchestrator = Depends(get_orchestrator)) -> CurrentReviewResponse:
+def get_current_review(orch: Orchestrator = Depends(get_orchestrator)) -> CurrentReviewResponse:  # noqa: B008
     """Return the latest code review JSON."""
     state = orch.state_mgr.state
     review_content: str = state.metadata.get("review_json_content", "") or ""
@@ -148,8 +147,8 @@ def get_bus_history(
     channel: str = Query(..., description="Channel name: 'review_feedback' or 'validation_results'"),
     limit: int = Query(default=0, ge=0, description="Max results (0=all)"),
     offset: int = Query(default=0, ge=0, description="Skip N results"),
-    orch: Orchestrator = Depends(get_orchestrator),
-) -> List[Any]:
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
+) -> list[Any]:
     """Return historical BusMessage-shaped records for a given channel."""
     from datetime import datetime, timezone
 
@@ -158,7 +157,7 @@ def get_bus_history(
         "FROM iterations ORDER BY iteration_number ASC"
     ).fetchall()
 
-    messages: List[dict] = []
+    messages: list[dict] = []
     for row in rows:
         iteration = row["iteration_number"]
         ts = datetime.now(timezone.utc).isoformat()
@@ -207,7 +206,7 @@ def get_bus_history(
 
 
 @router.get("/story-queue")
-def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)) -> dict:
+def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)) -> dict:  # noqa: B008
     """Return the current story queue state (GitHub Review mode)."""
     from ...orchestrator.story_queue import StoryQueueManager
 
@@ -226,7 +225,7 @@ def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)) -> dict:
 @router.get("/story-queue/{story_id}", response_model=StoryQueueDetailResponse)
 def get_story_queue_item(
     story_id: str,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> StoryQueueDetailResponse:
     """Return a single story-queue item by story_id."""
     from ...orchestrator.story_queue import StoryQueueManager
@@ -241,7 +240,7 @@ def get_story_queue_item(
 @router.post("/story-queue/reorder", response_model=ApproveGateResponse)
 def reorder_story_queue(
     body: StoryQueueReorderRequest,
-    orch: Orchestrator = Depends(get_orchestrator),
+    orch: Orchestrator = Depends(get_orchestrator),  # noqa: B008
 ) -> ApproveGateResponse:
     """Manually reorder the story queue."""
     from ...orchestrator.story_queue import StoryQueueManager

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from ..storage.database import Database
 from ..storage.models import PipelineState, PipelineStatus
@@ -137,8 +137,8 @@ class StateManager:
     def transition_to(
         self,
         new_status: PipelineStatus,
-        iteration: Optional[int] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        iteration: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> PipelineState:
         """Transition the pipeline to a new state. Validates the transition is allowed."""
         current = self.state

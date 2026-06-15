@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -415,7 +415,7 @@ mutation ResolveThread($threadId: ID!) {
                 return GitHubResult(success=True, status_code=200, data={}, error="")
         return result
 
-    def get_pr_head_sha(self, pr_number: int) -> Optional[str]:
+    def get_pr_head_sha(self, pr_number: int) -> str | None:
         """Return the head commit SHA of a PR, or None on failure."""
         result = self.get_pr(pr_number)
         if result.success and result.data:

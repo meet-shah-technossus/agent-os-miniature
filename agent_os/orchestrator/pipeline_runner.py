@@ -5,11 +5,12 @@ and code review. Shared steps (idle, load_requirements) remain on the Orchestrat
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ..constants import EventType, PipelineMode, TerminalEvent
+from ..constants import EventType, TerminalEvent
 from ..storage.models import PipelineStatus
 
 if TYPE_CHECKING:
@@ -191,10 +192,8 @@ class StandardPipelineRunner:
         pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
         if pr_raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 pr_number = int(pr_raw)
-            except (TypeError, ValueError):
-                pass
 
         import uuid as _uuid
         _cg_session = f"cg-{iteration}-{_uuid.uuid4().hex[:8]}"
@@ -333,9 +332,9 @@ class StandardPipelineRunner:
         comments. Transitions to HITL_REVIEW_DECISION for user approval, or
         directly to PIPELINE_COMPLETE if the reviewer accepted and merged.
         """
+
         from ..code_reviewer.runner import CodeReviewerRunner
         from ..vcs.factory import make_vcs_client
-        import json as _json
 
         state = self.state_mgr.state
         iteration = state.current_iteration
@@ -352,13 +351,11 @@ class StandardPipelineRunner:
         self._emit(EventType.CODE_REVIEW_STARTED, {"iteration": iteration})
 
         # Retrieve pr_number stored by step_code_generation
-        pr_number: Optional[int] = None
+        pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
         if pr_raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 pr_number = int(pr_raw)
-            except (TypeError, ValueError):
-                pass
 
         feature_branch = self.config.project.feature_branch or "dev"
 

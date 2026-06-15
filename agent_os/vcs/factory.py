@@ -12,7 +12,7 @@ Usage (orchestrator init)::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..config.schema import AgentOSConfig
@@ -22,7 +22,7 @@ from .base import VCSClient
 logger = logging.getLogger(__name__)
 
 
-def make_vcs_client(config: "AgentOSConfig") -> Optional[VCSClient]:
+def make_vcs_client(config: AgentOSConfig) -> VCSClient | None:
     """Instantiate the correct ``VCSClient`` from *config*.
 
     Selection logic:
@@ -51,7 +51,7 @@ def make_vcs_client(config: "AgentOSConfig") -> Optional[VCSClient]:
     return _make_github_client(config)
 
 
-def _make_github_client(config: "AgentOSConfig") -> Optional[VCSClient]:
+def _make_github_client(config: AgentOSConfig) -> VCSClient | None:
     import os
 
     from .github_client import GitHubVCSClient
@@ -94,7 +94,7 @@ def _make_github_client(config: "AgentOSConfig") -> Optional[VCSClient]:
     return GitHubVCSClient(token=token, owner=owner, repo=repo)
 
 
-def _make_ado_client(config: "AgentOSConfig") -> Optional[VCSClient]:
+def _make_ado_client(config: AgentOSConfig) -> VCSClient | None:
     from .ado_client import ADOVCSClient
 
     org = getattr(config.requirements, "ado_org", "") or ""

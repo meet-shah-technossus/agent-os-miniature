@@ -21,17 +21,17 @@ PR operations:
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from ..codex.cli_adapter import API_TOOLS
 from ..codex.session import CodexResult, SessionType
 from ..codex.wrapper import CodexWrapper
 from ..config.schema import AgentOSConfig
-from ..constants import GIT_AUTHOR_NAME, DEFAULT_GITIGNORE_PATTERNS
+from ..constants import DEFAULT_GITIGNORE_PATTERNS, GIT_AUTHOR_NAME
 from ..git_ops.manager import GitOpsManager
 from ..vcs.base import VCSClient
 from .completion import CompletionResult, CompletionStatus, detect_completion
@@ -51,7 +51,7 @@ class CodeGenResult:
     summary_text: str = ""
     retried: bool = False
     # Git / PR metadata (populated when vcs=github)
-    pr_number: Optional[int] = None
+    pr_number: int | None = None
     pr_url: str = ""
     branch_pushed: str = ""          # "main" (iter 1) or feature branch name
     git_errors: list[str] = field(default_factory=list)
@@ -98,10 +98,10 @@ class CodeGeneratorRunner:
         prompt_path: str | Path,
         working_dir: str | Path,
         iteration: int = 1,
-        pr_number: Optional[int] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict] = None,
+        pr_number: int | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
+        story_context: dict | None = None,
     ) -> CodeGenResult:
         """Execute code generation with one automatic retry on partial completion.
 
@@ -181,7 +181,7 @@ class CodeGeneratorRunner:
         self,
         stdout: str,
         working_dir: Path,
-        emit: Optional[Callable[[str], None]] = None,
+        emit: Callable[[str], None] | None = None,
     ) -> list[str]:
         """Delegates to file_ops.apply_llm_file_output."""
         from .file_ops import apply_llm_file_output
@@ -191,14 +191,16 @@ class CodeGeneratorRunner:
         self,
         working_dir: Path,
         iteration: int,
-        pr_number: Optional[int],
+        pr_number: int | None,
         result: CodeGenResult,
         story_context: dict | None = None,
         tool_label: str = "AI tool",
     ) -> list[str]:
         """Fork-aware git ops — delegates to strategy classes."""
         from .git_strategies import (
-            GitOpsContext, ForkModeFirstIterationGitOps, ForkModeSubsequentIterationGitOps,
+            ForkModeFirstIterationGitOps,
+            ForkModeSubsequentIterationGitOps,
+            GitOpsContext,
         )
 
         cfg = self._config
@@ -246,7 +248,7 @@ class CodeGeneratorRunner:
 
     _GITIGNORE_ENTRIES: tuple[str, ...] = DEFAULT_GITIGNORE_PATTERNS
 
-    def _sanitise_before_commit(self, working_dir: Path, git: "GitOpsManager") -> None:
+    def _sanitise_before_commit(self, working_dir: Path, git: GitOpsManager) -> None:
         """Delegates to git_strategies._sanitise_before_commit."""
         from .git_strategies import _sanitise_before_commit
         _sanitise_before_commit(working_dir, git)
@@ -257,13 +259,16 @@ class CodeGeneratorRunner:
         self,
         working_dir: Path,
         iteration: int,
-        pr_number: Optional[int],
+        pr_number: int | None,
         result: CodeGenResult,
     ) -> list[str]:
         """Standard-mode git ops — delegates to strategy classes."""
         import re as _re
+
         from .git_strategies import (
-            GitOpsContext, StandardFirstIterationGitOps, StandardSubsequentIterationGitOps,
+            GitOpsContext,
+            StandardFirstIterationGitOps,
+            StandardSubsequentIterationGitOps,
         )
 
         cfg = self._config
@@ -277,10 +282,8 @@ class CodeGeneratorRunner:
             project_name = getattr(cfg.project, "name", "") or ""
             if project_name:
                 repo_name = _re.sub(r"[^a-z0-9]+", "-", project_name.lower()).strip("-")
-                try:
+                with contextlib.suppress(Exception):
                     cfg.project.repo_name = repo_name
-                except Exception:
-                    pass
             else:
                 repo_name = getattr(getattr(cfg, "github", None), "repo", None) or ""
 
@@ -357,8 +360,8 @@ Rules:
         prompt: str,
         working_dir: Path,
         *,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
     ) -> CodexResult:
         return self._codex.execute(
             prompt=prompt,

@@ -6,11 +6,12 @@ queue management, per-story prompt/code/review cycles. Shared steps
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
-from typing import Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from ..constants import EventType, PipelineMode, TerminalEvent
+from ..constants import EventType, TerminalEvent
 from ..storage.models import PipelineStatus
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ class StoryPipelineRunner:
     def _activate_ado_work_items(self) -> None:
         self._orch._activate_ado_work_items()
 
-    def _close_ado_work_items(self, story_id: Optional[str] = None) -> None:
+    def _close_ado_work_items(self, story_id: str | None = None) -> None:
         self._orch._close_ado_work_items(story_id)
 
     def _resume_in_thread(self) -> None:
@@ -112,8 +113,8 @@ class StoryPipelineRunner:
             getattr(cfg.github_review, "fork_repo_name", "") or f"{source_repo}-agent-os"
         )
 
-        from ..vcs.github_client import GitHubVCSClient
         from ..git_ops.manager import GitOpsManager
+        from ..vcs.github_client import GitHubVCSClient
 
         vcs = GitHubVCSClient(token=token, owner=owner, repo=fork_name)
 
@@ -195,6 +196,7 @@ class StoryPipelineRunner:
     def step_analyse_dependencies(self) -> None:
         """ANALYSING_DEPENDENCIES → QUEUE_READY."""
         import asyncio
+
         from ..orchestrator.story_queue import StoryQueueManager
 
         logger.info("[GHR] Analysing story dependencies")
@@ -248,9 +250,8 @@ class StoryPipelineRunner:
         """QUEUE_READY → STORY_PROMPT_GENERATION (or PIPELINE_COMPLETE)."""
         from ..orchestrator.story_queue import StoryQueueManager
 
-        if not self.config.project.root_path:
-            if not self.step_fork_and_clone():
-                return
+        if not self.config.project.root_path and not self.step_fork_and_clone():
+            return
 
         mgr = StoryQueueManager(self.db)
         next_story = mgr.dequeue()
@@ -278,8 +279,9 @@ class StoryPipelineRunner:
         """STORY_PROMPT_GENERATION → HITL_PROMPT_REVIEW."""
         import json as _json
         import uuid as _uuid
-        from ..prompt_generator.runner import PromptGeneratorRunner
+
         from ..orchestrator.story_queue import StoryQueueManager
+        from ..prompt_generator.runner import PromptGeneratorRunner
 
         state = self.state_mgr.state
         story_id = state.current_story_id
@@ -359,11 +361,12 @@ class StoryPipelineRunner:
 
     def step_story_code_generation(self) -> None:
         """STORY_CODE_GENERATION → STORY_CODE_REVIEW."""
-        import uuid as _uuid
         import re as _re
+        import uuid as _uuid
+
         from ..code_generator.runner import CodeGeneratorRunner
-        from ..vcs.factory import make_vcs_client
         from ..orchestrator.story_queue import StoryQueueManager
+        from ..vcs.factory import make_vcs_client
 
         state = self.state_mgr.state
         story_id = state.current_story_id
@@ -400,14 +403,12 @@ class StoryPipelineRunner:
         if cli_model:
             self.config.codex.model_routing["CODE_GENERATOR"] = cli_model
 
-        pr_number: Optional[int] = None
+        pr_number: int | None = None
         if story_iter > 1:
             pr_raw = state.metadata.get("pr_number")
             if pr_raw is not None:
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     pr_number = int(pr_raw)
-                except (TypeError, ValueError):
-                    pass
 
         _cg_session = f"cg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
         _cg_model = self.config.codex.model_routing.get("CODE_GENERATOR") or self.config.codex.default_model or ""
@@ -518,11 +519,11 @@ class StoryPipelineRunner:
 
     def step_story_code_review(self) -> None:
         """STORY_CODE_REVIEW → HITL_REVIEW_DECISION or STORY_COMPLETE."""
-        import json as _json
         import uuid as _uuid
+
         from ..code_reviewer.runner import CodeReviewerRunner
-        from ..vcs.factory import make_vcs_client
         from ..orchestrator.story_queue import StoryQueueManager
+        from ..vcs.factory import make_vcs_client
 
         state = self.state_mgr.state
         story_id = state.current_story_id
@@ -533,13 +534,11 @@ class StoryPipelineRunner:
         logger.info("[GHR] Story code review — story=%s iter=%d", story_id, story_iter)
         self._emit(EventType.CODE_REVIEW_STARTED, {"story_id": story_id, "story_iteration": story_iter})
 
-        pr_number: Optional[int] = None
+        pr_number: int | None = None
         pr_raw = state.metadata.get("pr_number")
         if pr_raw is not None:
-            try:
+            with contextlib.suppress(TypeError, ValueError):
                 pr_number = int(pr_raw)
-            except (TypeError, ValueError):
-                pass
 
         feature_branch = self.config.project.feature_branch or f"story-{story_id}"
 

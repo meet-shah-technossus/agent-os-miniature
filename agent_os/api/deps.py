@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Optional
 
 from ..config.schema import AgentOSConfig
 from ..orchestrator.engine import Orchestrator
@@ -17,11 +16,11 @@ class _OrchestratorHolder:
     """Singleton container for the Orchestrator instance."""
 
     def __init__(self) -> None:
-        self._orch: Optional[Orchestrator] = None
+        self._orch: Orchestrator | None = None
         self._lock = threading.Lock()
         # Absolute path to the config.yaml that was loaded at startup.
         # None when the orchestrator was initialised in-memory (e.g. tests).
-        self.config_path: Optional[Path] = None
+        self.config_path: Path | None = None
 
     def init(self, config: AgentOSConfig) -> Orchestrator:
         with self._lock:

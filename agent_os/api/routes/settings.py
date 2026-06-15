@@ -13,10 +13,12 @@ from fastapi import APIRouter, Depends
 from ...config.env import mask_secret, resolve_secret
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import (
+    AIToolCredentialResponse,
+    AIToolsSettingsResponse,
     CliRoutingSettingsResponse,
     CodeReviewerSettingsResponse,
-    GitHubSettingsResponse,
     GitHubReviewSettingsResponse,
+    GitHubSettingsResponse,
     GroqSettingsResponse,
     OllamaSettingsResponse,
     PipelineSettingsResponse,
@@ -28,8 +30,6 @@ from ..schemas import (
     SettingsUpdateRequest,
     TestGitHubRequest,
     TestGitHubResponse,
-    AIToolsSettingsResponse,
-    AIToolCredentialResponse,
     VCSSettingsResponse,
 )
 
@@ -38,7 +38,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("", response_model=SettingsResponse)
-def get_settings(orch=Depends(get_orchestrator)) -> SettingsResponse:
+def get_settings(orch=Depends(get_orchestrator)) -> SettingsResponse:  # noqa: B008
     """Return current settings with secrets masked."""
     cfg = orch.config
     project_root = cfg.project.root_path or "."
@@ -175,7 +175,7 @@ def _serialize_ai_tools(cfg: object) -> AIToolsSettingsResponse:
 
 
 @router.put("", response_model=SettingsResponse)
-def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)) -> SettingsResponse:
+def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)) -> SettingsResponse:  # noqa: B008
     """Update settings, write to config.yaml, and hot-reload into the orchestrator."""
     cfg = orch.config
 
@@ -405,7 +405,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
 
 
 @router.post("/test-github", response_model=TestGitHubResponse)
-def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)) -> TestGitHubResponse:
+def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)) -> TestGitHubResponse:  # noqa: B008
     """Test a GitHub token by calling the /user endpoint.
 
     If ``body.token`` is provided (unsaved value from the UI), it is used

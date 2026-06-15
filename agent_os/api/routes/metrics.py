@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/metrics", tags=["metrics"])
 
 
 @router.get("", response_model=MetricsResponse)
-def get_metrics(orch=Depends(get_orchestrator)) -> MetricsResponse:
+def get_metrics(orch=Depends(get_orchestrator)) -> MetricsResponse:  # noqa: B008
     state = orch.state_mgr.state
 
     all_iters = orch.db.conn.execute(

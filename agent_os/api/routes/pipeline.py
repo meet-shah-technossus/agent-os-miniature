@@ -8,36 +8,36 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from ...orchestrator.engine import Orchestrator
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import ApproveGateResponse
-from ...orchestrator.engine import Orchestrator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/orchestrator", tags=["orchestrator"])
 
 
 @router.post("/start", response_model=ApproveGateResponse)
-def start_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def start_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Start (or resume) the pipeline in a background thread."""
-    from ...services.pipeline_service import PipelineService, PipelineAlreadyRunningError
+    from ...services.pipeline_service import PipelineAlreadyRunningError, PipelineService
 
     svc = PipelineService(orch)
     try:
         msg = svc.start()
-    except PipelineAlreadyRunningError:
-        raise HTTPException(status_code=409, detail="Pipeline is already running")
+    except PipelineAlreadyRunningError as exc:
+        raise HTTPException(status_code=409, detail="Pipeline is already running") from exc
     return ApproveGateResponse(approved=True, message=msg)
 
 
 @router.post("/pause", response_model=ApproveGateResponse)
-def pause_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def pause_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Request the pipeline to pause after the current step."""
     orch.pause()
     return ApproveGateResponse(approved=True, message="Pause requested")
 
 
 @router.post("/stop", response_model=ApproveGateResponse)
-def stop_code_generation(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def stop_code_generation(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Kill the active code-generation subprocess mid-flight."""
     ok = orch.stop_code_generation()
     if not ok:
@@ -49,7 +49,7 @@ def stop_code_generation(orch: Orchestrator = Depends(get_orchestrator)) -> Appr
 
 
 @router.post("/stop-rollback", response_model=ApproveGateResponse)
-def stop_rollback(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def stop_rollback(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Roll back partial code-gen changes after a stop."""
     ok = orch.rollback_after_stop()
     if not ok:
@@ -61,7 +61,7 @@ def stop_rollback(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGate
 
 
 @router.post("/stop-continue", response_model=ApproveGateResponse)
-def stop_continue(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def stop_continue(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Save partial code-gen progress and continue to code review."""
     ok = orch.continue_after_stop()
     if not ok:
@@ -73,7 +73,7 @@ def stop_continue(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGate
 
 
 @router.post("/reset", response_model=ApproveGateResponse)
-def reset_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:
+def reset_pipeline(orch: Orchestrator = Depends(get_orchestrator)) -> ApproveGateResponse:  # noqa: B008
     """Reset the pipeline to IDLE, discarding in-progress state."""
     orch.reset()
 
