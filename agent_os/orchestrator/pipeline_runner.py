@@ -113,6 +113,8 @@ class StandardPipelineRunner:
         _pg_provider = getattr(_pg_cfg, 'provider', 'ollama')
         if _pg_provider == 'openai':
             model_pg = getattr(_pg_cfg, 'openai_model', None) or 'gpt-4.1-mini'
+        elif _pg_provider == 'groq':
+            model_pg = f"groq/{getattr(_pg_cfg, 'groq_model', None) or 'llama-3.3-70b-versatile'}"
         else:
             model_pg = f"ollama/{getattr(_pg_cfg, 'ollama_model', None) or 'llama3.1:8b'}"
         self._emit_terminal(TerminalEvent.SESSION_START, "PROMPT_GENERATOR", _pg_session,

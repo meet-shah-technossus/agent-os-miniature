@@ -98,6 +98,7 @@ export interface ReqEpic {
 }
 export interface RequirementsPreviewDoc {
   epics: ReqEpic[];
+  stories?: ReqStory[];
 }
 
 

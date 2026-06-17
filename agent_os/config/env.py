@@ -150,6 +150,12 @@ def build_codex_env(
     if resolved:
         env["OPENAI_API_KEY"] = resolved
 
+    # Force UTF-8 stdio in all subprocess Python invocations so that multi-byte
+    # characters in prompts are not misread as cp1252 on Windows, which produces
+    # lone surrogate characters that break JSON serialisation later.
+    env["PYTHONUTF8"] = "1"
+    env.setdefault("PYTHONIOENCODING", "utf-8:replace")
+
     # Derive the agent-os root (two levels up from this file: config/env.py → agent_os/ → root)
     agent_os_root = str(Path(__file__).resolve().parent.parent.parent)
     existing_pythonpath = env.get("PYTHONPATH", "")

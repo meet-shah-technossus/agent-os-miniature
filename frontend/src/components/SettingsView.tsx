@@ -1119,19 +1119,20 @@ export default function SettingsView() {
         {reqError && <p className="text-xs text-red-400/80 mt-4">{reqError}</p>}
 
         {/* Saved source badge + View Requirements */}
-        {settings?.requirements?.source && (
+        {(settings?.requirements?.source || reqPath) && (
           <div className="mt-5 pt-4 border-t border-white/[0.04] flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase tracking-widest text-white/25">Active:</span>
             <span className="text-xs font-medium text-white/60 px-2 py-0.5 rounded bg-white/[0.06]">
-              {settings.requirements.source === 'device' ? '📁 From Device' :
-               settings.requirements.source === 'jira'   ? '🟦 JIRA' :
-               settings.requirements.source === 'asana'  ? '🟧 Asana' : '🟦 Azure DevOps'}
+              {settings?.requirements?.source === 'device' ? '📁 From Device' :
+               settings?.requirements?.source === 'jira'   ? '🟦 JIRA' :
+               settings?.requirements?.source === 'asana'  ? '🟧 Asana' :
+               settings?.requirements?.source             ? '🟦 Azure DevOps' : '📁 From Device'}
             </span>
-            {settings.requirements.source === 'device' && settings.requirements.path && (
-              <span className="text-xs font-mono text-white/30 truncate max-w-xs">{settings.requirements.path.split('/').pop()}</span>
+            {(settings?.requirements?.source === 'device' || !settings?.requirements?.source) && (settings?.requirements?.path || reqPath) && (
+              <span className="text-xs font-mono text-white/30 truncate max-w-xs">{(settings?.requirements?.path || reqPath).split('/').pop()}</span>
             )}
             <button
-              disabled={!settings.requirements.path}
+              disabled={!reqPath && !settings?.requirements?.path}
               onClick={async () => {
                 setReqViewError('');
                 setReqViewDoc(null);
@@ -1188,13 +1189,15 @@ export default function SettingsView() {
                   <div>
                     <h2 className="text-sm font-semibold text-white">Requirements Preview</h2>
                     {reqViewDoc && (() => {
+                      const topStories = reqViewDoc.stories ?? [];
                       const nEpics = reqViewDoc.epics.length;
                       const nFeat  = reqViewDoc.epics.reduce((a, e) => a + e.features.length, 0);
-                      const nStory = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.length, 0), 0);
-                      const nAC    = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.reduce((c, s) => c + s.acceptance_criteria.length, 0), 0), 0);
+                      const nStory = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.length, 0), 0) + topStories.length;
+                      const nAC    = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.reduce((c, s) => c + s.acceptance_criteria.length, 0), 0), 0)
+                                   + topStories.reduce((a, s) => a + s.acceptance_criteria.length, 0);
                       return (
                         <p className="text-[11px] text-white/40 mt-0.5">
-                          {nEpics} epic{nEpics !== 1 ? 's' : ''} · {nFeat} feature{nFeat !== 1 ? 's' : ''} · {nStory} stor{nStory !== 1 ? 'ies' : 'y'} · {nAC} acceptance criteria
+                          {nEpics > 0 && <>{nEpics} epic{nEpics !== 1 ? 's' : ''} · {nFeat} feature{nFeat !== 1 ? 's' : ''} · </>}{nStory} stor{nStory !== 1 ? 'ies' : 'y'} · {nAC} acceptance criteria
                         </p>
                       );
                     })()}
@@ -1225,6 +1228,9 @@ export default function SettingsView() {
                   )}
                   {reqViewDoc && reqViewDoc.epics.map((epic) => (
                     <ReqEpicBlock key={epic.id} epic={epic} />
+                  ))}
+                  {reqViewDoc && (reqViewDoc.stories ?? []).map((story) => (
+                    <ReqStoryBlock key={story.id} story={story} />
                   ))}
                 </div>
               </motion.div>

@@ -94,6 +94,12 @@ def stream_chat(tool: str, model: str, prompt: str) -> int:
         sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+
+    # Strip any lone surrogates that survived codec mismatches — they cannot be
+    # JSON-encoded and would crash the openai library's request serialisation.
+    prompt = prompt.encode("utf-8", errors="replace").decode("utf-8")
 
     if tool not in TOOL_ENDPOINTS:
         print(f"Error: unknown api_adapter tool '{tool}'", file=sys.stderr)

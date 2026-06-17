@@ -36,9 +36,15 @@ def get_masked_secrets(config: Any, db_conn: Any) -> dict[str, str]:
         config.secrets.github_token or db_secrets.get("github_token", ""),
         project_root,
     )
+    groq_resolved = resolve_secret(
+        "groq_api_key",
+        getattr(getattr(config, "groq", None), "api_key", "") or db_secrets.get("groq_api_key", ""),
+        project_root,
+    )
     return {
         "openai_api_key": mask_secret(openai_resolved),
         "github_token": mask_secret(github_resolved),
+        "groq_api_key": mask_secret(groq_resolved),
     }
 
 
@@ -59,7 +65,7 @@ def persist_env_file(
     env_path = agent_os_root / ".env"
     lines: list[str] = []
     if env_path.exists():
-        lines = env_path.read_text().splitlines()
+        lines = env_path.read_text(encoding="utf-8").splitlines()
 
     def _upsert(current_lines: list[str], key: str, val: str) -> list[str]:
         prefix = f"{key}="
