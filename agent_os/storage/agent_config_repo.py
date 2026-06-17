@@ -80,13 +80,15 @@ class AgentConfigRepo:
         """Return stored secrets dict (may be empty)."""
         return self.get("secrets") or {}
 
-    def set_secrets(self, openai_api_key: str = "", github_token: str = "") -> None:
+    def set_secrets(self, openai_api_key: str = "", github_token: str = "", groq_api_key: str = "") -> None:
         """Upsert secrets into DB; only overwrites non-empty values."""
         current = self.get_secrets()
         if openai_api_key:
             current["openai_api_key"] = openai_api_key
         if github_token:
             current["github_token"] = github_token
+        if groq_api_key:
+            current["groq_api_key"] = groq_api_key
         self.set("secrets", current)
 
     # ------------------------------------------------------------------

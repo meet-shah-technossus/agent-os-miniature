@@ -1188,13 +1188,15 @@ export default function SettingsView() {
                   <div>
                     <h2 className="text-sm font-semibold text-white">Requirements Preview</h2>
                     {reqViewDoc && (() => {
+                      const topStories = reqViewDoc.stories ?? [];
                       const nEpics = reqViewDoc.epics.length;
                       const nFeat  = reqViewDoc.epics.reduce((a, e) => a + e.features.length, 0);
-                      const nStory = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.length, 0), 0);
-                      const nAC    = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.reduce((c, s) => c + s.acceptance_criteria.length, 0), 0), 0);
+                      const nStory = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.length, 0), 0) + topStories.length;
+                      const nAC    = reqViewDoc.epics.reduce((a, e) => a + e.features.reduce((b, f) => b + f.stories.reduce((c, s) => c + s.acceptance_criteria.length, 0), 0), 0)
+                                   + topStories.reduce((a, s) => a + s.acceptance_criteria.length, 0);
                       return (
                         <p className="text-[11px] text-white/40 mt-0.5">
-                          {nEpics} epic{nEpics !== 1 ? 's' : ''} · {nFeat} feature{nFeat !== 1 ? 's' : ''} · {nStory} stor{nStory !== 1 ? 'ies' : 'y'} · {nAC} acceptance criteria
+                          {nEpics > 0 && <>{nEpics} epic{nEpics !== 1 ? 's' : ''} · {nFeat} feature{nFeat !== 1 ? 's' : ''} · </>}{nStory} stor{nStory !== 1 ? 'ies' : 'y'} · {nAC} acceptance criteria
                         </p>
                       );
                     })()}
@@ -1225,6 +1227,9 @@ export default function SettingsView() {
                   )}
                   {reqViewDoc && reqViewDoc.epics.map((epic) => (
                     <ReqEpicBlock key={epic.id} epic={epic} />
+                  ))}
+                  {reqViewDoc && (reqViewDoc.stories ?? []).map((story) => (
+                    <ReqStoryBlock key={story.id} story={story} />
                   ))}
                 </div>
               </motion.div>

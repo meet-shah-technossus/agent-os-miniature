@@ -125,6 +125,7 @@ def get_settings(orch=Depends(get_orchestrator)) -> SettingsResponse:  # noqa: B
             api_key=mask_secret(
                 getattr(getattr(cfg, 'groq', None), 'api_key', '')
                 or os.environ.get('GROQ_API_KEY', '')
+                or _db_secrets.get('groq_api_key', '')
             ),
             model=getattr(getattr(cfg, 'groq', None), 'model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile',
         ),
@@ -346,7 +347,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
         if cfg.codex.model_routing:
             _repo.set_model_routing(dict(cfg.codex.model_routing))
         if _new_openai or _new_github or _new_groq:
-            _repo.set_secrets(openai_api_key=_new_openai, github_token=_new_github)
+            _repo.set_secrets(openai_api_key=_new_openai, github_token=_new_github, groq_api_key=_new_groq)
             # Inject into this process's os.environ immediately — resolve_secret
             # will find it without needing a DB round-trip
             if _new_openai:
@@ -369,7 +370,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
                 _env_path = _agent_os_root / ".env"
                 _lines: list[str] = []
                 if _env_path.exists():
-                    _lines = _env_path.read_text().splitlines()
+                    _lines = _env_path.read_text(encoding="utf-8").splitlines()
                 # Upsert each key
                 def _upsert(lines: list[str], key: str, val: str) -> list[str]:
                     prefix = f"{key}="

@@ -35,7 +35,7 @@ def _load_dotenv(project_root: str = ".") -> dict[str, str]:
     if not env_path.is_file():
         return {}
     pairs: dict[str, str] = {}
-    for line in env_path.read_text().splitlines():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue

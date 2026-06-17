@@ -253,6 +253,16 @@ writing the final fix prompt."""
                 getattr(getattr(self._config, "groq", None), "api_key", "")
                 or os.environ.get("GROQ_API_KEY", "")
             )
+            if not groq_key:
+                try:
+                    from ..storage.agent_config_repo import AgentConfigRepo
+                    from ..storage.database import Database
+                    _db = Database(self._config.storage.db_path)
+                    _db.connect()
+                    groq_key = AgentConfigRepo(_db.conn).get_secrets().get("groq_api_key", "")
+                    _db.conn.close()
+                except Exception:
+                    pass
             model = getattr(pg_cfg, "groq_model", None) or "llama-3.3-70b-versatile"
             return self._stream_groq(system_prompt, user_prompt, groq_key, model, label, fallback, on_stdout)
 
@@ -354,7 +364,14 @@ writing the final fix prompt."""
             _emit("[prompt-generator] Empty response from Ollama — using fallback.")
 
         except Exception as exc:
-            _emit(f"[prompt-generator] Ollama call failed: {exc} — using fallback.")
+            exc_str = str(exc).lower()
+            hint = (
+                " Hint: ensure the Ollama server is reachable and set OLLAMA_HOST=0.0.0.0 "
+                "on the host machine if connecting from a remote IP."
+                if "connect" in exc_str or "connection" in exc_str or "refused" in exc_str
+                else ""
+            )
+            _emit(f"[prompt-generator] Ollama call failed: {exc}{hint} — using fallback.")
             logger.warning("Ollama streaming failed for %s: %s", label, exc)
 
         return fallback if fallback is not None else None
