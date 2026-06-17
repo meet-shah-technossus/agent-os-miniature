@@ -1,0 +1,46 @@
+stories:
+  - id: "S1"
+    title: "Create Register User UI in Side Panel"
+    description: >
+      Develop a user registration interface accessible from the side panel.
+      The form should allow new users to enter required registration details and submit them.
+    acceptance_criteria:
+      - id: "AC1"
+        title: "Register User option is visible in side panel"
+        description: >
+          A "Register User" option is visible in the side panel navigation.
+      - id: "AC2"
+        title: "Register User opens registration form"
+        description: >
+          Clicking "Register User" opens the registration form page or panel.
+      - id: "AC3"
+        title: "Registration form includes required fields"
+        description: >
+          The registration form includes fields for name, email, password, and confirm password.
+      - id: "AC4"
+        title: "Form validation messages are displayed"
+        description: >
+          Form validation messages are displayed for empty or invalid inputs.
+
+  - id: "S2"
+    title: "Implement User Registration Functionality"
+    description: >
+      Implement backend integration and registration logic to create new user accounts
+      securely and provide appropriate success or error feedback.
+    acceptance_criteria:
+      - id: "AC5"
+        title: "User data is stored after valid registration"
+        description: >
+          User data is successfully stored after valid registration submission.
+      - id: "AC6"
+        title: "Duplicate email registrations are prevented"
+        description: >
+          Duplicate email registrations are prevented with an appropriate error message.
+      - id: "AC7"
+        title: "Password fields must match before submission"
+        description: >
+          Password and confirm password fields must match before submission.
+      - id: "AC8"
+        title: "Success message is displayed after registration"
+        description: >
+          Success message or confirmation is displayed after successful registration.
