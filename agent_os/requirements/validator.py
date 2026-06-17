@@ -9,8 +9,8 @@ def validate_requirements(doc: RequirementsDocument) -> list[str]:
     """Return a list of validation error strings. Empty list means valid."""
     errors: list[str] = []
 
-    if not doc.epics:
-        errors.append("No epics found in requirements document.")
+    if not doc.epics and not doc.stories:
+        errors.append("No epics or stories found in requirements document.")
         return errors
 
     seen_ids: set[str] = set()
@@ -30,6 +30,13 @@ def validate_requirements(doc: RequirementsDocument) -> list[str]:
                     )
                 for ac in story.acceptance_criteria:
                     _check_dup(ac.id, seen_ids, errors, "AC")
+
+    for story in doc.stories:
+        _check_dup(story.id, seen_ids, errors, "Story")
+        if not story.acceptance_criteria:
+            errors.append(f"Story '{story.id}' has no acceptance criteria.")
+        for ac in story.acceptance_criteria:
+            _check_dup(ac.id, seen_ids, errors, "AC")
 
     return errors
 

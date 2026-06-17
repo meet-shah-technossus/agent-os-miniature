@@ -146,6 +146,13 @@ class RequirementsParser:
                         self._store(ac.id, RequirementType.ACCEPTANCE_CRITERIA, story.id, ac.title, ac.description)
                         counts["acceptance_criteria"] += 1
 
+        for story in doc.stories:
+            self._store(story.id, RequirementType.STORY, None, story.title, story.description)
+            counts["stories"] += 1
+            for ac in story.acceptance_criteria:
+                self._store(ac.id, RequirementType.ACCEPTANCE_CRITERIA, story.id, ac.title, ac.description)
+                counts["acceptance_criteria"] += 1
+
         logger.info("Stored %s requirements records.", sum(counts.values()))
         return counts
 

@@ -34,3 +34,4 @@ class EpicYAML(BaseModel):
 
 class RequirementsDocument(BaseModel):
     epics: list[EpicYAML] = Field(default_factory=list)
+    stories: list[StoryYAML] = Field(default_factory=list)
