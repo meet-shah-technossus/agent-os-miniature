@@ -79,6 +79,10 @@ def _validate_yaml_requirements(raw_bytes: bytes, filename: str) -> tuple[dict[s
                 stats["stories"] += 1
                 stats["acceptance_criteria"] += len(story.acceptance_criteria)
 
+    for story in doc.stories:
+        stats["stories"] += 1
+        stats["acceptance_criteria"] += len(story.acceptance_criteria)
+
     return stats, ""
 
 
@@ -181,12 +185,12 @@ async def upload_requirements(
         stats, err = _validate_yaml_requirements(content, fname)
         if err:
             raise HTTPException(status_code=422, detail=err)
-        if stats.get("epics", 0) == 0:
+        if stats.get("epics", 0) == 0 and stats.get("stories", 0) == 0:
             raise HTTPException(
                 status_code=422,
                 detail=(
-                    "No epics found in the requirements YAML. "
-                    "Make sure your file has a top-level 'epics:' key with at least one entry."
+                    "No requirements found in the YAML. "
+                    "Make sure your file has a top-level 'epics:' or 'stories:' key with at least one entry."
                 ),
             )
         yaml_bytes = content
