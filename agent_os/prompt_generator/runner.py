@@ -281,23 +281,32 @@ writing the final fix prompt."""
         if result is not None:
             return result
 
-        # Ollama failed — try OpenAI as secondary
-        openai_model = getattr(pg_cfg, "openai_model", None) or \
-            self._config.codex.model_routing.get("PROMPT_GENERATOR", "gpt-4.1-mini")
-        api_key = (
-            getattr(getattr(self._config, "secrets", None), "openai_api_key", "")
-            or os.environ.get("OPENAI_API_KEY", "")
+        # Ollama failed — try Groq as secondary
+        groq_key = (
+            getattr(getattr(self._config, "groq", None), "api_key", "")
+            or os.environ.get("GROQ_API_KEY", "")
         )
-        if api_key:
-            _emit(f"[prompt-generator] Ollama unavailable — retrying with OpenAI {openai_model} …")
-            result = self._stream_openai(
-                system_prompt, user_prompt, openai_model,
+        if not groq_key:
+            try:
+                from ..storage.agent_config_repo import AgentConfigRepo
+                from ..storage.database import Database
+                _db = Database(self._config.storage.db_path)
+                _db.connect()
+                groq_key = AgentConfigRepo(_db.conn).get_secrets().get("groq_api_key", "")
+                _db.conn.close()
+            except Exception:
+                pass
+        groq_model = getattr(pg_cfg, "groq_model", None) or "llama-3.3-70b-versatile"
+        if groq_key:
+            _emit(f"[prompt-generator] Ollama unavailable — retrying with Groq {groq_model} …")
+            result = self._stream_groq(
+                system_prompt, user_prompt, groq_key, groq_model,
                 label, fallback=None, on_stdout=on_stdout,
             )
             if result is not None:
                 return result
 
-        # Both failed — use static template
+        # All LLM backends failed — use static template
         _emit("[prompt-generator] All LLM backends failed — using static fallback template.")
         return fallback
 

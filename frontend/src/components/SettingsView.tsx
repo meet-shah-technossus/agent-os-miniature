@@ -1119,19 +1119,20 @@ export default function SettingsView() {
         {reqError && <p className="text-xs text-red-400/80 mt-4">{reqError}</p>}
 
         {/* Saved source badge + View Requirements */}
-        {settings?.requirements?.source && (
+        {(settings?.requirements?.source || reqPath) && (
           <div className="mt-5 pt-4 border-t border-white/[0.04] flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase tracking-widest text-white/25">Active:</span>
             <span className="text-xs font-medium text-white/60 px-2 py-0.5 rounded bg-white/[0.06]">
-              {settings.requirements.source === 'device' ? '📁 From Device' :
-               settings.requirements.source === 'jira'   ? '🟦 JIRA' :
-               settings.requirements.source === 'asana'  ? '🟧 Asana' : '🟦 Azure DevOps'}
+              {settings?.requirements?.source === 'device' ? '📁 From Device' :
+               settings?.requirements?.source === 'jira'   ? '🟦 JIRA' :
+               settings?.requirements?.source === 'asana'  ? '🟧 Asana' :
+               settings?.requirements?.source             ? '🟦 Azure DevOps' : '📁 From Device'}
             </span>
-            {settings.requirements.source === 'device' && settings.requirements.path && (
-              <span className="text-xs font-mono text-white/30 truncate max-w-xs">{settings.requirements.path.split('/').pop()}</span>
+            {(settings?.requirements?.source === 'device' || !settings?.requirements?.source) && (settings?.requirements?.path || reqPath) && (
+              <span className="text-xs font-mono text-white/30 truncate max-w-xs">{(settings?.requirements?.path || reqPath).split('/').pop()}</span>
             )}
             <button
-              disabled={!settings.requirements.path}
+              disabled={!reqPath && !settings?.requirements?.path}
               onClick={async () => {
                 setReqViewError('');
                 setReqViewDoc(null);

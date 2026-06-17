@@ -98,6 +98,15 @@ export default function PromptEditor({
     );
   }, [content]);
 
+  // When generation starts, invalidate the cached content so the next
+  // prompt (even if textually identical to the previous run) always
+  // gets pushed into the Monaco editor once generation completes.
+  useEffect(() => {
+    if (isGenerating) {
+      lastExternalContent.current = '\0';
+    }
+  }, [isGenerating]);
+
   // Sync readOnly state without re-mounting the editor
   useEffect(() => {
     editorRef.current?.updateOptions({ readOnly: !isHitlGate });

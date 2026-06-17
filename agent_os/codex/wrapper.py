@@ -137,7 +137,11 @@ class CodexWrapper:
             if self._github_token:
                 env["GITHUB_TOKEN"] = self._github_token
 
-            prompt_bytes = prompt.encode("utf-8") if use_stdin_for_prompt else None
+            # Sanitize lone surrogates before encoding — they appear when a prompt
+            # was read with the wrong codec (e.g. cp1252 on Windows) and cannot be
+            # encoded to UTF-8, which would crash the JSON serialiser in the subprocess.
+            safe_prompt = prompt.encode("utf-8", errors="replace").decode("utf-8")
+            prompt_bytes = safe_prompt.encode("utf-8") if use_stdin_for_prompt else None
             executor = WindowsPipeExecutor() if _IS_WINDOWS else UnixPTYExecutor()
             result = executor.execute(
                 cmd=cmd,
