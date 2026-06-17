@@ -6,7 +6,6 @@ import logging
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -25,8 +24,8 @@ class FileNode(BaseModel):
     name: str
     path: str  # relative to project root
     is_dir: bool
-    children: Optional[List["FileNode"]] = None
-    size: Optional[int] = None
+    children: list[FileNode] | None = None
+    size: int | None = None
 
 
 class ProjectInfoResponse(BaseModel):
@@ -53,22 +52,15 @@ class OpenResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/info", response_model=ProjectInfoResponse)
-def get_project_info(orch=Depends(get_orchestrator)):
+def get_project_info(orch=Depends(get_orchestrator)) -> ProjectInfoResponse:  # noqa: B008
     """Basic info about the target project folder."""
+    from ...services.project_service import count_source_files
+
     cfg = orch.config
     root = cfg.project.root_path
     root_path = Path(root) if root else None
     exists = root_path.exists() if root_path else False
-    file_count = 0
-    if exists and root_path:
-        # Count only source files, excluding venv/cache/git dirs
-        for f in root_path.rglob("*"):
-            if not f.is_file():
-                continue
-            # Skip if any part of the path is an ignored directory
-            if any(part in _IGNORE for part in f.parts):
-                continue
-            file_count += 1
+    file_count = count_source_files(root_path) if exists and root_path else 0
     return ProjectInfoResponse(
         name=cfg.project.name or "(unnamed)",
         root_path=root or "(not set)",
@@ -78,20 +70,22 @@ def get_project_info(orch=Depends(get_orchestrator)):
     )
 
 
-@router.get("/files", response_model=List[FileNode])
-def list_project_files(orch=Depends(get_orchestrator)):
+@router.get("/files", response_model=list[FileNode])
+def list_project_files(orch=Depends(get_orchestrator)) -> list[FileNode]:  # noqa: B008
     """Return the file tree of the generated project, or [] if not yet set up."""
+    from ...services.project_service import build_file_tree
+
     root_str = orch.config.project.root_path
     if not root_str:
         return []
     root = Path(root_str)
     if not root.exists():
         return []
-    return _build_tree(root, root, max_depth=6)
+    return build_file_tree(root, root, max_depth=6)
 
 
 @router.get("/file-content", response_model=FileContentResponse)
-def get_file_content(path: str, orch=Depends(get_orchestrator)):
+def get_file_content(path: str, orch=Depends(get_orchestrator)) -> FileContentResponse:  # noqa: B008
     """Read a single file from the generated project."""
     root = _get_project_root(orch)
     target = (root / path).resolve()
@@ -104,8 +98,8 @@ def get_file_content(path: str, orch=Depends(get_orchestrator)):
 
     try:
         content = target.read_text(encoding="utf-8", errors="replace")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Cannot read file")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Cannot read file") from exc
 
     return FileContentResponse(
         path=path,
@@ -115,7 +109,7 @@ def get_file_content(path: str, orch=Depends(get_orchestrator)):
 
 
 @router.post("/open-in-vscode", response_model=OpenResponse)
-def open_in_vscode(orch=Depends(get_orchestrator)):
+def open_in_vscode(orch=Depends(get_orchestrator)) -> OpenResponse:  # noqa: B008
     """Open the project folder in VS Code."""
     root = _get_project_root(orch)
     try:
@@ -134,7 +128,7 @@ def open_in_vscode(orch=Depends(get_orchestrator)):
 
 
 @router.post("/open-in-finder", response_model=OpenResponse)
-def open_in_finder(orch=Depends(get_orchestrator)):
+def open_in_finder(orch=Depends(get_orchestrator)) -> OpenResponse:  # noqa: B008
     """Open the project folder in Finder / Explorer."""
     root = _get_project_root(orch)
     try:

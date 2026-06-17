@@ -143,12 +143,12 @@ class AgentIdentityStore:
 
     def append_to_brain(self, agent_name: str, entry: str) -> None:
         """Append a dated entry to the agent's brain.md."""
-        from datetime import datetime
+        from datetime import datetime, timezone
         agent_dir = self._resolve_dir(agent_name)
         agent_dir.mkdir(parents=True, exist_ok=True)
         brain_path = agent_dir / "brain.md"
 
-        header = f"\n\n---\n\n## Entry — {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n\n"
+        header = f"\n\n---\n\n## Entry — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n\n"
         text = header + entry.strip()
 
         if brain_path.is_file():

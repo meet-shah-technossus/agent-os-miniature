@@ -23,6 +23,12 @@ import argparse
 import os
 import sys
 
+from ..constants import (
+    COPILOT_API_BASE,
+    COPILOT_EDITOR_VERSION,
+    COPILOT_INTEGRATION_ID,
+)
+
 # (base_url, env_var_for_api_key, default_model)
 TOOL_ENDPOINTS: dict[str, tuple[str, str, str]] = {
     "deepseek": (
@@ -41,7 +47,7 @@ TOOL_ENDPOINTS: dict[str, tuple[str, str, str]] = {
         "qwen-coder-plus",
     ),
     "copilot": (
-        "https://api.githubcopilot.com",
+        COPILOT_API_BASE,
         "GITHUB_TOKEN",
         "gpt-4.1",
     ),
@@ -67,35 +73,10 @@ def _sanitize_model_name(model: str) -> str:
 def _get_copilot_token() -> str:
     """Return a GitHub OAuth token suitable for the Copilot API.
 
-    Priority:
-    1. ``gh auth token`` — the OAuth token stored by the gh CLI (preferred,
-       works with Copilot API which rejects PATs).
-    2. ``GITHUB_TOKEN`` env var — set by Agent OS when the user configured a
-       token in Settings → AI Tools → Copilot.
-
-    IMPORTANT: ``gh`` echoes back GITHUB_TOKEN/GH_TOKEN if they are present
-    in its environment instead of reading the stored OAuth credential.  We
-    must strip those vars before invoking ``gh auth token``.
+    Delegates to the shared auth_service for token resolution.
     """
-    try:
-        import subprocess as _sp
-        # Strip PAT vars so gh reads its own keychain OAuth token
-        clean_env = {
-            k: v for k, v in os.environ.items()
-            if k not in ("GITHUB_TOKEN", "GH_TOKEN")
-        }
-        result = _sp.run(
-            ["gh", "auth", "token"],
-            capture_output=True, text=True, timeout=5,
-            env=clean_env,
-        )
-        token = result.stdout.strip()
-        if token and result.returncode == 0:
-            return token
-    except Exception:
-        pass
-    # Fall back to env var (PAT or manually configured token)
-    return os.environ.get("GITHUB_TOKEN", "")
+    from ..services.auth_service import get_copilot_token
+    return get_copilot_token()
 
 
 def stream_chat(tool: str, model: str, prompt: str) -> int:
@@ -119,10 +100,7 @@ def stream_chat(tool: str, model: str, prompt: str) -> int:
         return 1
 
     base_url, env_key, default_model = TOOL_ENDPOINTS[tool]
-    if tool == "copilot":
-        api_key = _get_copilot_token()
-    else:
-        api_key = os.environ.get(env_key, "")
+    api_key = _get_copilot_token() if tool == "copilot" else os.environ.get(env_key, "")
     if not api_key:
         print(
             f"Error: {env_key} is not set. "
@@ -150,9 +128,9 @@ def stream_chat(tool: str, model: str, prompt: str) -> int:
         # GitHub Copilot API requires these headers to identify the integration.
         # Without them, newer/codex models return "not accessible via /chat/completions".
         default_headers={
-            "Copilot-Integration-Id": "agent-os",
-            "Editor-Version": "agent-os/1.0",
-            "Editor-Plugin-Version": "agent-os/1.0",
+            "Copilot-Integration-Id": COPILOT_INTEGRATION_ID,
+            "Editor-Version": COPILOT_EDITOR_VERSION,
+            "Editor-Plugin-Version": COPILOT_EDITOR_VERSION,
         } if tool == "copilot" else {},
     )
 

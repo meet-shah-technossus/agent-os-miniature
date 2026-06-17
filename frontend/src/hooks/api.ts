@@ -9,7 +9,6 @@ import type {
   CurrentReview,
   FileContent,
   FileNode,
-  GitHubReviewSettings,
   Iteration,
   Metrics,
   OpenResponse,
@@ -103,11 +102,21 @@ export interface RequirementsPreviewDoc {
 
 
 const BASE = '/api';
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
-  return res.json() as Promise<T>;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${BASE}${url}`, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+    });
+    if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+    return res.json() as Promise<T>;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export const api = {
@@ -447,4 +456,7 @@ export const api = {
         body: JSON.stringify({ content }),
       }
     ),
+
+  getGroqModels: () =>
+    fetchJson<{ models: string[]; source: string }>('/cli-tools/groq-models'),
 };

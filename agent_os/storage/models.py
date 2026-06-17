@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
-
 
 # --- Enums ---
 
@@ -57,7 +56,7 @@ class RequirementType(str, Enum):
 # --- Models ---
 
 class IterationRecord(BaseModel):
-    id: Optional[int] = None
+    id: int | None = None
     iteration_number: int
     status: IterationStatus = IterationStatus.IN_PROGRESS
     prompt_path: str = ""
@@ -68,14 +67,14 @@ class IterationRecord(BaseModel):
     token_usage: int = 0
     cli_tool_used: str = ""
     ci_result: str = ""  # "pass" | "fail" | ""
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    completed_at: Optional[datetime] = None
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime | None = None
 
 
 class RequirementRecord(BaseModel):
     id: str
     type: RequirementType
-    parent_id: Optional[str] = None
+    parent_id: str | None = None
     title: str
     description: str = ""
     status: str = "active"
@@ -84,17 +83,17 @@ class RequirementRecord(BaseModel):
 class PipelineState(BaseModel):
     current_iteration: int = 0
     pipeline_status: PipelineStatus = PipelineStatus.IDLE
-    last_checkpoint: datetime = Field(default_factory=datetime.utcnow)
+    last_checkpoint: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = Field(default_factory=dict)
     # --- GitHub Review mode story progress (stored in metadata when active) ---
-    current_story_id: Optional[str] = None
+    current_story_id: str | None = None
     stories_completed: int = 0
     stories_total: int = 0
 
 
 class StoryQueueItem(BaseModel):
     """A single user story in the GitHub Review mode processing queue."""
-    id: Optional[int] = None
+    id: int | None = None
     story_id: str                          # e.g. "STORY-42" or ADO work-item ID
     title: str
     description: str = ""
@@ -102,10 +101,10 @@ class StoryQueueItem(BaseModel):
     position: int                          # 0-based execution order
     status: StoryStatus = StoryStatus.QUEUED
     branch_name: str = ""                  # e.g. "story-42-add-login"
-    pr_number: Optional[int] = None
+    pr_number: int | None = None
     pr_url: str = ""
     story_iteration: int = 0               # iterations done for this story
     depends_on: list[str] = Field(default_factory=list)  # list of story_ids
     dependency_reason: str = ""            # LLM-provided explanation
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    completed_at: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: datetime | None = None

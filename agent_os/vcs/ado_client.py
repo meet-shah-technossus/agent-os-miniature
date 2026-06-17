@@ -18,11 +18,11 @@ credential fields are required.
 from __future__ import annotations
 
 import base64
-import json
+import contextlib
 import logging
-import re
 import time
-from typing import Any, Optional
+from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -57,13 +57,13 @@ class ADOVCSClient(VCSClient):
         """
         if not all([org, project, token]):
             raise ValueError("ADO org, project, and token are all required")
-        self._org = org
-        self._project = project
+        self._org = quote(org, safe="")
+        self._project = quote(project, safe="")
         self._token = token
         # Base URL for Git REST APIs
-        self._base = f"https://dev.azure.com/{org}/{project}/_apis/git"
+        self._base = f"https://dev.azure.com/{self._org}/{self._project}/_apis/git"
         # Cached repo ID (fetched lazily on first use)
-        self._repo_id: Optional[str] = None
+        self._repo_id: str | None = None
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
@@ -105,10 +105,8 @@ class ADOVCSClient(VCSClient):
 
                 if response.status_code in (400, 401, 403, 404, 409, 422):
                     data = {}
-                    try:
+                    with contextlib.suppress(Exception):
                         data = response.json()
-                    except Exception:
-                        pass
                     msg = data.get("message") or data.get("errorCode") or response.text[:300]
                     return VCSResult(
                         success=False,
@@ -148,7 +146,7 @@ class ADOVCSClient(VCSClient):
 
     # ── Repo ID lookup ────────────────────────────────────────────────────────
 
-    def _get_repo_id(self, repo_name: str) -> Optional[str]:
+    def _get_repo_id(self, repo_name: str) -> str | None:
         """Return the ADO repository GUID for *repo_name*, caching the result."""
         if self._repo_id:
             return self._repo_id

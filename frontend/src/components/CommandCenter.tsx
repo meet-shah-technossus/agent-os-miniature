@@ -1,4 +1,4 @@
-/* CommandCenter — Phase 4
+﻿/* CommandCenter — Phase 4
    Main workspace: left pane (prompt editor + review viewer) + right pane
    (CLI terminal grid with framer-motion dynamic expansion).
 
@@ -17,93 +17,14 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import Editor, { type OnMount } from '@monaco-editor/react';
-import type { AgentTerminalState, BusMessage, CliToolStatus, PipelineStatus } from '../types';
+import type { AgentTerminalState, BusMessage, CliToolStatus } from '../types';
 import { api } from '../hooks/api';
 import TerminalPanel from './TerminalPanel';
-import { POST_DISPLAY_NAME } from '../hooks/useAgentTerminals';
+import PromptEditor, { CLI_TOOL_KEYS, CLI_DISPLAY, CLI_ICON, type CliToolKey } from './PromptEditor';
+import ReviewViewer from './ReviewViewer';
+import { TOOL_MODELS, MODEL_DISPLAY_NAMES, TOOL_DISPLAY_NAMES } from '../constants';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-const CLI_TOOL_KEYS = ['codex', 'aider', 'claude', 'gemini', 'qwen', 'deepseek', 'copilot'] as const;
-type CliToolKey = (typeof CLI_TOOL_KEYS)[number];
-
-const CLI_DISPLAY: Record<CliToolKey, string> = {
-  codex:    'OpenAI Codex',
-  aider:    'Aider',
-  claude:   'Claude Code',
-  gemini:   'Gemini CLI',
-  qwen:     'Qwen Code',
-  deepseek: 'DeepSeek',
-  copilot:  'GitHub Copilot',
-};
-
-const CLI_ICON: Record<CliToolKey, string> = {
-  codex:    '◎',
-  aider:    '◑',
-  claude:   '◈',
-  gemini:   '◇',
-  qwen:     '◆',
-  deepseek: '◉',
-  copilot:  '⬡',
-};
-
-const TOOL_MODELS: Record<CliToolKey, string[]> = {
-  codex: [
-    // GPT-5 family
-    'gpt-5.5', 'gpt-5.4', 'gpt-5.3',
-    'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.2-codex-mini',
-    'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.1-codex-mini',
-    'gpt-5', 'gpt-5-mini',
-    // GPT-4.1 family
-    'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
-    // o-series reasoning
-    'o4-mini', 'o4', 'o3', 'o3-mini', 'o1', 'o1-mini',
-    // codex classic
-    'codex-davinci-002',
-  ],
-  aider: [
-    'gpt-5.1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano',
-    'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20251115',
-    'claude-opus-4-20250514', 'claude-sonnet-4-20250514',
-    'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash',
-    'deepseek-chat', 'deepseek-reasoner',
-    'o4-mini', 'o3-mini',
-  ],
-  claude: [
-    'claude-opus-4-5-20251101', 'claude-sonnet-4-5-20251115',
-    'claude-opus-4-20250514', 'claude-sonnet-4-20250514',
-    'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022',
-    'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
-  ],
-  gemini: [
-    'gemini-2.5-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash',
-    'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite',
-    'gemini-1.5-pro', 'gemini-1.5-flash',
-  ],
-  qwen: [
-    'qwen3-235b-a22b', 'qwen3-30b-a3b', 'qwen3-32b',
-    'qwen2.5-coder-32b-instruct', 'qwen2.5-72b-instruct',
-    'qwq-32b',
-  ],
-  deepseek: [
-    'deepseek-v3', 'deepseek-chat', 'deepseek-reasoner',
-    'deepseek-coder-v2', 'deepseek-v2.5',
-  ],
-  copilot: [
-    // GPT-5 (chat models — codex variants use a different internal endpoint)
-    'gpt-5.2',
-    'gpt-5-mini',
-    // GPT-4 family
-    'gpt-4.1', 'gpt-4.1-2025-04-14',
-    'gpt-4o', 'gpt-4o-2024-11-20', 'gpt-4o-2024-08-06', 'gpt-4o-mini',
-    'gpt-4', 'gpt-3.5-turbo',
-    // Anthropic Claude
-    'claude-haiku-4.5',
-    // Google Gemini
-    'gemini-3.1-pro-preview', 'gemini-2.5-pro',
-  ],
-};
 
 // Map CLI tool keys to PIPELINE_POST keys used by terminal states
 const CLI_TO_POST: Record<CliToolKey, string> = {
@@ -391,408 +312,6 @@ function ExpandedSystemTerminal({ termKey, label, icon, terminalState, onCollaps
     </motion.div>
   );
 }
-
-// ─── Left pane: Prompt Editor section ─────────────────────────────────────────
-
-interface PromptEditorProps {
-  content: string;
-  isLoading: boolean;
-  pipelineStatus: string;
-  iteration: number;
-  selectedTool: CliToolKey;
-  selectedModel: string;
-  availableModels: string[];
-  toolStatuses: CliToolStatus[];
-  onContentChange: (v: string) => void;
-  onApprove: () => void;
-  onRetryPromptGenerator: () => void;
-  onToolSelect: (k: CliToolKey) => void;
-  onModelSelect: (m: string) => void;
-  promptGenFailed: boolean;
-  promptGenError: string;
-}
-
-function PromptEditor({
-  content, isLoading, pipelineStatus, iteration,
-  selectedTool, selectedModel, availableModels, toolStatuses,
-  onContentChange, onApprove, onRetryPromptGenerator, onToolSelect, onModelSelect,
-  promptGenFailed, promptGenError,
-}: PromptEditorProps) {
-  const [editorHeight, setEditorHeight] = useState(320);
-  const promptEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
-  const promptContainerRef = useRef<HTMLDivElement>(null);
-  const promptResizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
-
-  useEffect(() => {
-    const el = promptContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      if (promptEditorRef.current && el.offsetWidth > 0) promptEditorRef.current.layout();
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const handlePromptEditorResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    promptResizeDragRef.current = { startY: e.clientY, startH: editorHeight };
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!promptResizeDragRef.current) return;
-      setEditorHeight(Math.max(120, promptResizeDragRef.current.startH + ev.clientY - promptResizeDragRef.current.startY));
-    };
-    const onMouseUp = () => {
-      promptResizeDragRef.current = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const isHITLPrompt = pipelineStatus === 'HITL_PROMPT_REVIEW';
-  const isRunning    = ['LOADING_REQUIREMENTS','PROMPT_GENERATION','CODE_GENERATION','CODE_REVIEW'].includes(pipelineStatus);
-  const isIdle       = pipelineStatus === 'IDLE';
-  // Only lock the selectors while the pipeline is actively running AND no prompt
-  // has been loaded yet. Once a prompt is visible, let the user pick tool/model freely.
-  const selectorsLocked = isRunning && !content.trim();
-
-  return (
-    <div className="flex flex-col gap-3">
-      {/* Section header */}
-      <div className="flex items-center gap-2 shrink-0">
-        <h3 className="text-sm font-semibold text-white">Prompt</h3>
-        {iteration > 0 && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 font-mono">
-            iter&nbsp;{iteration}
-          </span>
-        )}
-        <div className="flex-1" />
-        {isRunning && (
-          <span className="flex items-center gap-1.5 text-[11px] text-green-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-            {pipelineStatus.toLowerCase().replace(/_/g,' ')}
-          </span>
-        )}
-      </div>
-
-      {/* Prompt gen failure banner */}
-      {promptGenFailed && promptGenError && (
-        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] flex items-center gap-1.5">
-          <span>⚠</span>
-          Prompt generation failed: {promptGenError}
-        </div>
-      )}
-
-      {/* Monaco editor */}
-      <div ref={promptContainerRef} className="rounded-lg overflow-hidden border border-[var(--border-glass)]" style={{ height: `${editorHeight}px` }}>
-        <Editor
-          height="100%"
-          defaultLanguage="markdown"
-          value={content}
-          onChange={(v) => onContentChange(v ?? '')}
-          theme="vs-dark"
-          onMount={(editor) => { promptEditorRef.current = editor; }}
-          options={{
-            minimap: { enabled: false },
-            fontSize: 12,
-            lineNumbers: 'off',
-            wordWrap: 'on',
-            scrollBeyondLastLine: false,
-            padding: { top: 12, bottom: 12 },
-            readOnly: isRunning,
-          }}
-        />
-      </div>
-
-      {/* Prompt editor resize handle */}
-      <div
-        onMouseDown={handlePromptEditorResize}
-        className="shrink-0 flex items-center justify-center hover:bg-white/5 transition-colors rounded"
-        style={{ height: '10px', cursor: 'ns-resize', borderTop: '1px solid rgba(255,255,255,0.06)' }}
-        title="Drag to resize"
-      >
-        <div style={{ width: '40px', height: '2px', borderRadius: '1px', background: 'rgba(148,163,184,0.3)' }} />
-      </div>
-
-      {/* Action buttons */}
-      <div className="flex items-center gap-2 shrink-0 flex-wrap">
-        {/* Approve + tool picker */}
-        <div className="flex items-center gap-2 ml-auto">
-          {/* Tool dropdown — only available tools (always include currently selected) */}
-          <select
-            value={selectedTool}
-            onChange={(e) => onToolSelect(e.target.value as CliToolKey)}
-            disabled={selectorsLocked}
-            className="px-2 py-1.5 rounded-lg text-xs bg-[var(--bg-secondary)] border border-[var(--border-glass)] text-slate-300 disabled:opacity-40 cursor-pointer"
-          >
-            {CLI_TOOL_KEYS
-              .filter((k) => {
-                const ts = toolStatuses.find((t) => t.key === k);
-                return k === selectedTool || (ts?.installed && ts?.authenticated);
-              })
-              .map((k) => {
-                const ts = toolStatuses.find((t) => t.key === k);
-                return (
-                  <option key={k} value={k}>
-                    {CLI_DISPLAY[k]}{ts && !(ts.installed && ts.authenticated) ? ' (unavailable)' : ''}
-                  </option>
-                );
-              })
-            }
-          </select>
-
-          {/* Model dropdown — options depend on selected tool */}
-          <select
-            value={selectedModel}
-            onChange={(e) => onModelSelect(e.target.value)}
-            disabled={selectorsLocked}
-            className="px-2 py-1.5 rounded-lg text-xs bg-[var(--bg-secondary)] border border-[var(--border-glass)] text-slate-300 disabled:opacity-40 cursor-pointer font-mono"
-          >
-            {availableModels.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-
-          <button
-            onClick={onApprove}
-            disabled={!isHITLPrompt || isLoading || promptGenFailed}
-            className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500 text-white hover:bg-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            Approve &amp; Trigger Code Generator
-          </button>
-          {isHITLPrompt && (
-            <button
-              onClick={onRetryPromptGenerator}
-              disabled={isLoading}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Retry Prompt Generator
-            </button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Left pane: Review JSON section ───────────────────────────────────────────
-
-interface ReviewViewerProps {
-  content: string;
-  originalContent: string;
-  iteration: number;
-  pipelineStatus: string;
-  isModified: boolean;
-  isValidJson: boolean;
-  onApprove: () => void;
-  onMoveToNextStory: () => void;
-  onReset: () => void;
-  onContentChange: (v: string) => void;
-  onRetryPR: () => void;
-  onRetryCodeReviewer: () => void;
-  isLoading: boolean;
-  prFailed: boolean;
-  prError: string;
-  codeReviewFailed: boolean;
-  codeReviewError: string;
-  reviewJsonExists: boolean;
-}
-
-function ReviewViewer({
-  content, originalContent, iteration, pipelineStatus,
-  isModified, isValidJson,
-  onApprove, onMoveToNextStory, onReset, onContentChange, onRetryPR, onRetryCodeReviewer, isLoading,
-  prFailed, prError, codeReviewFailed, codeReviewError, reviewJsonExists,
-}: ReviewViewerProps) {
-  const [editorHeight, setEditorHeight] = useState(320);
-  const reviewEditorRef = useRef<Parameters<OnMount>[0] | null>(null);
-  const reviewContainerRef = useRef<HTMLDivElement>(null);
-  const reviewResizeDragRef = useRef<{ startY: number; startH: number } | null>(null);
-
-  useEffect(() => {
-    const el = reviewContainerRef.current;
-    if (!el) return;
-    const ro = new ResizeObserver(() => {
-      if (reviewEditorRef.current && el.offsetWidth > 0) reviewEditorRef.current.layout();
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  const handleReviewEditorResize = (e: React.MouseEvent) => {
-    e.preventDefault();
-    reviewResizeDragRef.current = { startY: e.clientY, startH: editorHeight };
-    const onMouseMove = (ev: MouseEvent) => {
-      if (!reviewResizeDragRef.current) return;
-      setEditorHeight(Math.max(120, reviewResizeDragRef.current.startH + ev.clientY - reviewResizeDragRef.current.startY));
-    };
-    const onMouseUp = () => {
-      reviewResizeDragRef.current = null;
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    };
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  };
-
-  const isHITLReview = pipelineStatus === 'HITL_REVIEW_DECISION';
-  const isEmpty = !content.trim() && !originalContent.trim();
-
-  // Detect verdict change for confirmation banner
-  let verdictChanged = false;
-  let origVerdict = '';
-  let editVerdict = '';
-  if (isModified && isValidJson && originalContent.trim()) {
-    try {
-      origVerdict  = (JSON.parse(originalContent) as Record<string, unknown>)?.overall_status as string ?? '';
-      editVerdict  = (JSON.parse(content) as Record<string, unknown>)?.overall_status as string ?? '';
-      verdictChanged = !!origVerdict && !!editVerdict && origVerdict !== editVerdict;
-    } catch { /* ignore */ }
-  }
-
-  return (
-    <div className="flex flex-col gap-2">
-      {/* Section header */}
-      <div className="flex items-center gap-2 shrink-0 flex-wrap">
-        <h3 className="text-sm font-semibold text-white">Review JSON</h3>
-        {iteration > 0 && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 font-mono">
-            after iter&nbsp;{iteration}
-          </span>
-        )}
-        {isModified && (
-          <span className="inline-flex items-center gap-1 text-[10px] text-amber-400 border border-amber-500/30 px-1.5 py-0.5 rounded">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-            Modified
-          </span>
-        )}
-        {!isValidJson && (
-          <span className="text-[10px] text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded">
-            Invalid JSON
-          </span>
-        )}
-        {isHITLReview && (
-          <span className="text-[11px] text-amber-400 flex items-center gap-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            awaiting approval
-          </span>
-        )}
-        <div className="flex-1" />
-        <div className="flex items-center gap-1.5">
-          {isModified && (
-            <button
-              onClick={onReset}
-              className="px-2 py-1 rounded text-[11px] text-slate-400 hover:text-white border border-[var(--border-glass)] hover:bg-white/5 transition-colors"
-            >
-              Reset
-            </button>
-          )}
-          {prFailed && isHITLReview && (
-            <button
-              onClick={onRetryPR}
-              disabled={isLoading}
-              className="px-3 py-1 rounded-lg text-xs font-semibold bg-orange-500 text-white hover:bg-orange-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Retry Pull Request
-            </button>
-          )}
-          {isHITLReview && !prFailed && (
-            <button
-              onClick={onRetryCodeReviewer}
-              disabled={isLoading}
-              className="px-3 py-1 rounded-lg text-xs font-semibold bg-rose-500 text-white hover:bg-rose-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Retry Code Reviewer
-            </button>
-          )}
-          {!isEmpty && !prFailed && !codeReviewFailed && (
-            <button
-              onClick={onApprove}
-              disabled={!isHITLReview || isLoading || !isValidJson}
-              className="px-3 py-1 rounded-lg text-xs font-semibold bg-amber-500 text-white hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              Approve Review
-            </button>
-          )}
-          <button
-            onClick={onMoveToNextStory}
-            disabled={!isHITLReview || isLoading || !reviewJsonExists}
-            title={!reviewJsonExists ? 'Available after code review completes' : 'Merge PR, delete branch and start next story'}
-            className="px-3 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            Move to Next Story
-          </button>
-        </div>
-      </div>
-
-      {/* PR failure banner */}
-      {prFailed && prError && (
-        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-400 text-[11px] flex items-center gap-1.5">
-          <span>⚠</span>
-          Pull request creation failed: {prError}
-        </div>
-      )}
-
-      {/* Code review failure banner */}
-      {codeReviewFailed && codeReviewError && (
-        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-[11px] flex items-center gap-1.5">
-          <span>⚠</span>
-          Code review failed: {codeReviewError}
-        </div>
-      )}
-
-      {/* Verdict-change confirmation banner */}
-      {verdictChanged && (
-        <div className="shrink-0 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[11px] flex items-center gap-1.5">
-          <span>⚠</span>
-          Verdict changed:&nbsp;<span className="font-mono">{origVerdict}</span>&nbsp;→&nbsp;<span className="font-mono">{editVerdict}</span>
-        </div>
-      )}
-
-      {/* Editor */}
-      <div ref={reviewContainerRef} className={`rounded-lg overflow-hidden border transition-colors ${
-        !isValidJson && !isEmpty ? 'border-red-500/50' : 'border-[var(--border-glass)]'
-      }`} style={{ height: `${editorHeight}px` }}>
-        {isEmpty ? (
-          <div className="h-full flex items-center justify-center">
-            <p className="text-xs text-slate-600 italic">
-              Review JSON will appear here after code review completes.
-            </p>
-          </div>
-        ) : (
-          <Editor
-            height="100%"
-            defaultLanguage="json"
-            value={content}
-            onChange={(v) => onContentChange(v ?? '')}
-            theme="vs-dark"
-            onMount={(editor) => { reviewEditorRef.current = editor; }}
-            options={{
-              minimap: { enabled: false },
-              fontSize: 11,
-              lineNumbers: 'off',
-              readOnly: false,
-              wordWrap: 'on',
-              scrollBeyondLastLine: false,
-              padding: { top: 8, bottom: 8 },
-            }}
-          />
-        )}
-      </div>
-
-      {/* Review editor resize handle */}
-      <div
-        onMouseDown={handleReviewEditorResize}
-        className="shrink-0 flex items-center justify-center hover:bg-white/5 transition-colors rounded"
-        style={{ height: '10px', cursor: 'ns-resize', borderTop: '1px solid rgba(255,255,255,0.06)' }}
-        title="Drag to resize"
-      >
-        <div style={{ width: '40px', height: '2px', borderRadius: '1px', background: 'rgba(148,163,184,0.3)' }} />
-      </div>
-    </div>
-  );
-}
-
 // ─── Right pane: CLI terminal grid ────────────────────────────────────────────
 
 interface CliGridProps {
@@ -891,7 +410,7 @@ interface Props {
 export default function CommandCenter({ terminalStates, wsConnected, messages }: Props) {
   // ── State ────────────────────────────────────────────────────────────────────
   const [promptContent, setPromptContent] = useState('');
-  const [reviewContent, setReviewContent] = useState('');
+  const [, setReviewContent] = useState('');
   const [reviewOriginalContent, setReviewOriginalContent] = useState('');
   const [reviewEditedContent, setReviewEditedContent] = useState('');
   const [promptIteration, setPromptIteration] = useState(0);
@@ -908,7 +427,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
   const [prError, setPrError] = useState('');
   const [promptGenFailed, setPromptGenFailed] = useState(false);
   const [promptGenError, setPromptGenError] = useState('');
-  const [codeGenFailed, setCodeGenFailed] = useState(false);
+  const [, setCodeGenFailed] = useState(false);
   const [codeGenError, setCodeGenError] = useState('');
   const [codeReviewFailed, setCodeReviewFailed] = useState(false);
   const [codeReviewError, setCodeReviewError] = useState('');
@@ -916,6 +435,8 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const reviewUserModifiedRef = useRef(false);
   const promptUserModifiedRef = useRef(false);
+  const promptIterationRef = useRef(0);
+  const reviewIterationRef = useRef(0);
 
   // ── Polling ───────────────────────────────────────────────────────────────────
 
@@ -938,10 +459,11 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
       if (promptRes && promptRes.content) {
         // Always update when iteration advances (new prompt from code review loop).
         // Only suppress if user manually edited the *current* iteration.
-        const isNewIteration = promptRes.iteration > promptIteration;
+        const isNewIteration = promptRes.iteration > promptIterationRef.current;
         if (isNewIteration || !promptUserModifiedRef.current) {
           setPromptContent(promptRes.content);
           setPromptIteration(promptRes.iteration);
+          promptIterationRef.current = promptRes.iteration;
           if (isNewIteration) {
             promptUserModifiedRef.current = false;
           }
@@ -957,13 +479,14 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
         })();
         setReviewContent(pretty);
         setReviewOriginalContent(pretty);
-        // Always update the Monaco editor when a new iteration arrives (new review
+        // Always update the editor when a new iteration arrives (new review
         // from backend after a retry loop). Only suppress if user is editing the
         // *current* iteration.
-        const isNewReviewIteration = reviewRes.iteration > reviewIteration;
+        const isNewReviewIteration = reviewRes.iteration > reviewIterationRef.current;
         if (isNewReviewIteration || !reviewUserModifiedRef.current) {
           setReviewEditedContent(pretty);
           setReviewIteration(reviewRes.iteration);
+          reviewIterationRef.current = reviewRes.iteration;
           if (isNewReviewIteration) {
             reviewUserModifiedRef.current = false;
           }
@@ -1002,6 +525,18 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
     }
   }, [pipelineStatus, toolStatuses]);
 
+  // Auto-expand the active tool terminal when code generation starts
+  useEffect(() => {
+    const codeGenState = terminalStates['CODE_GENERATOR'];
+    if (!codeGenState) return;
+    const runningTool = codeGenState.activeTool as CliToolKey | null;
+    if (runningTool && CLI_TOOL_KEYS.includes(runningTool) && runningTool !== activeTool) {
+      setActiveTool(runningTool);
+      setSelectedTool(runningTool);
+      setSelectedModel(TOOL_MODELS[runningTool]?.[0] ?? '');
+    }
+  }, [terminalStates]);
+
   // Immediately update state from WebSocket pipeline events — no poll needed
   const prevMsgLen = useRef(0);
   useEffect(() => {
@@ -1036,43 +571,13 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
 
   // ── Handlers ──────────────────────────────────────────────────────────────────
 
-  const handleIngest = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      await api.startPipeline();
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGenerate = async () => {
-    // If idle, start the pipeline (which will run prompt generation)
-    if (pipelineStatus === 'IDLE') {
-      await handleIngest();
-      return;
-    }
-    // If waiting at HITL, re-trigger by starting again
-    setIsLoading(true);
-    setError(null);
-    try {
-      await api.startPipeline();
-      await refresh();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setIsLoading(false);
-    }
-  };
 
   const handleApprovePrompt = async () => {
     setIsLoading(true);
     setError(null);
     try {
       await api.approvePrompt(promptContent, selectedTool, selectedModel);
+      promptUserModifiedRef.current = false;
       setActiveTool(selectedTool);
       await refresh();
     } catch (e) {
@@ -1333,7 +838,6 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
           {/* Review JSON viewer */}
           <ReviewViewer
             content={reviewEditedContent}
-            originalContent={reviewOriginalContent}
             iteration={reviewIteration}
             pipelineStatus={pipelineStatus}
             isModified={isReviewModified}
@@ -1343,6 +847,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             onReset={handleReviewReset}
             onContentChange={handleReviewEdit}
             onRetryPR={handleRetryPR}
+            onRetryCodeGenerator={handleRetryCodeGenerator}
             isLoading={isLoading}
             prFailed={prFailed}
             prError={prError}
@@ -1378,7 +883,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             <div className="mb-2 shrink-0 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex flex-col gap-2">
               <div className="flex items-start gap-2">
                 <span className="mt-0.5">⚠</span>
-                <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
+                <span className="flex-1">{TOOL_DISPLAY_NAMES[selectedTool] ?? selectedTool}: code generation failed{codeGenError ? ` — ${codeGenError}` : ''}</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-rose-300/70 shrink-0">Change tool/model before retrying:</span>
@@ -1393,8 +898,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
                 >
                   {CLI_TOOL_KEYS.filter((k) => {
                     const ts = toolStatuses.find((t) => t.key === k);
-                    // If status not yet loaded, show all; otherwise only ready tools
-                    return !ts || ts.available;
+                    return ts?.available === true;
                   }).map((k) => (
                     <option key={k} value={k}>{CLI_DISPLAY[k]}</option>
                   ))}
@@ -1405,7 +909,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
                   className="flex-1 min-w-[140px] rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs"
                 >
                   {(TOOL_MODELS[selectedTool] ?? []).map((m) => (
-                    <option key={m} value={m}>{m}</option>
+                    <option key={m} value={m}>{MODEL_DISPLAY_NAMES[m] ?? m}</option>
                   ))}
                 </select>
                 <button

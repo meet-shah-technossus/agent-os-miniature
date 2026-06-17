@@ -11,10 +11,10 @@ Usage::
     result = vcs.create_pr("feat: add login", "feature/login", "main", body)
 """
 
-from .base import VCSClient, VCSResult
-from .github_client import GitHubVCSClient
 from .ado_client import ADOVCSClient
+from .base import VCSClient, VCSResult
 from .factory import make_vcs_client
+from .github_client import GitHubVCSClient
 
 __all__ = [
     "VCSClient",

@@ -3,48 +3,20 @@
 from __future__ import annotations
 
 import logging
-import os
-import platform
-import struct
-import subprocess
-import threading
+import sys
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
-# Unix-only PTY modules — guarded so the file imports cleanly on Windows.
-_IS_WINDOWS = platform.system() == "Windows"
-if not _IS_WINDOWS:
-    import fcntl
-    import pty
-    import termios
-
+from ..constants import DEFAULT_CODEX_TIMEOUT
+from .cli_adapter import UnsupportedToolError, build_command, executable_name
+from .executors import UnixPTYExecutor, WindowsPipeExecutor
 from .session import CodexResult, CodexSession, SessionType
-from .streaming import kill_process, stream_pipe, stream_pty
-from .cli_adapter import build_command, executable_name, UnsupportedToolError
+from .streaming import kill_process
+
+_IS_WINDOWS = sys.platform == "win32"
 
 logger = logging.getLogger(__name__)
-
-
-def _set_pty_size(fd: int, rows: int, cols: int) -> None:
-    """Set the terminal size on a PTY file descriptor (TIOCSWINSZ). Unix only."""
-    if _IS_WINDOWS:
-        return
-    try:
-        winsize = struct.pack("HHHH", rows, cols, 0, 0)
-        fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
-    except OSError:
-        pass
-
-
-# Patterns that indicate a fatal, unrecoverable codex tool-router error.
-# When seen in stdout the process will never recover — kill it immediately
-# instead of waiting for the full timeout.
-_FATAL_STDOUT_PATTERNS: tuple[str, ...] = (
-    "failed to parse function arguments",
-    "invalid type: sequence, expected a string",
-    "invalid type: map, expected a string",
-)
 
 
 class CodexWrapper:
@@ -52,7 +24,7 @@ class CodexWrapper:
 
     def __init__(
         self,
-        timeout_seconds: int = 300,
+        timeout_seconds: int = DEFAULT_CODEX_TIMEOUT,
         max_retries: int = 2,
         openai_api_key: str = "",
         project_root: str = ".",
@@ -76,10 +48,12 @@ class CodexWrapper:
         prompt: str,
         working_dir: str | Path,
         session_type: SessionType,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        on_stderr: Optional[Callable[[str], None]] = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
     ) -> CodexResult:
-        """Execute a Codex CLI command with retry logic."""
+        """Execute a Codex CLI command with retry logic and exponential backoff."""
+        from ..utils.retry import compute_backoff
+
         last_result = None
         for attempt in range(1, self._max_retries + 2):
             logger.info(
@@ -90,6 +64,12 @@ class CodexWrapper:
             last_result = result
 
             if result.exit_code == 0:
+                logger.info(
+                    "Codex exec succeeded for %s in %.1fs",
+                    session_type.value,
+                    result.duration_seconds,
+                    extra={"duration_ms": round(result.duration_seconds * 1000, 1), "agent": session_type.value},
+                )
                 return result
 
             if result.timed_out:
@@ -102,10 +82,12 @@ class CodexWrapper:
                 # Log the actual output so the error is visible in server logs
                 if result.stdout:
                     for line in result.stdout.splitlines()[-30:]:
-                        logger.warning("[codex output] %s", line)
+                        logger.warning("[%s output] %s", session_type.value, line)
 
             if attempt <= self._max_retries:
-                logger.info("Retrying...")
+                backoff = compute_backoff(attempt - 1, base_delay=2.0, max_delay=30.0)
+                logger.info("Retrying in %.1fs...", backoff)
+                time.sleep(backoff)
 
         return last_result  # type: ignore[return-value]
 
@@ -114,14 +96,10 @@ class CodexWrapper:
         prompt: str,
         working_dir: str | Path,
         session_type: SessionType,
-        on_stdout: Optional[Callable[[str], None]],
-        on_stderr: Optional[Callable[[str], None]],
+        on_stdout: Callable[[str], None] | None,
+        on_stderr: Callable[[str], None] | None,
     ) -> CodexResult:
-        """Single invocation of codex exec via a pseudo-terminal.
-
-        Uses ``pty.openpty()`` so the child process sees a real TTY and
-        produces its full interactive output (permissions, ANSI, progress).
-        """
+        """Single invocation of a CLI tool via platform-specific executor."""
         working_dir = Path(working_dir).resolve()
         if not working_dir.exists():
             working_dir.mkdir(parents=True, exist_ok=True)
@@ -130,9 +108,11 @@ class CodexWrapper:
         tool = self._cli_routing.get(session_type.value, "codex")
         model = self._model_routing.get(session_type.value) or self._default_model
         start_time = time.monotonic()
-        # On Windows pass the prompt via stdin to avoid the 8191-char cmd-line limit.
-        # This applies to 'codex' and all api_adapter-backed tools (copilot, gemini, etc.)
-        use_stdin_for_prompt = _IS_WINDOWS
+        # Use stdin when on Windows (hard OS limit) OR when the prompt alone
+        # exceeds 8 000 characters — a safe threshold well below the 32 767-char
+        # Windows CreateProcess limit and the ~8 191-char cmd.exe limit.
+        _CMD_LENGTH_THRESHOLD = 8_000
+        use_stdin_for_prompt = _IS_WINDOWS or len(prompt) > _CMD_LENGTH_THRESHOLD
         try:
             cmd = build_command(tool, model, prompt, working_dir=str(working_dir),
                                 use_stdin=use_stdin_for_prompt)
@@ -142,203 +122,95 @@ class CodexWrapper:
                 exit_code=-1, stdout="", stderr=str(exc),
                 duration_seconds=time.monotonic() - start_time,
             )
-        _exe = executable_name(tool)
-
-        # Callbacks — merge PTY output into on_stdout; on_stderr receives nothing
-        # since the PTY merges both streams (identical to a real terminal).
-        combined_cb = on_stdout
+        _exec_name = executable_name(tool)
 
         session = CodexSession(
             session_type=session_type,
             _on_stdout=on_stdout,
             _on_stderr=on_stderr,
         )
+        self._active_sessions[session_type] = session
 
         try:
             from ..config.env import build_codex_env
             env = build_codex_env(self._openai_api_key, self._project_root)
-
-            # Inject the configured GitHub token as GITHUB_TOKEN so that
-            # api_adapter-backed tools (copilot, etc.) use the account
-            # configured in Settings UI rather than any inherited VS Code terminal token.
             if self._github_token:
                 env["GITHUB_TOKEN"] = self._github_token
 
-            if _IS_WINDOWS:
-                # On Windows, npm/pip global CLIs are installed as .cmd wrappers.
-                # Popen with shell=False won't resolve them without the extension,
-                # so invoke through cmd.exe which handles PATHEXT transparently.
-                win_cmd = ["cmd", "/c"] + cmd
-                prompt_bytes = prompt.encode("utf-8") if use_stdin_for_prompt else None
-                proc = subprocess.Popen(
-                    win_cmd,
-                    stdin=subprocess.PIPE if use_stdin_for_prompt else subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    cwd=str(working_dir),
-                    env=env,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                )
-                session.process = proc
-                session.pid = proc.pid
-                self._active_sessions[session_type] = session
+            prompt_bytes = prompt.encode("utf-8") if use_stdin_for_prompt else None
+            executor = WindowsPipeExecutor() if _IS_WINDOWS else UnixPTYExecutor()
+            result = executor.execute(
+                cmd=cmd,
+                working_dir=working_dir,
+                env=env,
+                timeout=self._timeout,
+                prompt_bytes=prompt_bytes,
+                on_stdout=on_stdout,
+                executable_name=_exec_name,
+            )
 
-                logger.info(
-                    "Started %s CLI (PID %d) via pipe for %s",
-                    _exe, proc.pid, session_type.value,
-                )
+            session.stdout_lines = result.stdout_lines
 
-                # Writer thread: send prompt bytes then close stdin so codex knows EOF
-                if use_stdin_for_prompt and prompt_bytes:
-                    def _write_stdin() -> None:
-                        try:
-                            proc.stdin.write(prompt_bytes)  # type: ignore[union-attr]
-                            proc.stdin.close()              # type: ignore[union-attr]
-                        except (OSError, BrokenPipeError):
-                            pass
-                    threading.Thread(target=_write_stdin, daemon=True).start()
-
-                def _decode(line_bytes) -> str:
-                    if isinstance(line_bytes, bytes):
-                        return line_bytes.decode("utf-8", errors="replace").rstrip("\r\n")
-                    return str(line_bytes).rstrip("\r\n")
-
-                fatal_event = threading.Event()
-
-                def _stream_bytes(pipe, buf, cb):
-                    try:
-                        for raw in pipe:
-                            line = _decode(raw)
-                            buf.append(line)
-                            if cb:
-                                try:
-                                    cb(line)
-                                except Exception:
-                                    pass
-                            # Early abort: kill the process immediately on known
-                            # fatal codex tool-router parse errors so we don't
-                            # hang until the full timeout expires.
-                            if any(p in line for p in _FATAL_STDOUT_PATTERNS):
-                                if not fatal_event.is_set():
-                                    fatal_event.set()
-                                    logger.warning(
-                                        "Codex fatal tool-router error detected — "
-                                        "aborting process %d early: %s",
-                                        proc.pid, line.strip(),
-                                    )
-                                    kill_process(proc)
-                                break
-                    except (ValueError, OSError):
-                        pass
-
-                reader = threading.Thread(
-                    target=_stream_bytes,
-                    args=(proc.stdout, session.stdout_lines, combined_cb),
-                    daemon=True,
-                )
-                reader.start()
-
-                try:
-                    proc.wait(timeout=self._timeout)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "%s CLI (PID %d) timed out after %ds",
-                        _exe, proc.pid, self._timeout,
-                    )
-                    kill_process(proc)
-                    reader.join(timeout=5)
-                    return CodexResult(
-                        exit_code=-1,
-                        stdout="\n".join(session.stdout_lines),
-                        stderr="",
-                        timed_out=True,
-                        duration_seconds=time.monotonic() - start_time,
-                    )
-
-                reader.join(timeout=10)
-
-                if fatal_event.is_set():
-                    return CodexResult(
-                        exit_code=1,
-                        stdout="\n".join(session.stdout_lines),
-                        stderr="",
-                        timed_out=False,
-                        duration_seconds=time.monotonic() - start_time,
-                    )
-
-            else:
-                # Unix: PTY gives the child a real TTY (ANSI output, interactive prompts).
-                env.setdefault("TERM", "xterm-256color")
-                master_fd, slave_fd = pty.openpty()
-                _set_pty_size(master_fd, 40, 120)
-
-                proc = subprocess.Popen(
-                    cmd,
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
-                    cwd=str(working_dir),
-                    env=env,
-                    close_fds=True,
-                    start_new_session=True,
-                )
-                os.close(slave_fd)
-
-                session.process = proc
-                session.pid = proc.pid
-                self._active_sessions[session_type] = session
-
-                logger.info(
-                    "Started %s CLI (PID %d) via PTY for %s",
-                    _exe, proc.pid, session_type.value,
-                )
-
-                pty_thread = threading.Thread(
-                    target=stream_pty,
-                    args=(master_fd, session.stdout_lines, combined_cb),
-                    daemon=True,
-                )
-                pty_thread.start()
-
-                try:
-                    proc.wait(timeout=self._timeout)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "%s CLI (PID %d) timed out after %ds",
-                        _exe, proc.pid, self._timeout,
-                    )
-                    kill_process(proc)
-                    pty_thread.join(timeout=5)
-                    return CodexResult(
-                        exit_code=-1,
-                        stdout="\n".join(session.stdout_lines),
-                        stderr="",
-                        timed_out=True,
-                        duration_seconds=time.monotonic() - start_time,
-                    )
-
-                pty_thread.join(timeout=10)
+            # One-shot model fallback: if claude exits 1 with a model-related
+            # error message, rebuild the command with the next fallback model
+            # and retry immediately (does not consume an outer retry slot).
+            if (result.exit_code == 1
+                    and not result.timed_out
+                    and tool in ("claude", "claude-code")):
+                output_lower = "\n".join(result.stdout_lines).lower()
+                if any(kw in output_lower for kw in
+                       ("model", "not supported", "invalid", "unknown model")):
+                    from .cli_adapter import CLAUDE_MODEL_FALLBACKS
+                    fallbacks = CLAUDE_MODEL_FALLBACKS.get(model, [])
+                    if fallbacks:
+                        next_model = fallbacks[0]
+                        logger.warning(
+                            "Model %s rejected by claude CLI, retrying once with fallback %s",
+                            model, next_model,
+                        )
+                        fallback_cmd = build_command(
+                            tool, next_model, prompt,
+                            working_dir=str(working_dir),
+                            use_stdin=use_stdin_for_prompt,
+                        )
+                        fallback_result = executor.execute(
+                            cmd=fallback_cmd,
+                            working_dir=working_dir,
+                            env=env,
+                            timeout=self._timeout,
+                            prompt_bytes=prompt_bytes,
+                            on_stdout=on_stdout,
+                            executable_name=_exec_name,
+                        )
+                        session.stdout_lines = fallback_result.stdout_lines
+                        return CodexResult(
+                            exit_code=fallback_result.exit_code,
+                            stdout="\n".join(fallback_result.stdout_lines),
+                            stderr="",
+                            timed_out=fallback_result.timed_out,
+                            duration_seconds=fallback_result.duration_seconds,
+                        )
 
             return CodexResult(
-                exit_code=proc.returncode,
-                stdout="\n".join(session.stdout_lines),
+                exit_code=result.exit_code,
+                stdout="\n".join(result.stdout_lines),
                 stderr="",
-                timed_out=False,
-                duration_seconds=time.monotonic() - start_time,
+                timed_out=result.timed_out,
+                duration_seconds=result.duration_seconds,
             )
 
         except FileNotFoundError:
-            logger.error("'%s' CLI not found. Is it installed and on PATH?", _exe)
-            return CodexResult(exit_code=-127, stdout="", stderr=f"{_exe}: command not found",
+            logger.error("'%s' CLI not found. Is it installed and on PATH?", _exec_name)
+            return CodexResult(exit_code=-127, stdout="", stderr=f"{_exec_name}: command not found",
                                duration_seconds=time.monotonic() - start_time)
         except Exception as e:
-            logger.exception("Unexpected error running %s CLI", _exe)
+            logger.exception("Unexpected error running %s CLI", _exec_name)
             return CodexResult(exit_code=-1, stdout="", stderr=str(e),
                                duration_seconds=time.monotonic() - start_time)
         finally:
             self._active_sessions.pop(session_type, None)
 
-    def get_active_session(self, session_type: SessionType) -> Optional[CodexSession]:
+    def get_active_session(self, session_type: SessionType) -> CodexSession | None:
         return self._active_sessions.get(session_type)
 
     def kill_session(self, session_type: SessionType) -> bool:

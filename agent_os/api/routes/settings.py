@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 import httpx
@@ -12,10 +13,13 @@ from fastapi import APIRouter, Depends
 from ...config.env import mask_secret, resolve_secret
 from ..deps import get_orchestrator, orch_holder
 from ..schemas import (
+    AIToolCredentialResponse,
+    AIToolsSettingsResponse,
     CliRoutingSettingsResponse,
     CodeReviewerSettingsResponse,
-    GitHubSettingsResponse,
     GitHubReviewSettingsResponse,
+    GitHubSettingsResponse,
+    GroqSettingsResponse,
     OllamaSettingsResponse,
     PipelineSettingsResponse,
     ProjectSettingsResponse,
@@ -26,8 +30,6 @@ from ..schemas import (
     SettingsUpdateRequest,
     TestGitHubRequest,
     TestGitHubResponse,
-    AIToolsSettingsResponse,
-    AIToolCredentialResponse,
     VCSSettingsResponse,
 )
 
@@ -36,7 +38,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("", response_model=SettingsResponse)
-def get_settings(orch=Depends(get_orchestrator)):
+def get_settings(orch=Depends(get_orchestrator)) -> SettingsResponse:  # noqa: B008
     """Return current settings with secrets masked."""
     cfg = orch.config
     project_root = cfg.project.root_path or "."
@@ -47,6 +49,7 @@ def get_settings(orch=Depends(get_orchestrator)):
         from ...storage.agent_config_repo import AgentConfigRepo
         _db_secrets = AgentConfigRepo(orch.db.conn).get_secrets()
     except Exception:
+        logger.warning("Settings DB read failed, using empty defaults", exc_info=True)
         _db_secrets = {}
 
     openai_resolved = resolve_secret(
@@ -118,15 +121,24 @@ def get_settings(orch=Depends(get_orchestrator)):
             model=getattr(getattr(cfg, 'ollama', None), 'model', 'llama3.1:8b') or 'llama3.1:8b',
             timeout_seconds=getattr(getattr(cfg, 'ollama', None), 'timeout_seconds', 300) or 300,
         ),
+        groq=GroqSettingsResponse(
+            api_key=mask_secret(
+                getattr(getattr(cfg, 'groq', None), 'api_key', '')
+                or os.environ.get('GROQ_API_KEY', '')
+            ),
+            model=getattr(getattr(cfg, 'groq', None), 'model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile',
+        ),
         prompt_generator=PromptGeneratorSettingsResponse(
             provider=getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama') or 'ollama',
             ollama_model=getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b') or 'llama3.1:8b',
             openai_model=getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini') or 'gpt-4.1-mini',
+            groq_model=getattr(getattr(cfg, 'prompt_generator', None), 'groq_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile',
         ),
         code_reviewer=CodeReviewerSettingsResponse(
             provider=getattr(getattr(cfg, 'code_reviewer', None), 'provider', 'openai') or 'openai',
             model=getattr(getattr(cfg, 'code_reviewer', None), 'model', 'gpt-4.1-mini') or 'gpt-4.1-mini',
             ollama_model=getattr(getattr(cfg, 'code_reviewer', None), 'ollama_model', 'llama3.1:8b') or 'llama3.1:8b',
+            groq_model=getattr(getattr(cfg, 'code_reviewer', None), 'groq_model', 'llama-3.3-70b-versatile') or 'llama-3.3-70b-versatile',
         ),
     )
 
@@ -148,22 +160,22 @@ def _cred_to_response(cred: object) -> AIToolCredentialResponse:
 
 
 def _serialize_ai_tools(cfg: object) -> AIToolsSettingsResponse:
-    at = getattr(cfg, 'ai_tools', None)
-    if at is None:
+    ai_tools_config = getattr(cfg, 'ai_tools', None)
+    if ai_tools_config is None:
         return AIToolsSettingsResponse()
     return AIToolsSettingsResponse(
-        codex=_cred_to_response(getattr(at, 'codex', object())),
-        claude=_cred_to_response(getattr(at, 'claude', object())),
-        gemini=_cred_to_response(getattr(at, 'gemini', object())),
-        qwen=_cred_to_response(getattr(at, 'qwen', object())),
-        deepseek=_cred_to_response(getattr(at, 'deepseek', object())),
-        cursor=_cred_to_response(getattr(at, 'cursor', object())),
-        copilot=_cred_to_response(getattr(at, 'copilot', object())),
+        codex=_cred_to_response(getattr(ai_tools_config, 'codex', object())),
+        claude=_cred_to_response(getattr(ai_tools_config, 'claude', object())),
+        gemini=_cred_to_response(getattr(ai_tools_config, 'gemini', object())),
+        qwen=_cred_to_response(getattr(ai_tools_config, 'qwen', object())),
+        deepseek=_cred_to_response(getattr(ai_tools_config, 'deepseek', object())),
+        cursor=_cred_to_response(getattr(ai_tools_config, 'cursor', object())),
+        copilot=_cred_to_response(getattr(ai_tools_config, 'copilot', object())),
     )
 
 
 @router.put("", response_model=SettingsResponse)
-def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)):
+def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator)) -> SettingsResponse:  # noqa: B008
     """Update settings, write to config.yaml, and hot-reload into the orchestrator."""
     cfg = orch.config
 
@@ -241,16 +253,16 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
         cfg.github_review.branch_name = body.github_review.branch_name or 'agent-os-fixes'
 
     if body.ai_tools is not None:
-        at = getattr(cfg, 'ai_tools', None)
-        if at is None:
+        ai_tools_config = getattr(cfg, 'ai_tools', None)
+        if ai_tools_config is None:
             from ...config.schema import AIToolsConfig
             cfg.ai_tools = AIToolsConfig()
-            at = cfg.ai_tools
+            ai_tools_config = cfg.ai_tools
         for tool_name in ('codex', 'claude', 'gemini', 'qwen', 'deepseek', 'cursor', 'copilot'):
             incoming = getattr(body.ai_tools, tool_name, None)
             if incoming is None:
                 continue
-            cred = getattr(at, tool_name)
+            cred = getattr(ai_tools_config, tool_name)
             cred.enabled = incoming.enabled
             cred.auth_method = incoming.auth_method
             cred.email = incoming.email
@@ -281,31 +293,48 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
             ollama_cfg.model = body.ollama.model
         ollama_cfg.timeout_seconds = body.ollama.timeout_seconds
 
+    _new_groq = ""
+    if body.groq is not None:
+        groq_cfg = getattr(cfg, 'groq', None)
+        if groq_cfg is None:
+            from ...config.schema import GroqConfig
+            cfg.groq = GroqConfig()
+            groq_cfg = cfg.groq
+        if body.groq.api_key and not _is_masked(body.groq.api_key):
+            groq_cfg.api_key = body.groq.api_key
+            _new_groq = body.groq.api_key
+        if body.groq.model:
+            groq_cfg.model = body.groq.model
+
     if body.prompt_generator is not None:
         pg_cfg = getattr(cfg, 'prompt_generator', None)
         if pg_cfg is None:
             from ...config.schema import PromptGeneratorConfig
             cfg.prompt_generator = PromptGeneratorConfig()
             pg_cfg = cfg.prompt_generator
-        if body.prompt_generator.provider in ('ollama', 'openai'):
+        if body.prompt_generator.provider in ('ollama', 'openai', 'groq'):
             pg_cfg.provider = body.prompt_generator.provider
         if body.prompt_generator.ollama_model:
             pg_cfg.ollama_model = body.prompt_generator.ollama_model
         if body.prompt_generator.openai_model:
             pg_cfg.openai_model = body.prompt_generator.openai_model
+        if body.prompt_generator.groq_model:
+            pg_cfg.groq_model = body.prompt_generator.groq_model
 
     if body.code_reviewer is not None:
-        cr_cfg = getattr(cfg, 'code_reviewer', None)
-        if cr_cfg is None:
+        code_reviewer_config = getattr(cfg, 'code_reviewer', None)
+        if code_reviewer_config is None:
             from ...config.schema import CodeReviewerConfig
             cfg.code_reviewer = CodeReviewerConfig()
-            cr_cfg = cfg.code_reviewer
-        if body.code_reviewer.provider in ('openai', 'copilot', 'ollama'):
-            cr_cfg.provider = body.code_reviewer.provider
+            code_reviewer_config = cfg.code_reviewer
+        if body.code_reviewer.provider in ('openai', 'copilot', 'ollama', 'claude', 'groq'):
+            code_reviewer_config.provider = body.code_reviewer.provider
         if body.code_reviewer.model:
-            cr_cfg.model = body.code_reviewer.model
+            code_reviewer_config.model = body.code_reviewer.model
         if body.code_reviewer.ollama_model:
-            cr_cfg.ollama_model = body.code_reviewer.ollama_model
+            code_reviewer_config.ollama_model = body.code_reviewer.ollama_model
+        if body.code_reviewer.groq_model:
+            code_reviewer_config.groq_model = body.code_reviewer.groq_model
 
     # Persist to config.yaml (no-op when config_path is None, e.g. in tests)
     _write_config_yaml(cfg, orch_holder.config_path)
@@ -316,15 +345,16 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
         _repo = AgentConfigRepo(orch.db.conn)
         if cfg.codex.model_routing:
             _repo.set_model_routing(dict(cfg.codex.model_routing))
-        if _new_openai or _new_github:
+        if _new_openai or _new_github or _new_groq:
             _repo.set_secrets(openai_api_key=_new_openai, github_token=_new_github)
             # Inject into this process's os.environ immediately — resolve_secret
             # will find it without needing a DB round-trip
-            import os as _os
             if _new_openai:
-                _os.environ["OPENAI_API_KEY"] = _new_openai
+                os.environ["OPENAI_API_KEY"] = _new_openai
             if _new_github:
-                _os.environ["GITHUB_TOKEN"] = _new_github
+                os.environ["GITHUB_TOKEN"] = _new_github
+            if _new_groq:
+                os.environ["GROQ_API_KEY"] = _new_groq
             # Also persist to .env at Agent OS root so the token survives
             # a uvicorn --reload restart (which kills the process).
             # Use the config file's directory, not CWD, so the path is always
@@ -358,10 +388,13 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
                     _lines = _upsert(_lines, "OPENAI_API_KEY", _new_openai)
                 if _new_github:
                     _lines = _upsert(_lines, "GITHUB_TOKEN", _new_github)
-                _env_path.write_text("\n".join(_lines) + "\n")
+                if _new_groq:
+                    _lines = _upsert(_lines, "GROQ_API_KEY", _new_groq)
+                from ...utils.file_ops import atomic_write as _atomic_write
+                _atomic_write(_env_path, "\n".join(_lines) + "\n")
                 logger.info("Saved token(s) to %s", _env_path)
             except Exception as _env_err:
-                logger.debug("Could not write .env file: %s", _env_err)
+                logger.error("Could not write .env file: %s", _env_err)
     except Exception as _e:
         logger.warning("Could not mirror settings to DB: %s", _e)
 
@@ -372,7 +405,7 @@ def update_settings(body: SettingsUpdateRequest, orch=Depends(get_orchestrator))
 
 
 @router.post("/test-github", response_model=TestGitHubResponse)
-def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)):
+def test_github_connection(body: TestGitHubRequest = TestGitHubRequest(), orch=Depends(get_orchestrator)) -> TestGitHubResponse:  # noqa: B008
     """Test a GitHub token by calling the /user endpoint.
 
     If ``body.token`` is provided (unsaved value from the UI), it is used
@@ -553,17 +586,27 @@ def _write_config_yaml(cfg, config_path: Path | None = None) -> None:
             "model": getattr(getattr(cfg, 'ollama', None), 'model', 'llama3.1:8b'),
             "timeout_seconds": getattr(getattr(cfg, 'ollama', None), 'timeout_seconds', 300),
         },
+        "groq": {
+            # api_key intentionally omitted — persisted to .env only, never to config.yaml
+            "model": getattr(getattr(cfg, 'groq', None), 'model', 'llama-3.3-70b-versatile'),
+        },
         "prompt_generator": {
             "provider": getattr(getattr(cfg, 'prompt_generator', None), 'provider', 'ollama'),
             "ollama_model": getattr(getattr(cfg, 'prompt_generator', None), 'ollama_model', 'llama3.1:8b'),
             "openai_model": getattr(getattr(cfg, 'prompt_generator', None), 'openai_model', 'gpt-4.1-mini'),
+            "groq_model": getattr(getattr(cfg, 'prompt_generator', None), 'groq_model', 'llama-3.3-70b-versatile'),
         },
         "code_reviewer": {
             "provider": getattr(getattr(cfg, 'code_reviewer', None), 'provider', 'openai'),
             "model": getattr(getattr(cfg, 'code_reviewer', None), 'model', 'gpt-4.1-mini'),
             "ollama_model": getattr(getattr(cfg, 'code_reviewer', None), 'ollama_model', 'llama3.1:8b'),
+            "groq_model": getattr(getattr(cfg, 'code_reviewer', None), 'groq_model', 'llama-3.3-70b-versatile'),
         },
     }
 
-    with open(config_path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    try:
+        from ...utils.file_ops import atomic_write
+        content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+        atomic_write(config_path, content)
+    except OSError as exc:
+        logger.error("Failed to write config.yaml at %s: %s", config_path, exc)

@@ -24,14 +24,17 @@ The reviewer has NO local codebase access — all code is read from VCS.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-import os
 import re
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable
 
 from ..config.schema import AgentOSConfig
+from ..constants import (
+    DIFF_CHAR_LIMIT,
+)
 from ..vcs.base import VCSClient
 from .schema import (
     ArchitectureIssue,
@@ -189,10 +192,12 @@ class CodeReviewerRunner:
         config: AgentOSConfig,
         identity_ctx=None,
         vcs_client: VCSClient | None = None,
+        llm_client: Any | None = None,
     ) -> None:
         self._config = config
         self._identity_ctx = identity_ctx
         self._vcs_client = vcs_client
+        self._llm_client = llm_client  # Optional injected LLM client for testing
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -200,9 +205,9 @@ class CodeReviewerRunner:
         self,
         pr_number: int,
         iteration: int,
-        feature_branch: Optional[str] = None,
-        on_stdout: Optional[Callable[[str], None]] = None,
-        story_context: Optional[dict] = None,
+        feature_branch: str | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        story_context: dict | None = None,
     ) -> ReviewRunResult:
         """Run a full PR review.
 
@@ -218,10 +223,8 @@ class CodeReviewerRunner:
         """
         def _emit(line: str) -> None:
             if on_stdout:
-                try:
+                with contextlib.suppress(Exception):
                     on_stdout(line)
-                except Exception:
-                    pass
 
         _emit(f"[code-reviewer] Starting review of PR #{pr_number} (iteration {iteration})")
 
@@ -304,48 +307,8 @@ class CodeReviewerRunner:
         emit: Callable[[str], None],
     ) -> tuple[str, str, dict]:
         """Fetch diff text, head SHA and basic PR metadata."""
-        emit(f"[code-reviewer] Fetching PR #{pr_number} diff …")
-
-        diff_result = gh.get_pr_diff(pr_number)
-        diff_text = (diff_result.data or {}).get("diff", "") if diff_result.success else ""
-
-        # Fallback: build diff from per-file patches when unified diff is empty
-        if not diff_text:
-            emit("[code-reviewer] Unified diff empty — falling back to per-file patches")
-            try:
-                files_result = gh.get_pr_files(pr_number)
-                if files_result.success and files_result.data:
-                    raw_files = files_result.data
-                    if isinstance(raw_files, dict):
-                        raw_files = raw_files.get("files", raw_files.get("value", []))
-                    parts: list[str] = []
-                    for f in (raw_files or []):
-                        fname = f.get("filename", "")
-                        patch = f.get("patch", "")
-                        if fname and patch:
-                            parts.append(
-                                f"diff --git a/{fname} b/{fname}\n"
-                                f"--- a/{fname}\n+++ b/{fname}\n{patch}"
-                            )
-                    if parts:
-                        diff_text = "\n".join(parts)
-                        emit(f"[code-reviewer] Built diff from {len(parts)} file patch(es) ({len(diff_text)} chars)")
-            except Exception:
-                logger.debug("[code-reviewer] Per-file fallback failed", exc_info=True)
-
-        if not diff_text:
-            emit("[code-reviewer] Warning: could not fetch PR diff — review will have no code context")
-
-        pr_result = gh.get_pr(pr_number)
-        pr_data = pr_result.data or {} if pr_result.success else {}
-        head_sha = (pr_data.get("head") or {}).get("sha", "")
-        pr_url = pr_data.get("html_url", f"PR #{pr_number}")
-
-        if not head_sha:
-            head_sha = gh.get_pr_head_sha(pr_number) or ""
-
-        emit(f"[code-reviewer] Diff fetched ({len(diff_text)} chars), head SHA: {head_sha[:8] or 'unknown'}")
-        return diff_text, head_sha, pr_data
+        from .diff_fetcher import fetch_pr_context
+        return fetch_pr_context(gh, pr_number, emit)
 
     def _stream_review(
         self,
@@ -353,74 +316,20 @@ class CodeReviewerRunner:
         pr_info: dict,
         iteration: int,
         emit: Callable[[str], None],
-        story_context: Optional[dict] = None,
+        story_context: dict | None = None,
     ) -> str:
         """Stream LLM review of the diff; return the full raw text.
 
-        Supports three providers (config.code_reviewer.provider):
-          - "openai"  — OpenAI API (requires OPENAI_API_KEY)
-          - "copilot" — GitHub Copilot via models.inference.ai.azure.com (requires GITHUB_TOKEN)
-          - "ollama"  — Ollama local/remote API
+        Delegates provider resolution and streaming to llm_client module.
         """
-        cr_cfg = getattr(self._config, "code_reviewer", None)
-        provider = (cr_cfg.provider if cr_cfg else None) or "openai"
+        from .llm_client import resolve_provider_config, stream_review
 
-        # ── Determine base_url, api_key, model ────────────────────────────
-        if provider == "copilot":
-            base_url = "https://api.githubcopilot.com"
-            # Prefer the gh CLI OAuth token (required by Copilot API — PATs are rejected).
-            # Strip GITHUB_TOKEN/GH_TOKEN from the env before calling gh so it reads
-            # its stored OAuth credential instead of echoing back the PAT.
-            _gh_oauth = ""
-            try:
-                import subprocess as _sp
-                _clean = {k: v for k, v in os.environ.items() if k not in ("GITHUB_TOKEN", "GH_TOKEN")}
-                _r = _sp.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=5, env=_clean)
-                if _r.returncode == 0:
-                    _gh_oauth = _r.stdout.strip()
-            except Exception:
-                pass
-            api_key = (
-                _gh_oauth
-                # Settings UI → AI Tools → Copilot token (second priority)
-                or (getattr(getattr(self._config, "ai_tools", None), "copilot", None)
-                    and self._config.ai_tools.copilot.api_key)
-                # secrets.github_token from config.yaml
-                or getattr(self._config.secrets, "github_token", "")
-                # inherited env var
-                or os.environ.get("GITHUB_TOKEN", "")
-                or ""
-            )
-            model = (cr_cfg.model if cr_cfg else "") or "gpt-4.1-mini"
-            if not api_key:
-                emit("[code-reviewer] No GITHUB_TOKEN — cannot run Copilot review")
-                return ""
-
-        elif provider == "ollama":
-            ollama_base = (
-                getattr(self._config.ollama, "base_url", "") or "http://localhost:11434"
-            )
-            base_url = ollama_base.rstrip("/") + "/v1"
-            api_key = "ollama"  # Ollama accepts any non-empty key via OpenAI compat layer
-            model = (cr_cfg.ollama_model if cr_cfg else "") or (
-                getattr(self._config.ollama, "model", "") or "llama3.1:8b"
-            )
-
-        else:  # "openai" (default)
-            base_url = "https://api.openai.com/v1"
-            api_key = (
-                getattr(self._config.secrets, "openai_api_key", "") or ""
-                or os.environ.get("OPENAI_API_KEY", "")
-            )
-            model = (
-                (cr_cfg.model if cr_cfg else "")
-                or self._config.codex.model_routing.get("CODE_REVIEWER")
-                or self._config.codex.model
-                or "gpt-4.1-mini"
-            )
-            if not api_key:
-                emit("[code-reviewer] No OpenAI API key — cannot run review")
-                return ""
+        code_reviewer_config = getattr(self._config, "code_reviewer", None)
+        provider, base_url, api_key, model = resolve_provider_config(
+            self._config, code_reviewer_config, emit,
+        )
+        if not api_key:
+            return ""
 
         emit(f"[code-reviewer] Streaming review via {provider}/{model} …")
 
@@ -436,8 +345,7 @@ class CodeReviewerRunner:
             (preamble + "\n\n" + _SYSTEM_PROMPT).strip() if preamble else _SYSTEM_PROMPT
         )
 
-        # In GitHub Review mode, append the story's acceptance criteria so the
-        # reviewer validates implementation completeness against them.
+        # In GitHub Review mode, append the story's acceptance criteria
         if story_context:
             ac_list: list[str] = story_context.get("acceptance_criteria", []) or []
             story_id = story_context.get("story_id", "")
@@ -456,8 +364,8 @@ class CodeReviewerRunner:
                     f"If all ACs are satisfied, note this in the summary."
                 )
 
-        # Cap diff at ~12 000 tokens (~50 KB) to stay within context limits
-        _MAX_DIFF = 50_000
+        # Cap diff
+        _MAX_DIFF = DIFF_CHAR_LIMIT
         if len(diff_text) > _MAX_DIFF:
             diff_text = diff_text[:_MAX_DIFF] + "\n\n... [diff truncated — review as many files as possible]"
 
@@ -472,53 +380,15 @@ class CodeReviewerRunner:
         )
 
         try:
-            import openai
-
-            client = openai.OpenAI(
+            return stream_review(
+                provider=provider,
+                model=model,
                 api_key=api_key,
                 base_url=base_url,
-                default_headers={
-                    "Copilot-Integration-Id": "agent-os",
-                    "Editor-Version": "agent-os/1.0",
-                    "Editor-Plugin-Version": "agent-os/1.0",
-                } if provider == "copilot" else {},
+                system_prompt=system_prompt,
+                user_message=user_message,
+                emit=emit,
             )
-            _no_temp = ("o1", "o3", "o4", "gpt-5")
-            create_kwargs: dict = {
-                "model": model,
-                "stream": True,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message},
-                ],
-            }
-            if not any(model.startswith(p) for p in _no_temp):
-                create_kwargs["temperature"] = 0.2  # deterministic for reviews
-
-            resp = client.chat.completions.create(**create_kwargs)
-
-            full: list[str] = []
-            buf: list[str] = []
-            for chunk in resp:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
-                if not delta:
-                    continue
-                full.append(delta)
-                buf.append(delta)
-                combined = "".join(buf)
-                while "\n" in combined:
-                    line, combined = combined.split("\n", 1)
-                    emit(line)
-                buf = [combined] if combined else []
-            if buf:
-                rem = "".join(buf).strip()
-                if rem:
-                    emit(rem)
-
-            return "".join(full).strip()
-
         except Exception as exc:
             emit(f"[code-reviewer] LLM streaming failed: {exc}")
             logger.warning("Code review LLM failed (iter %d): %s", iteration, exc)
@@ -558,50 +428,8 @@ class CodeReviewerRunner:
         emit: Callable[[str], None],
     ) -> int:
         """Post line-level review comments to the PR. Returns number of comments posted."""
-        if not head_sha:
-            emit("[code-reviewer] No head SHA — skipping inline comments")
-            return 0
-
-        count = 0
-        for lc in review.line_comments:
-            if not lc.file or lc.line <= 0:
-                continue
-            body = f"**[{lc.severity.upper()}] {lc.checklist_item}**: {lc.comment}"
-            if lc.suggested_fix:
-                body += f"\n\n> **Suggested fix**: {lc.suggested_fix}"
-            r = gh.add_pr_review_comment(
-                pr_number=pr_number,
-                body=body,
-                commit_id=head_sha,
-                path=lc.file,
-                line=lc.line,
-            )
-            if r.success:
-                count += 1
-            else:
-                # Fall back: add as a global comment if inline placement fails
-                fallback = gh.add_pr_comment(
-                    pr_number, f"📝 **File `{lc.file}` line {lc.line}**: {body}"
-                )
-                if fallback.success:
-                    count += 1
-                logger.debug(
-                    "Inline comment on %s:%d fell back to global: %s",
-                    lc.file, lc.line, r.error,
-                )
-
-        # File-size violations posted as inline global comments
-        for fsv in review.file_size_violations:
-            body = (
-                f"⚠️ **File size violation**: `{fsv.file}` has **{fsv.line_count} lines** "
-                f"(limit: 200). Please split into smaller modules."
-            )
-            r = gh.add_pr_comment(pr_number, body)
-            if r.success:
-                count += 1
-
-        emit(f"[code-reviewer] Posted {count} inline/size comment(s)")
-        return count
+        from .commenter import post_inline_comments
+        return post_inline_comments(gh, pr_number, head_sha, review, emit)
 
     def _post_global_comments(
         self,
@@ -611,53 +439,8 @@ class CodeReviewerRunner:
         emit: Callable[[str], None],
     ) -> int:
         """Post global (non-inline) PR comments for structural findings."""
-        count = 0
-
-        # Architecture issues
-        for ai in review.architecture_issues:
-            body = (
-                f"🏗️ **Architecture issue** [{ai.severity.upper()}] "
-                f"(layer: `{ai.layer}`): {ai.description}"
-            )
-            r = gh.add_pr_comment(pr_number, body)
-            if r.success:
-                count += 1
-
-        # Folder structure issues
-        for fsi in review.folder_structure_issues:
-            body = (
-                f"📁 **Folder structure issue**: `{fsi.path}` — {fsi.issue}"
-            )
-            if fsi.expected_location:
-                body += f"\n\n> Expected location: `{fsi.expected_location}`"
-            r = gh.add_pr_comment(pr_number, body)
-            if r.success:
-                count += 1
-
-        # General global comments
-        for gc in review.global_comments:
-            body = f"**[{gc.severity.upper()}] {gc.category}**: {gc.comment}"
-            r = gh.add_pr_comment(pr_number, body)
-            if r.success:
-                count += 1
-
-        # Summary comment
-        score_lines = "\n".join(
-            f"- **{k}**: {v}/100" for k, v in review.checklist_scores.items()
-        )
-        summary_body = (
-            f"## 🤖 Agent OS Code Review — Iteration summary\n\n"
-            f"**Overall status**: `{review.overall_status}`  \n"
-            f"**Overall score**: {review.overall_score}/100\n\n"
-            f"### Checklist scores\n{score_lines}\n\n"
-            f"### Summary\n{review.summary}"
-        )
-        r = gh.add_pr_comment(pr_number, summary_body)
-        if r.success:
-            count += 1
-
-        emit(f"[code-reviewer] Posted {count} global comment(s)")
-        return count
+        from .commenter import post_global_comments
+        return post_global_comments(gh, pr_number, review, emit)
 
     def _write_review_json(self, review: ReviewJSON, iteration: int) -> Path:
         """Serialise and write the review JSON to the configured output path."""
@@ -683,26 +466,8 @@ class CodeReviewerRunner:
         emit: Callable[[str], None],
     ) -> tuple[bool, bool]:
         """Merge the PR and delete the feature branch. Returns (merged, branch_deleted)."""
-        merged = False
-        branch_deleted = False
-
-        # 1. Merge PR
-        merge_result = gh.merge_pr(pr_number, commit_message="Accepted by Agent OS code reviewer")
-        if merge_result.success:
-            emit(f"[code-reviewer] PR #{pr_number} merged to main ✅")
-            merged = True
-        else:
-            emit(f"[code-reviewer] PR merge failed: {merge_result.error}")
-
-        # 2. Delete feature branch
-        delete_result = gh.delete_branch(branch=feature_branch)
-        if delete_result.success:
-            emit(f"[code-reviewer] Feature branch '{feature_branch}' deleted ✅")
-            branch_deleted = True
-        else:
-            emit(f"[code-reviewer] Branch delete failed: {delete_result.error}")
-
-        return merged, branch_deleted
+        from .commenter import finalize_pr
+        return finalize_pr(gh, pr_number, feature_branch, emit)
 
 
 # ── JSON extraction ────────────────────────────────────────────────────────────

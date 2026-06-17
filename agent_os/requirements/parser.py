@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -14,6 +16,102 @@ from .schema import RequirementsDocument
 from .validator import validate_requirements
 
 logger = logging.getLogger(__name__)
+
+
+def _flat_list_yaml_to_canonical(rows: list[Any]) -> tuple[bytes, dict[str, int], str]:
+    """Convert a flat-list YAML (Epic / Feature / User Story / Acceptance Criteria columns)
+    into the canonical RequirementsDocument dict format (epics → features → stories → ACs).
+
+    This handles YAML files exported from spreadsheets where each row is one user story
+    and the hierarchy is encoded as repeated column values rather than nesting.
+    """
+    epics: dict[str, dict] = {}  # epic_title → epic dict with internal _feat_map
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        epic_title = str(row.get("Epic") or "").strip()
+        feat_title = str(row.get("Feature") or "").strip()
+        story_title = str(row.get("User Story") or "").strip()
+        ac_raw = str(row.get("Acceptance Criteria") or "").strip()
+
+        # Skip rows with nothing useful (e.g. the trailing empty row)
+        if not epic_title and not story_title:
+            continue
+
+        if not epic_title:
+            epic_title = "General"
+        if not feat_title:
+            feat_title = "General"
+
+        if epic_title not in epics:
+            epic_id = f"E{len(epics) + 1}"
+            epics[epic_title] = {
+                "id": epic_id,
+                "title": epic_title,
+                "description": "",
+                "features": [],
+                "_feat_map": {},
+            }
+
+        epic = epics[epic_title]
+        feat_map: dict[str, dict] = epic["_feat_map"]
+
+        if feat_title not in feat_map:
+            feat_id = f"{epic['id']}-F{len(feat_map) + 1}"
+            feat_dict: dict = {"id": feat_id, "title": feat_title, "description": "", "stories": []}
+            feat_map[feat_title] = feat_dict
+            epic["features"].append(feat_dict)
+
+        if not story_title:
+            continue
+
+        feat = feat_map[feat_title]
+        story_id = f"{feat['id']}-S{len(feat['stories']) + 1}"
+
+        # Split ACs on â¢ (mis-encoded UTF-8 bullet •) or plain •
+        ac_list: list[dict] = []
+        if ac_raw:
+            parts = [p.strip() for p in re.split(r"â¢|•", ac_raw) if p.strip()]
+            for i, part in enumerate(parts, 1):
+                ac_list.append({
+                    "id": f"{story_id}-AC{i}",
+                    "title": part,
+                    "description": "",
+                })
+
+        if not ac_list:
+            ac_list = [{"id": f"{story_id}-AC1", "title": "Verify the feature works as described.", "description": ""}]
+
+        feat["stories"].append({
+            "id": story_id,
+            "title": story_title,
+            "description": "",
+            "acceptance_criteria": ac_list,
+        })
+
+    # Strip internal tracking key before serialising
+    epic_list = [{k: v for k, v in ep.items() if k != "_feat_map"} for ep in epics.values()]
+
+    if not epic_list:
+        return b"", {}, "No valid requirements found in the YAML list."
+
+    doc = {"epics": epic_list}
+    yaml_bytes = yaml.dump(doc, allow_unicode=True, sort_keys=False).encode("utf-8")
+
+    n_feats = sum(len(ep["features"]) for ep in epic_list)
+    n_stories = sum(len(f["stories"]) for ep in epic_list for f in ep["features"])
+    n_ac = sum(
+        len(s["acceptance_criteria"])
+        for ep in epic_list for f in ep["features"] for s in f["stories"]
+    )
+    stats = {
+        "epics": len(epic_list),
+        "features": n_feats,
+        "stories": n_stories,
+        "acceptance_criteria": n_ac,
+    }
+    return yaml_bytes, stats, ""
 
 
 class RequirementsParser:
@@ -73,7 +171,13 @@ class RequirementsParser:
                 data = yaml.safe_load(fh)
 
         if not isinstance(data, dict):
-            raise ValueError(f"Requirements file must be a YAML mapping, got {type(data).__name__}")
+            if isinstance(data, list):
+                canonical_bytes, _, err = _flat_list_yaml_to_canonical(data)
+                if err:
+                    raise ValueError(f"Cannot convert flat-list YAML to requirements format: {err}")
+                data = yaml.safe_load(canonical_bytes.decode("utf-8"))
+            else:
+                raise ValueError(f"Requirements file must be a YAML mapping, got {type(data).__name__}")
         return data
 
     def _store(

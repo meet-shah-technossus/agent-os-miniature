@@ -32,11 +32,13 @@ class ConnectionManager:
         self._connections: set[WebSocket] = set()
         # None means "all channels"; a set means "only these channels"
         self._subscriptions: dict[WebSocket, set[str] | None] = {}
+        self._lock = asyncio.Lock()
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
-        self._connections.add(ws)
-        self._subscriptions[ws] = None  # receive all channels by default
+        async with self._lock:
+            self._connections.add(ws)
+            self._subscriptions[ws] = None  # receive all channels by default
 
     def disconnect(self, ws: WebSocket) -> None:
         self._connections.discard(ws)
@@ -78,7 +80,8 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # Asyncio queue — will be used by future pipeline events
-_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+WS_QUEUE_MAXSIZE = 2048
+_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=WS_QUEUE_MAXSIZE)
 
 
 def _setup_bus_subscriptions() -> None:
@@ -87,10 +90,15 @@ def _setup_bus_subscriptions() -> None:
 
 
 async def _broadcast_worker() -> None:
-    """Background task: drains the queue and broadcasts to WebSocket clients."""
+    """Background task: drains the queue and broadcasts to WebSocket clients.
+
+    Each message is dispatched as an independent task via create_task so a
+    slow or stalled WebSocket client cannot block subsequent messages from
+    being delivered to faster clients.
+    """
     while True:
         msg = await _queue.get()
-        await manager.broadcast(msg)
+        asyncio.create_task(manager.broadcast(msg))
 
 
 @router.websocket("/ws")
