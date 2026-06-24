@@ -204,12 +204,14 @@ class Orchestrator:
 
         _std_runner = StandardPipelineRunner(self)
         _STANDARD_DISPATCH = {
-            PipelineStatus.IDLE:                  self._step_idle,
-            PipelineStatus.LOADING_REQUIREMENTS:  self._step_load_requirements,
-            PipelineStatus.PROMPT_GENERATION:     _std_runner.step_prompt_generation,
-            PipelineStatus.CODE_GENERATION:       _std_runner.step_code_generation,
-            PipelineStatus.CODE_REVIEW:           _std_runner.step_code_review,
-            PipelineStatus.STORY_COMPLETE:        self._step_story_complete,
+            PipelineStatus.IDLE:                      self._step_idle,
+            PipelineStatus.LOADING_REQUIREMENTS:      self._step_load_requirements,
+            PipelineStatus.ANALYSING_DEPENDENCIES:    self._step_analyse_dependencies,
+            PipelineStatus.QUEUE_READY:               self._step_queue_ready,
+            PipelineStatus.STORY_PROMPT_GENERATION:   self._step_story_prompt_generation,
+            PipelineStatus.STORY_CODE_GENERATION:     self._step_story_code_generation,
+            PipelineStatus.STORY_CODE_REVIEW:         self._step_story_code_review,
+            PipelineStatus.STORY_COMPLETE:            self._step_story_complete,
         }
         _GHR_DISPATCH = {
             PipelineStatus.IDLE:                      self._step_idle,
@@ -336,16 +338,11 @@ class Orchestrator:
                 logger.warning("Could not extract project name from requirements", exc_info=True)
 
         state = self.state_mgr.state
-        if self.config.pipeline_mode == PipelineMode.GITHUB_REVIEW:
-            self.state_mgr.transition_to(
-                PipelineStatus.ANALYSING_DEPENDENCIES,
-                iteration=max(state.current_iteration, 1),
-            )
-        else:
-            self.state_mgr.transition_to(
-                PipelineStatus.PROMPT_GENERATION,
-                iteration=max(state.current_iteration, 1),
-            )
+        # Both standard and github_review modes now use the story queue
+        self.state_mgr.transition_to(
+            PipelineStatus.ANALYSING_DEPENDENCIES,
+            iteration=max(state.current_iteration, 1),
+        )
         self._emit(EventType.STATE_CHANGED)
 
     def _step_prompt_generation(self) -> None:
@@ -404,15 +401,11 @@ class Orchestrator:
 
     def _auto_approve(self, status: PipelineStatus) -> None:
         """Auto-approve HITL gate (used when auto_approve_hitl=True)."""
-        is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
+        # Both modes now use story-wise states
         if status == PipelineStatus.HITL_PROMPT_REVIEW:
-            next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
-            self.state_mgr.transition_to(next_status)
+            self.state_mgr.transition_to(PipelineStatus.STORY_CODE_GENERATION)
         elif status == PipelineStatus.HITL_REVIEW_DECISION:
-            if is_ghr:
-                self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
-            else:
-                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
+            self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
         self._emit(EventType.STATE_CHANGED)
 
     def approve_prompt(
@@ -454,9 +447,8 @@ class Orchestrator:
         if metadata:
             self.state_mgr.update_metadata(metadata)
 
-        is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
-        next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
-        self.state_mgr.transition_to(next_status)
+        # Both modes now use story-wise code generation
+        self.state_mgr.transition_to(PipelineStatus.STORY_CODE_GENERATION)
         self._emit(EventType.STATE_CHANGED, {"approved": "prompt"})
 
         # Resume the pipeline loop in a background thread
@@ -479,38 +471,20 @@ class Orchestrator:
         # If reviewer already accepted, just confirm completion
         review_status = state.metadata.get("review_overall_status", "")
         if review_status == "accepted":
-            is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
-            if is_ghr:
-                self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
-                self._emit("story_completed", {"story_id": state.current_story_id, "reason": "user_approved"})
-                self._resume_in_thread()
-            else:
-                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
-                self._emit(EventType.PIPELINE_COMPLETE, {"reason": "user_approved_accepted_review"})
+            # Both modes: accepted review → STORY_COMPLETE (queue picks next story or finishes)
+            self.state_mgr.transition_to(PipelineStatus.STORY_COMPLETE)
+            self._emit("story_completed", {"story_id": state.current_story_id, "reason": "user_approved"})
+            self._resume_in_thread()
             return True
 
-        is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
-        if is_ghr:
-            # GHR mode: loop back to story prompt generation for another fix iteration
-            self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
-            self._emit(EventType.STATE_CHANGED, {
-                "approved": "review",
-                "next": "story_prompt_generation",
-                "story_id": state.current_story_id,
-            })
-            self._resume_in_thread()
-        else:
-            max_iter = self.config.orchestrator.max_iterations
-            if state.current_iteration >= max_iter:
-                self.state_mgr.transition_to(PipelineStatus.PIPELINE_COMPLETE)
-                self._emit(EventType.PIPELINE_COMPLETE, {"reason": "max_iterations_reached"})
-            else:
-                self.state_mgr.transition_to(
-                    PipelineStatus.PROMPT_GENERATION,
-                    iteration=state.current_iteration + 1,
-                )
-                self._emit(EventType.STATE_CHANGED, {"approved": "review", "next_iteration": state.current_iteration + 1})
-                self._resume_in_thread()
+        # Rejected / needs_work: both modes loop back per-story for another fix iteration
+        self.state_mgr.transition_to(PipelineStatus.STORY_PROMPT_GENERATION)
+        self._emit(EventType.STATE_CHANGED, {
+            "approved": "review",
+            "next": "story_prompt_generation",
+            "story_id": state.current_story_id,
+        })
+        self._resume_in_thread()
 
         return True
 
@@ -1108,10 +1082,9 @@ class Orchestrator:
             self.config.codex.model_routing["CODE_GENERATOR"] = cli_model
             self.state_mgr.update_metadata({"selected_cli_model": cli_model})
             logger.info("retry_code_generator: cli_model overridden to '%s'", cli_model)
-        is_ghr = getattr(self.config, "pipeline_mode", "") == PipelineMode.GITHUB_REVIEW
-        next_status = PipelineStatus.STORY_CODE_GENERATION if is_ghr else PipelineStatus.CODE_GENERATION
+        # Both modes now use story-wise code generation
         self.state_mgr.transition_to(
-            next_status,
+            PipelineStatus.STORY_CODE_GENERATION,
             metadata={"code_gen_failed": False, "code_gen_error": ""},
         )
         self._emit(EventType.STATE_CHANGED, {"retry": "code_generator"})
@@ -1129,11 +1102,9 @@ class Orchestrator:
         if self.state_mgr.current_status != PipelineStatus.HITL_REVIEW_DECISION:
             logger.warning("retry_code_reviewer() called but not at HITL_REVIEW_DECISION")
             return False
-        # Determine the correct review status for the current pipeline mode.
-        _is_github_review_mode = (self.config.pipeline_mode == PipelineMode.GITHUB_REVIEW)
-        _review_status = PipelineStatus.STORY_CODE_REVIEW if _is_github_review_mode else PipelineStatus.CODE_REVIEW
+        # Both modes now use story-wise code review
         self.state_mgr.transition_to(
-            _review_status,
+            PipelineStatus.STORY_CODE_REVIEW,
             metadata={"code_review_failed": False, "code_review_error": ""},
         )
         self._emit(EventType.STATE_CHANGED, {"retry": "code_reviewer"})

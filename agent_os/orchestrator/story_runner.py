@@ -287,12 +287,52 @@ class StoryPipelineRunner:
         self.state_mgr.transition_to(PipelineStatus.QUEUE_READY)
         self._emit(EventType.STATE_CHANGED)
 
+    def _init_standard_local_repo(self) -> bool:
+        """Provision ~/Desktop/<project> and git-init it for standard pipeline.
+
+        Returns True on success, False on failure (pipeline transitioned to FAILED).
+        """
+        from ..git_ops.manager import GitOpsManager
+
+        working_dir = self._provision_project_dir()
+        if not working_dir:
+            err = "[Standard] Could not provision project directory"
+            logger.error(err)
+            self.state_mgr.transition_to(PipelineStatus.FAILED, metadata={"error": err})
+            self._emit(EventType.ERROR, {"message": err})
+            return False
+
+        self.config.project.root_path = working_dir
+
+        git = GitOpsManager(working_dir)
+        # git init is idempotent — safe to call on an already-initialised repo
+        result = git.init_repo()
+        if not result.success:
+            err = f"[Standard] git init failed: {result.stderr}"
+            logger.error(err)
+            self.state_mgr.transition_to(PipelineStatus.FAILED, metadata={"error": err})
+            self._emit(EventType.ERROR, {"message": err})
+            return False
+
+        git.set_user("Agent OS Bot", "agent-os@noreply.github.com")
+        self.state_mgr.update_metadata({"standard_local_path": working_dir})
+        logger.info("[Standard] Local repo ready at %s", working_dir)
+        self._emit("local_repo_ready", {"path": working_dir})
+        return True
+
     def step_queue_ready(self) -> None:
         """QUEUE_READY → STORY_PROMPT_GENERATION (or PIPELINE_COMPLETE)."""
         from ..orchestrator.story_queue import StoryQueueManager
 
-        if not self.config.project.root_path and not self.step_fork_and_clone():
-            return
+        from ..constants import PipelineMode
+        if not self.config.project.root_path:
+            if self.config.pipeline_mode == PipelineMode.GITHUB_REVIEW:
+                if not self.step_fork_and_clone():
+                    return
+            else:
+                # Standard mode: provision a new local directory and git-init it
+                if not self._init_standard_local_repo():
+                    return
 
         mgr = StoryQueueManager(self.db)
         next_story = mgr.dequeue()
@@ -364,6 +404,16 @@ class StoryPipelineRunner:
             f"#### Acceptance Criteria\n{acs_md}\n"
         )
 
+        # Standard mode — append explicit "from scratch" directive on iteration 1
+        from ..constants import PipelineMode
+        if self.config.pipeline_mode == PipelineMode.STANDARD and story_iter == 1:
+            requirements_text += (
+                "\n\n---\n"
+                "**Implementation directive:** Generate complete, production-ready code "
+                "**from scratch** for this story. Do not assume any pre-existing codebase. "
+                "Create all necessary files, directories, dependencies, and CI scripts.\n"
+            )
+
         review_json: dict | None = None
         if story_iter > 1:
             review_raw = state.metadata.get("story_review_json")
@@ -418,7 +468,7 @@ class StoryPipelineRunner:
                     "story_id": story_id or "",
                     "title": item.title,
                     "pr_number": state.metadata.get("story_pr_number"),
-                    "is_fork_mode": True,
+                    "is_fork_mode": self.config.pipeline_mode == PipelineMode.GITHUB_REVIEW,
                 },
             )
         except Exception as exc:

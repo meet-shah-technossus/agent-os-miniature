@@ -274,6 +274,8 @@ export default function DashboardView() {
   }, []);
 
   const isGhrMode = storyQueue?.mode === 'github_review';
+  // Both standard and github_review now use story-wise queue execution
+  const isQueueMode = storyQueue?.mode === 'github_review' || storyQueue?.mode === 'standard';
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
   const [pauseRequested, setPauseRequested] = useState(false);
@@ -359,14 +361,16 @@ export default function DashboardView() {
         </div>
 
         {/* GitHub Review mode context card */}
-        {isGhrMode && storyQueue && (
+        {isQueueMode && storyQueue && (
           <motion.div
             key="ghr-context"
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             className="glass-card border-indigo-500/20"
           >
-            <p className="text-[10px] uppercase tracking-widest text-indigo-400/60 mb-3">GitHub Review Mode</p>
+            <p className="text-[10px] uppercase tracking-widest text-indigo-400/60 mb-3">
+              {isGhrMode ? 'GitHub Review Mode' : 'Standard Pipeline'}
+            </p>
             <div className="space-y-1.5 text-xs">
               <div className="flex justify-between">
                 <span className="text-white/40">Progress</span>
@@ -511,8 +515,8 @@ export default function DashboardView() {
       {/* ── Right: Story Queue (GHR) + Pipeline flow diagram ──────────────────── */}
       <div className="flex-1 min-w-0 flex flex-col gap-4 min-h-0">
 
-        {/* Story Queue panel — GitHub Review mode only */}
-        {isGhrMode && storyHierarchy && (
+        {/* Story Queue panel — Standard and GitHub Review modes */}
+        {isQueueMode && storyHierarchy && (
           <div className="glass-card flex flex-col overflow-hidden" style={{ maxHeight: 480 }}>
             <div className="flex items-center justify-between mb-3 shrink-0">
               <p className="text-[10px] uppercase tracking-widest text-[var(--text-muted)]">Story Queue</p>
