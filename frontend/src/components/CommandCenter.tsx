@@ -22,7 +22,7 @@ import { api } from '../hooks/api';
 import TerminalPanel from './TerminalPanel';
 import PromptEditor, { CLI_TOOL_KEYS, CLI_DISPLAY, CLI_ICON, type CliToolKey } from './PromptEditor';
 import ReviewViewer from './ReviewViewer';
-import { TOOL_MODELS, MODEL_DISPLAY_NAMES, TOOL_DISPLAY_NAMES } from '../constants';
+import { TOOL_MODELS } from '../constants';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -883,7 +883,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
             <div className="mb-2 shrink-0 px-3 py-2.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs flex flex-col gap-2">
               <div className="flex items-start gap-2">
                 <span className="mt-0.5">⚠</span>
-                <span className="flex-1">{TOOL_DISPLAY_NAMES[selectedTool] ?? selectedTool}: code generation failed{codeGenError ? ` — ${codeGenError}` : ''}</span>
+                <span className="flex-1">Code generation failed{codeGenError ? `: ${codeGenError}` : ''}</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-rose-300/70 shrink-0">Change tool/model before retrying:</span>
@@ -909,7 +909,7 @@ export default function CommandCenter({ terminalStates, wsConnected, messages }:
                   className="flex-1 min-w-[140px] rounded px-2 py-1 bg-slate-800 border border-white/10 text-white/80 text-xs"
                 >
                   {(TOOL_MODELS[selectedTool] ?? []).map((m) => (
-                    <option key={m} value={m}>{MODEL_DISPLAY_NAMES[m] ?? m}</option>
+                    <option key={m} value={m}>{m}</option>
                   ))}
                 </select>
                 <button

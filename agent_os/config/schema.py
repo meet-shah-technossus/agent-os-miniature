@@ -222,6 +222,7 @@ class GroqConfig(BaseModel):
     """Groq API connection settings (OpenAI-compatible)."""
     api_key: str = ""
     model: str = "llama-3.3-70b-versatile"
+    max_tokens: int = 8192  # Groq default is low; set high to avoid truncation
 
 
 class PromptGeneratorConfig(BaseModel):

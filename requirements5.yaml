@@ -1,0 +1,1229 @@
+epics:
+  - id: "E1"
+    title: "Platform Foundation, Technology Stack, and Role-Based Access Control"
+    description: >
+      Establishes the Employee Wellness Tracker (EWT) as a web-based application built on
+      React.js/Next.js (frontend), Node.js/.NET Core (backend API), and SQL Server/PostgreSQL
+      (database), using database-based authentication. Defines the three system roles
+      (Administrator, Manager, Employee), their permitted responsibilities, and the
+      role-based access control that gates every screen and action in the system.
+    features:
+      - id: "F1"
+        title: "Technology Stack and Application Purpose"
+        description: >
+          Documents the core purpose of EWT — helping organizations monitor employee
+          well-being through daily wellness submissions and trend dashboards — and the
+          technology choices underpinning the frontend, backend, database, authentication,
+          and reporting layers.
+        stories:
+          - id: "S1"
+            title: "Define application purpose and scope"
+            description: >
+              Establish EWT as a web-based application that lets employees record stress
+              levels, work hours, sleep hours, mood, and energy levels, while managers and
+              administrators review wellness trends and key indicators through dashboards
+              and reports. The system shall provide role-based access, data validation, and
+              dashboard analytics to support employee wellness monitoring.
+            acceptance_criteria:
+              - id: "AC1"
+                title: "Employees can record daily wellness data"
+                description: >
+                  The system allows employees to record stress levels, work hours, sleep
+                  hours, mood, and energy levels as part of daily wellness submissions.
+              - id: "AC2"
+                title: "Managers and administrators can review wellness trends"
+                description: >
+                  The system allows Managers and Administrators to review wellness trends
+                  and key indicators through dashboards and reports.
+              - id: "AC3"
+                title: "System provides role-based access, validation, and analytics"
+                description: >
+                  The system provides role-based access control, data validation rules, and
+                  dashboard analytics in support of employee wellness monitoring.
+
+          - id: "S2"
+            title: "Establish technology stack components"
+            description: >
+              Define the technology stack used to build EWT, including frontend, backend
+              API, database, authentication mechanism, and reporting approach.
+            acceptance_criteria:
+              - id: "AC4"
+                title: "Frontend technology is React.js / Next.js"
+                description: >
+                  The frontend component of EWT is built using React.js / Next.js.
+              - id: "AC5"
+                title: "Backend API technology is Node.js / .NET Core"
+                description: >
+                  The backend API component of EWT is built using Node.js / .NET Core.
+              - id: "AC6"
+                title: "Database technology is SQL Server / PostgreSQL"
+                description: >
+                  The database component of EWT uses SQL Server / PostgreSQL.
+              - id: "AC7"
+                title: "Authentication is database-based"
+                description: >
+                  EWT uses database-based authentication for verifying user identity.
+              - id: "AC8"
+                title: "Reporting is delivered via dashboards and charts"
+                description: >
+                  EWT's reporting component is delivered through dashboards and charts.
+
+      - id: "F2"
+        title: "User Roles and Responsibilities"
+        description: >
+          Defines the three user roles supported by EWT — Administrator, Manager, and
+          Employee — along with the specific responsibilities each role is permitted to
+          perform within the system.
+        stories:
+          - id: "S3"
+            title: "Define Administrator role responsibilities"
+            description: >
+              Administrators are granted the broadest set of responsibilities, covering
+              department management, employee management, account management, dashboard
+              visibility, wellness history visibility, and employee detail visibility.
+            acceptance_criteria:
+              - id: "AC9"
+                title: "Administrator can manage departments"
+                description: >
+                  The Administrator role includes the responsibility to manage departments.
+              - id: "AC10"
+                title: "Administrator can manage employees"
+                description: >
+                  The Administrator role includes the responsibility to manage employees.
+              - id: "AC11"
+                title: "Administrator can manage user accounts"
+                description: >
+                  The Administrator role includes the responsibility to manage user accounts.
+              - id: "AC12"
+                title: "Administrator can view dashboard"
+                description: >
+                  The Administrator role includes the responsibility to view the dashboard.
+              - id: "AC13"
+                title: "Administrator can view wellness history"
+                description: >
+                  The Administrator role includes the responsibility to view wellness history.
+              - id: "AC14"
+                title: "Administrator can view employee details"
+                description: >
+                  The Administrator role includes the responsibility to view employee details.
+
+          - id: "S4"
+            title: "Define Manager role responsibilities"
+            description: >
+              Managers are granted dashboard, employee detail, wellness history, and
+              department statistics visibility, but not administrative management actions.
+            acceptance_criteria:
+              - id: "AC15"
+                title: "Manager can view dashboard"
+                description: >
+                  The Manager role includes the responsibility to view the dashboard.
+              - id: "AC16"
+                title: "Manager can view employee details"
+                description: >
+                  The Manager role includes the responsibility to view employee details.
+              - id: "AC17"
+                title: "Manager can view wellness history"
+                description: >
+                  The Manager role includes the responsibility to view wellness history.
+              - id: "AC18"
+                title: "Manager can view department statistics"
+                description: >
+                  The Manager role includes the responsibility to view department statistics.
+
+          - id: "S5"
+            title: "Define Employee role responsibilities"
+            description: >
+              Employees are scoped to logging in, submitting their own daily wellness
+              entries, and viewing their own submission history and statistics.
+            acceptance_criteria:
+              - id: "AC19"
+                title: "Employee can log in"
+                description: >
+                  The Employee role includes the responsibility to log in to the system.
+              - id: "AC20"
+                title: "Employee can submit daily wellness entry"
+                description: >
+                  The Employee role includes the responsibility to submit a daily wellness
+                  entry.
+              - id: "AC21"
+                title: "Employee can view own submission history"
+                description: >
+                  The Employee role includes the responsibility to view their own submission
+                  history.
+              - id: "AC22"
+                title: "Employee can view own wellness statistics"
+                description: >
+                  The Employee role includes the responsibility to view their own wellness
+                  statistics.
+
+      - id: "F3"
+        title: "Role-Based Authorization Enforcement"
+        description: >
+          Enforces that user access to screens and actions is gated by the assigned role,
+          applying the security business rules and acceptance criteria that govern
+          authentication state and authorization boundaries across the application.
+        stories:
+          - id: "S6"
+            title: "Enforce authenticated access only"
+            description: >
+              Restrict all application functionality to authenticated users and prevent
+              unauthorized navigation to protected URLs.
+            acceptance_criteria:
+              - id: "AC23"
+                title: "Only authenticated users can access the application (BR-001, AC-SEC-001)"
+                description: >
+                  Only active users can log in (BR-001), and only authenticated users shall
+                  access the application (AC-SEC-001).
+              - id: "AC24"
+                title: "Users cannot directly access unauthorized URLs (AC-SEC-005)"
+                description: >
+                  Users shall not be able to directly access unauthorized URLs, regardless
+                  of authentication state.
+
+          - id: "S7"
+            title: "Enforce role-scoped screen access"
+            description: >
+              Restrict each screen and feature to only the roles permitted to use it,
+              per BR-002 and AC-SEC-002.
+            acceptance_criteria:
+              - id: "AC25"
+                title: "Users can only access screens based on assigned role (BR-002)"
+                description: >
+                  Users can only access screens based on their assigned role.
+              - id: "AC26"
+                title: "Users only access screens permitted by their role (AC-SEC-002)"
+                description: >
+                  Users shall only access screens permitted by their role.
+
+          - id: "S8"
+            title: "Enforce password and account-status security rules"
+            description: >
+              Ensure passwords are never stored in plaintext and that inactive accounts are
+              barred from authentication, per BR-005 and the security acceptance criteria.
+            acceptance_criteria:
+              - id: "AC27"
+                title: "Passwords are stored in hashed format (AC-SEC-003)"
+                description: >
+                  Passwords shall be stored in hashed format, consistent with the
+                  Non-Functional Requirement that passwords must be stored in
+                  encrypted/hash format.
+              - id: "AC28"
+                title: "Inactive users cannot log in (BR-005, AC-SEC-004)"
+                description: >
+                  Inactive users cannot login (BR-005); inactive users shall not be allowed
+                  to log in (AC-SEC-004).
+
+  - id: "E2"
+    title: "Database Design and Entity Relationships"
+    description: >
+      Defines the relational schema underpinning EWT: the Role, Department, User, and
+      WellnessEntry tables with their columns, data types, sample data, and the
+      one-to-many/many-to-one relationships connecting them.
+    features:
+      - id: "F4"
+        title: "Core Reference and Identity Tables"
+        description: >
+          Defines the Role, Department, and User tables that establish identity,
+          organizational structure, and access control reference data.
+        stories:
+          - id: "S9"
+            title: "Define Role table schema and sample data"
+            description: >
+              Persist the set of system roles with identifying metadata and seed sample
+              role records.
+            acceptance_criteria:
+              - id: "AC29"
+                title: "Role table defines required columns"
+                description: >
+                  The Role table includes RoleId (INT, PK), RoleName (VARCHAR(50)),
+                  Description (VARCHAR(200)), IsActive (BIT), and CreatedDate (DATETIME).
+              - id: "AC30"
+                title: "Role table is seeded with sample data"
+                description: >
+                  Sample Role data includes RoleId 1 = Administrator, RoleId 2 = Manager,
+                  and RoleId 3 = Employee.
+
+          - id: "S10"
+            title: "Define Department table schema"
+            description: >
+              Persist organizational departments that users can be associated with.
+            acceptance_criteria:
+              - id: "AC31"
+                title: "Department table defines required columns"
+                description: >
+                  The Department table includes DepartmentId (INT, PK), DepartmentName
+                  (VARCHAR(100)), IsActive (BIT), and CreatedDate (DATETIME).
+
+          - id: "S11"
+            title: "Define User table schema and status values"
+            description: >
+              Persist user identity, credentials, organizational assignment, and account
+              lifecycle fields.
+            acceptance_criteria:
+              - id: "AC32"
+                title: "User table defines required columns"
+                description: >
+                  The User table includes UserId (INT, PK), EmployeeCode (VARCHAR(20)),
+                  FirstName (VARCHAR(100)), LastName (VARCHAR(100)), Email (VARCHAR(200)),
+                  PasswordHash (VARCHAR(500)), DepartmentId (INT, FK), RoleId (INT, FK),
+                  JoiningDate (DATE), Status (VARCHAR(20)), LastLoginDate (DATETIME), and
+                  CreatedDate (DATETIME).
+              - id: "AC33"
+                title: "User Status field is constrained to defined values"
+                description: >
+                  The User.Status field accepts only the values "Active" or "Inactive".
+
+      - id: "F5"
+        title: "Wellness Data Table"
+        description: >
+          Defines the WellnessEntry table that stores each employee's daily wellness
+          submission data and computed wellness score.
+        stories:
+          - id: "S12"
+            title: "Define WellnessEntry table schema"
+            description: >
+              Persist one wellness submission per employee per day with all submitted
+              metrics and the derived wellness score.
+            acceptance_criteria:
+              - id: "AC34"
+                title: "WellnessEntry table defines required columns"
+                description: >
+                  The WellnessEntry table includes EntryId (INT, PK), UserId (INT, FK),
+                  EntryDate (DATE), WorkHours (DECIMAL(4,2)), StressLevel (INT), Mood
+                  (VARCHAR(20)), SleepHours (DECIMAL(4,2)), EnergyLevel (VARCHAR(20)),
+                  Comments (VARCHAR(500)), WellnessScore (DECIMAL(5,2)), and CreatedDate
+                  (DATETIME).
+
+      - id: "F6"
+        title: "Entity Relationships"
+        description: >
+          Establishes the referential relationships connecting Role, User, Department, and
+          WellnessEntry entities.
+        stories:
+          - id: "S13"
+            title: "Define Role-to-User and User-to-Department relationships"
+            description: >
+              Each Role can be associated with many Users, and each User belongs to exactly
+              one Department.
+            acceptance_criteria:
+              - id: "AC35"
+                title: "Role has a one-to-many relationship with User"
+                description: >
+                  One Role record relates to many (M) User records (Role 1 — M User).
+              - id: "AC36"
+                title: "User has a many-to-one relationship with Department"
+                description: >
+                  Many (M) User records relate to one (1) Department record (User M — 1
+                  Department).
+
+          - id: "S14"
+            title: "Define User-to-WellnessEntry relationship"
+            description: >
+              Each User can have many associated WellnessEntry records.
+            acceptance_criteria:
+              - id: "AC37"
+                title: "User has a one-to-many relationship with WellnessEntry"
+                description: >
+                  One User record relates to many (M) WellnessEntry records (User 1 — M
+                  WellnessEntry).
+
+  - id: "E3"
+    title: "Authentication and Login Experience"
+    description: >
+      Implements the Login screen, its fields, actions, validation rules, and
+      role-based post-login redirection behavior.
+    features:
+      - id: "F7"
+        title: "Login Screen UI and Fields"
+        description: >
+          Provides the Login page used to authenticate users and route them according to
+          their role.
+        stories:
+          - id: "S15"
+            title: "Build Login screen layout"
+            description: >
+              Construct the Login page with email address and password input fields and a
+              login action, fulfilling the stated purpose of authenticating users and
+              redirecting them based on role.
+            acceptance_criteria:
+              - id: "AC38"
+                title: "Login screen displays Email Address textbox"
+                description: >
+                  The Login page includes an "Email Address" field rendered as a textbox.
+              - id: "AC39"
+                title: "Login screen displays Password field"
+                description: >
+                  The Login page includes a "Password" field rendered as a password input.
+              - id: "AC40"
+                title: "Login screen provides a Login action"
+                description: >
+                  The Login page exposes a "Login" action that submits the entered
+                  credentials.
+
+      - id: "F8"
+        title: "Login Validation Rules"
+        description: >
+          Enforces field-level and credential-level validation rules LV-001 through LV-005
+          on the Login screen.
+        stories:
+          - id: "S16"
+            title: "Validate login field presence and format"
+            description: >
+              Enforce that email and password are provided and that email follows a valid
+              format before authentication is attempted.
+            acceptance_criteria:
+              - id: "AC41"
+                title: "Email is mandatory (LV-001)"
+                description: >
+                  The system enforces validation rule LV-001: Email is mandatory.
+              - id: "AC42"
+                title: "Email must be valid format (LV-002)"
+                description: >
+                  The system enforces validation rule LV-002: Email must be valid format.
+              - id: "AC43"
+                title: "Password is mandatory (LV-003)"
+                description: >
+                  The system enforces validation rule LV-003: Password is mandatory.
+
+          - id: "S17"
+            title: "Validate account status and credential correctness"
+            description: >
+              Enforce that only active users with correct credentials are authenticated,
+              and surface appropriate errors otherwise.
+            acceptance_criteria:
+              - id: "AC44"
+                title: "User must be Active (LV-004)"
+                description: >
+                  The system enforces validation rule LV-004: User must be Active.
+              - id: "AC45"
+                title: "Invalid credentials display an error (LV-005)"
+                description: >
+                  The system enforces validation rule LV-005: Invalid credentials should
+                  display an error.
+
+          - id: "S18"
+            title: "Login Acceptance Behavior and Role-Based Redirection"
+            description: >
+              Defines the end-to-end login outcomes for valid, inactive, and invalid login
+              attempts, plus role-based landing page redirection.
+            acceptance_criteria:
+              - id: "AC46"
+                title: "Registered active user with valid credentials is logged in (AC-LGN-001)"
+                description: >
+                  Given a registered active user, when valid email and password are entered,
+                  then the user shall be logged into the system.
+              - id: "AC47"
+                title: "Inactive account login shows inactive message (AC-LGN-002)"
+                description: >
+                  Given an inactive user account, when the user attempts to login, then the
+                  system shall display "User account is inactive".
+              - id: "AC48"
+                title: "Invalid credentials show an appropriate error message (AC-LGN-003)"
+                description: >
+                  Given invalid credentials, when login is attempted, then the system shall
+                  display an appropriate error message.
+              - id: "AC49"
+                title: "Successful login redirects based on role (AC-LGN-004)"
+                description: >
+                  Given a successful login, when authentication is completed, then the user
+                  shall be redirected to the appropriate landing page based on role.
+              - id: "AC50"
+                title: "Administrator and Manager land on Dashboard"
+                description: >
+                  Per the post-login behavior table, Administrator and Manager roles are
+                  redirected to the Dashboard landing page after successful login.
+              - id: "AC51"
+                title: "Employee lands on My Wellness Dashboard"
+                description: >
+                  Per the post-login behavior table, the Employee role is redirected to the
+                  "My Wellness Dashboard" landing page after successful login.
+
+  - id: "E4"
+    title: "Administrative Management: Users and Departments"
+    description: >
+      Implements the Administrator-only User Management, Add/Edit User, and Department
+      Management screens, including their grids, actions, fields, and validation rules.
+    features:
+      - id: "F9"
+        title: "User Management Screen"
+        description: >
+          Provides an Administrator-only grid for viewing and managing all employee user
+          accounts, with create/edit/activate/deactivate actions.
+        stories:
+          - id: "S19"
+            title: "Build User Management grid"
+            description: >
+              Display a grid of users restricted to Administrator access, listing key
+              identity and access attributes for each user.
+            acceptance_criteria:
+              - id: "AC52"
+                title: "User Management screen is Administrator-only"
+                description: >
+                  The User Management screen is accessible to the Administrator role only.
+              - id: "AC53"
+                title: "User Management grid displays required columns"
+                description: >
+                  The grid displays Employee Code, Name, Email, Department, Role, and
+                  Status columns.
+
+          - id: "S20"
+            title: "Implement User Management actions"
+            description: >
+              Provide Administrator actions to create, edit, activate, and deactivate user
+              accounts directly from the management grid.
+            acceptance_criteria:
+              - id: "AC54"
+                title: "Add User action is available"
+                description: >
+                  The User Management screen provides an "Add User" action.
+              - id: "AC55"
+                title: "Edit User action is available"
+                description: >
+                  The User Management screen provides an "Edit User" action.
+              - id: "AC56"
+                title: "Activate User action is available"
+                description: >
+                  The User Management screen provides an "Activate User" action.
+              - id: "AC57"
+                title: "Deactivate User action is available"
+                description: >
+                  The User Management screen provides a "Deactivate User" action.
+
+          - id: "S21"
+            title: "User Management acceptance behavior"
+            description: >
+              Define the functional outcomes of user creation, editing, status changes,
+              duplicate prevention, and searchability on the User Management screen.
+            acceptance_criteria:
+              - id: "AC58"
+                title: "Administrator can create a new user (AC-USR-001)"
+                description: >
+                  Administrator shall be able to create a new user.
+              - id: "AC59"
+                title: "Administrator can edit an existing user (AC-USR-002)"
+                description: >
+                  Administrator shall be able to edit an existing user.
+              - id: "AC60"
+                title: "Administrator can activate or deactivate users (AC-USR-003)"
+                description: >
+                  Administrator shall be able to activate or deactivate users.
+              - id: "AC61"
+                title: "Employee Code must be unique (AC-USR-004, BR-003)"
+                description: >
+                  Employee Code must be unique, consistent with business rule BR-003.
+              - id: "AC62"
+                title: "Email address must be unique (AC-USR-005, BR-004)"
+                description: >
+                  Email address must be unique, consistent with business rule BR-004.
+              - id: "AC63"
+                title: "System prevents duplicate users (AC-USR-006)"
+                description: >
+                  System shall prevent duplicate users.
+              - id: "AC64"
+                title: "Users are searchable by name, email, department, and role (AC-USR-007)"
+                description: >
+                  Users shall be searchable by name, email, department, and role.
+
+      - id: "F10"
+        title: "Add/Edit User Form"
+        description: >
+          Provides the form used to create or edit a user, including all mandatory fields
+          and field-level validation rules.
+        stories:
+          - id: "S22"
+            title: "Build Add/Edit User form fields"
+            description: >
+              Render the Add/Edit User form with all required identity, organizational, and
+              lifecycle fields, each marked mandatory.
+            acceptance_criteria:
+              - id: "AC65"
+                title: "Employee Code field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Employee Code" field.
+              - id: "AC66"
+                title: "First Name field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "First Name" field.
+              - id: "AC67"
+                title: "Last Name field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Last Name" field.
+              - id: "AC68"
+                title: "Email field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Email" field.
+              - id: "AC69"
+                title: "Department field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Department" field.
+              - id: "AC70"
+                title: "Role field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Role" field.
+              - id: "AC71"
+                title: "Joining Date field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Joining Date" field.
+              - id: "AC72"
+                title: "Status field is present and mandatory"
+                description: >
+                  The Add/Edit User form includes a mandatory "Status" field.
+
+          - id: "S23"
+            title: "Validate Add/Edit User form submissions"
+            description: >
+              Enforce uniqueness and date-range validation rules UV-001 through UV-003 on
+              form submission, with corresponding field-level acceptance criteria.
+            acceptance_criteria:
+              - id: "AC73"
+                title: "Employee Code must be unique (UV-001)"
+                description: >
+                  The system enforces validation rule UV-001: Employee Code must be unique.
+              - id: "AC74"
+                title: "Email must be unique (UV-002)"
+                description: >
+                  The system enforces validation rule UV-002: Email must be unique.
+              - id: "AC75"
+                title: "Joining Date cannot be a future date (UV-003)"
+                description: >
+                  The system enforces validation rule UV-003: Joining Date cannot be future
+                  date.
+              - id: "AC76"
+                title: "System requires Employee Code (AC-EMP-001)"
+                description: >
+                  System shall require Employee Code.
+              - id: "AC77"
+                title: "System requires First Name (AC-EMP-002)"
+                description: >
+                  System shall require First Name.
+              - id: "AC78"
+                title: "System requires Last Name (AC-EMP-003)"
+                description: >
+                  System shall require Last Name.
+              - id: "AC79"
+                title: "System requires Email (AC-EMP-004)"
+                description: >
+                  System shall require Email.
+              - id: "AC80"
+                title: "System requires Department (AC-EMP-005)"
+                description: >
+                  System shall require Department.
+              - id: "AC81"
+                title: "System requires Role (AC-EMP-006)"
+                description: >
+                  System shall require Role.
+              - id: "AC82"
+                title: "Joining Date cannot be greater than current date (AC-EMP-007)"
+                description: >
+                  Joining Date cannot be greater than the current date.
+              - id: "AC83"
+                title: "System displays validation messages for invalid inputs (AC-EMP-008)"
+                description: >
+                  System shall display validation messages for invalid inputs.
+
+      - id: "F11"
+        title: "Department Management Screen"
+        description: >
+          Provides an Administrator-only screen to view, create, and edit organizational
+          departments.
+        stories:
+          - id: "S24"
+            title: "Build Department Management grid"
+            description: >
+              Display a grid of departments restricted to Administrator access, listing
+              department name, status, and creation date.
+            acceptance_criteria:
+              - id: "AC84"
+                title: "Department Management screen is Administrator-only"
+                description: >
+                  The Department Management screen is accessible to the Administrator role
+                  only.
+              - id: "AC85"
+                title: "Department Management grid displays required columns"
+                description: >
+                  The grid displays Department Name, Status, and Created Date columns.
+
+          - id: "S25"
+            title: "Implement Department Management actions and validations"
+            description: >
+              Provide Administrator actions to add and edit departments, enforcing
+              uniqueness and mandatory-field validation rules DV-001 and DV-002.
+            acceptance_criteria:
+              - id: "AC86"
+                title: "Add Department action is available"
+                description: >
+                  The Department Management screen provides an "Add Department" action.
+              - id: "AC87"
+                title: "Edit Department action is available"
+                description: >
+                  The Department Management screen provides an "Edit Department" action.
+              - id: "AC88"
+                title: "Department Name must be unique (DV-001, AC-DEPT-003)"
+                description: >
+                  The system enforces validation rule DV-001 and AC-DEPT-003: Department
+                  Name must be unique.
+              - id: "AC89"
+                title: "Department Name is mandatory (DV-002, AC-DEPT-004)"
+                description: >
+                  The system enforces validation rule DV-002 and AC-DEPT-004: Department
+                  Name is mandatory.
+
+          - id: "S26"
+            title: "Department Management acceptance behavior"
+            description: >
+              Define the functional outcomes of creating, editing, and restricting
+              inactive departments on the Department Management screen.
+            acceptance_criteria:
+              - id: "AC90"
+                title: "Administrator can create a department (AC-DEPT-001)"
+                description: >
+                  Administrator shall be able to create a department.
+              - id: "AC91"
+                title: "Administrator can edit a department (AC-DEPT-002)"
+                description: >
+                  Administrator shall be able to edit a department.
+              - id: "AC92"
+                title: "Inactive departments are unavailable for user assignment (AC-DEPT-005)"
+                description: >
+                  Inactive departments shall not be available for user assignment.
+
+  - id: "E5"
+    title: "Daily Wellness Entry and Wellness History"
+    description: >
+      Implements the Employee-facing Daily Wellness Entry form and the Wellness History
+      screen, including all input fields, dropdown value sets, validation rules, automatic
+      score calculation, and history filtering/sorting behavior.
+    features:
+      - id: "F12"
+        title: "Daily Wellness Entry Form"
+        description: >
+          Provides the Employee-accessible form used to submit a single day's wellness
+          metrics, including date, work hours, stress level, mood, sleep hours, energy
+          level, and comments.
+        stories:
+          - id: "S27"
+            title: "Build Daily Wellness Entry form fields"
+            description: >
+              Render the Daily Wellness Entry form with date, numeric, slider, dropdown,
+              and text area controls for each required wellness metric, restricted to
+              Employee access.
+            acceptance_criteria:
+              - id: "AC93"
+                title: "Daily Wellness Entry screen is Employee-accessible"
+                description: >
+                  The Daily Wellness Entry screen is accessible to the Employee role.
+              - id: "AC94"
+                title: "Entry Date field uses a Date Picker"
+                description: >
+                  The Daily Wellness Entry form includes an "Entry Date" field rendered as
+                  a Date Picker.
+              - id: "AC95"
+                title: "Work Hours field is numeric"
+                description: >
+                  The Daily Wellness Entry form includes a "Work Hours" field rendered as a
+                  numeric input.
+              - id: "AC96"
+                title: "Stress Level field is a 1-10 slider"
+                description: >
+                  The Daily Wellness Entry form includes a "Stress Level" field rendered as
+                  a slider ranging from 1 to 10.
+              - id: "AC97"
+                title: "Mood field is a dropdown"
+                description: >
+                  The Daily Wellness Entry form includes a "Mood" field rendered as a
+                  dropdown.
+              - id: "AC98"
+                title: "Sleep Hours field is numeric"
+                description: >
+                  The Daily Wellness Entry form includes a "Sleep Hours" field rendered as a
+                  numeric input.
+              - id: "AC99"
+                title: "Energy Level field is a dropdown"
+                description: >
+                  The Daily Wellness Entry form includes an "Energy Level" field rendered
+                  as a dropdown.
+              - id: "AC100"
+                title: "Comments field is a text area"
+                description: >
+                  The Daily Wellness Entry form includes a "Comments" field rendered as a
+                  text area.
+
+          - id: "S28"
+            title: "Define Mood and Energy Level dropdown value sets"
+            description: >
+              Constrain the Mood and Energy Level dropdowns to their defined enumerations.
+            acceptance_criteria:
+              - id: "AC101"
+                title: "Mood dropdown offers the defined value set"
+                description: >
+                  The Mood dropdown offers exactly the values Excellent, Good, Average,
+                  Poor, and Very Poor.
+              - id: "AC102"
+                title: "Energy Level dropdown offers the defined value set"
+                description: >
+                  The Energy Level dropdown offers exactly the values High, Medium, and Low.
+
+          - id: "S29"
+            title: "Validate Daily Wellness Entry submissions"
+            description: >
+              Enforce one-entry-per-day, date, and range/length validation rules WV-001
+              through WV-006 before accepting a wellness submission.
+            acceptance_criteria:
+              - id: "AC103"
+                title: "One entry per day per employee (WV-001, AC-WELL-002)"
+                description: >
+                  The system enforces validation rule WV-001: one entry per day per
+                  employee; the employee shall not be able to submit more than one entry
+                  for the same date (AC-WELL-002).
+              - id: "AC104"
+                title: "Future date not allowed (WV-002, AC-WELL-003)"
+                description: >
+                  The system enforces validation rule WV-002: future date not allowed; entry
+                  date shall not allow future dates (AC-WELL-003).
+              - id: "AC105"
+                title: "Work Hours must be between 1 and 16 (WV-003, AC-WELL-004, BR-008)"
+                description: >
+                  The system enforces validation rule WV-003 and business rule BR-008: Work
+                  Hours must be between 1 and 16; Work Hours shall only accept values
+                  between 1 and 16 (AC-WELL-004).
+              - id: "AC106"
+                title: "Sleep Hours must be between 0 and 24 (WV-004, AC-WELL-005, BR-009)"
+                description: >
+                  The system enforces validation rule WV-004 and business rule BR-009:
+                  Sleep Hours must be between 0 and 24; Sleep Hours shall only accept values
+                  between 0 and 24 (AC-WELL-005).
+              - id: "AC107"
+                title: "Stress Level must be between 1 and 10 (WV-005, AC-WELL-006, BR-010)"
+                description: >
+                  The system enforces validation rule WV-005 and business rule BR-010:
+                  Stress Level must be between 1 and 10; Stress Level shall only accept
+                  values between 1 and 10 (AC-WELL-006).
+              - id: "AC108"
+                title: "Comments maximum 500 characters (WV-006, AC-WELL-007, BR-011)"
+                description: >
+                  The system enforces validation rule WV-006 and business rule BR-011:
+                  Comments maximum 500 characters; comments shall not exceed 500 characters
+                  (AC-WELL-007).
+
+          - id: "S30"
+            title: "Wellness Entry submission and edit behavior"
+            description: >
+              Define the end-to-end behavior of submitting a wellness entry, including
+              automatic score calculation, confirmation messaging, and same-day edit
+              permission.
+            acceptance_criteria:
+              - id: "AC109"
+                title: "Employee can submit a daily wellness entry (AC-WELL-001, BR-006)"
+                description: >
+                  Employee shall be able to submit a daily wellness entry, limited to one
+                  per day per business rule BR-006.
+              - id: "AC110"
+                title: "Future dates are not allowed (BR-007)"
+                description: >
+                  Future dates are not allowed for the entry date, per business rule BR-007.
+              - id: "AC111"
+                title: "Wellness Score is calculated automatically on save (AC-WELL-008, BR-014, AC-BR-003)"
+                description: >
+                  Wellness Score shall be calculated automatically when the record is saved,
+                  using the configured formula defined in business rule BR-014: ((10 -
+                  StressLevel) x 5) + (SleepHours x 2) + (Energy Score x 5), where Energy
+                  Score maps High = 3, Medium = 2, Low = 1 (AC-BR-003).
+              - id: "AC112"
+                title: "Success message displayed after submission (AC-WELL-009)"
+                description: >
+                  System shall display a success message after successful submission.
+              - id: "AC113"
+                title: "Employee can edit only today's submission (AC-WELL-010)"
+                description: >
+                  Employee shall be able to edit today's submission only.
+
+      - id: "F13"
+        title: "Wellness History Screen"
+        description: >
+          Provides a screen to view previously submitted wellness entries with filtering
+          and sorted grid display.
+        stories:
+          - id: "S31"
+            title: "Build Wellness History filters and grid"
+            description: >
+              Render the Wellness History screen with date range, mood, and stress level
+              filters and a grid of historical entries.
+            acceptance_criteria:
+              - id: "AC114"
+                title: "Date Range filter is available"
+                description: >
+                  The Wellness History screen provides a "Date Range" filter.
+              - id: "AC115"
+                title: "Mood filter is available"
+                description: >
+                  The Wellness History screen provides a "Mood" filter.
+              - id: "AC116"
+                title: "Stress Level filter is available"
+                description: >
+                  The Wellness History screen provides a "Stress Level" filter.
+              - id: "AC117"
+                title: "Wellness History grid displays required columns"
+                description: >
+                  The grid displays Date, Work Hours, Stress Level, Mood, Sleep Hours,
+                  Energy Level, and Wellness Score columns.
+
+          - id: "S32"
+            title: "Wellness History acceptance behavior"
+            description: >
+              Define filtering, sorting, and display requirements for the Wellness History
+              screen as experienced by the Employee.
+            acceptance_criteria:
+              - id: "AC118"
+                title: "Employee can view their wellness history (AC-HIST-001)"
+                description: >
+                  Employee shall be able to view their wellness history.
+              - id: "AC119"
+                title: "System supports filtering by date range (AC-HIST-002)"
+                description: >
+                  System shall support filtering by date range.
+              - id: "AC120"
+                title: "System supports filtering by mood (AC-HIST-003)"
+                description: >
+                  System shall support filtering by mood.
+              - id: "AC121"
+                title: "System supports filtering by stress level (AC-HIST-004)"
+                description: >
+                  System shall support filtering by stress level.
+              - id: "AC122"
+                title: "Results are sorted by Entry Date descending (AC-HIST-005)"
+                description: >
+                  Results shall be sorted by Entry Date descending.
+              - id: "AC123"
+                title: "Wellness Score is displayed for each entry (AC-HIST-006)"
+                description: >
+                  System shall display Wellness Score for each entry.
+
+  - id: "E6"
+    title: "Dashboards, Employee Wellness Details, and Reporting Analytics"
+    description: >
+      Implements the role-aware Wellness Dashboard with KPI cards and widgets, the
+      Employee Wellness Details screen for Administrators and Managers, and the underlying
+      dashboard business rules, formulas, and classification thresholds.
+    features:
+      - id: "F14"
+        title: "Wellness Dashboard KPIs and Widgets"
+        description: >
+          Provides summary statistics and wellness indicators through KPI cards and visual
+          widgets on the Wellness Dashboard screen.
+        stories:
+          - id: "S33"
+            title: "Build Dashboard KPI cards"
+            description: >
+              Render the six KPI cards summarizing organization-wide wellness state, each
+              backed by its defined calculation.
+            acceptance_criteria:
+              - id: "AC124"
+                title: "Total Employees KPI displays total active users"
+                description: >
+                  The "Total Employees" KPI card displays the total count of active users.
+              - id: "AC125"
+                title: "Departments KPI displays total departments"
+                description: >
+                  The "Departments" KPI card displays the total count of departments.
+              - id: "AC126"
+                title: "Entries Submitted Today KPI displays today's submissions"
+                description: >
+                  The "Entries Submitted Today" KPI card displays the count of today's
+                  wellness submissions.
+              - id: "AC127"
+                title: "Average Wellness Score KPI displays the average score"
+                description: >
+                  The "Average Wellness Score" KPI card displays the average wellness score
+                  across applicable entries.
+              - id: "AC128"
+                title: "Average Stress Level KPI displays average stress"
+                description: >
+                  The "Average Stress Level" KPI card displays the average stress level
+                  across applicable entries.
+              - id: "AC129"
+                title: "Employees Requiring Attention KPI uses stress >= 8"
+                description: >
+                  The "Employees Requiring Attention" KPI card counts employees whose
+                  Stress Level is greater than or equal to 8.
+
+          - id: "S34"
+            title: "Build Wellness Status Distribution widget"
+            description: >
+              Render a widget summarizing the distribution of employees across wellness
+              status categories.
+            acceptance_criteria:
+              - id: "AC130"
+                title: "Wellness Status Distribution shows Healthy category"
+                description: >
+                  The Wellness Status Distribution widget displays a "Healthy" category.
+              - id: "AC131"
+                title: "Wellness Status Distribution shows Moderate category"
+                description: >
+                  The Wellness Status Distribution widget displays a "Moderate" category.
+              - id: "AC132"
+                title: "Wellness Status Distribution shows Critical category"
+                description: >
+                  The Wellness Status Distribution widget displays a "Critical" category.
+
+          - id: "S35"
+            title: "Build Department Wellness Score widget"
+            description: >
+              Render a widget showing each department's wellness score using the defined
+              formula.
+            acceptance_criteria:
+              - id: "AC133"
+                title: "Department Wellness Score uses defined formula (AC-DASH-006)"
+                description: >
+                  The Department Wellness Score widget calculates each department's score
+                  as 100 - (Average Stress Level x 10), and the dashboard shall display
+                  Department Wellness Scores.
+
+          - id: "S36"
+            title: "Build Weekly Wellness Trend and Top 5 High Stress Employees widgets"
+            description: >
+              Render the 7-day wellness trend chart and the ranked list of the five
+              employees with the highest stress levels.
+            acceptance_criteria:
+              - id: "AC134"
+                title: "Weekly Wellness Trend shows last 7 days (AC-DASH-007)"
+                description: >
+                  The Weekly Wellness Trend widget displays the average wellness score for
+                  the last 7 days as a chart; the dashboard shall display the Weekly
+                  Wellness Trend chart.
+              - id: "AC135"
+                title: "Top 5 High Stress Employees widget is displayed"
+                description: >
+                  The Top 5 High Stress Employees widget displays the employees having the
+                  highest stress levels.
+
+          - id: "S37"
+            title: "Dashboard core acceptance behavior"
+            description: >
+              Define the baseline display and data-freshness requirements for the
+              Wellness Dashboard screen.
+            acceptance_criteria:
+              - id: "AC136"
+                title: "Dashboard displays Total Employees (AC-DASH-001)"
+                description: >
+                  Dashboard shall display Total Employees.
+              - id: "AC137"
+                title: "Dashboard displays Entries Submitted Today (AC-DASH-002)"
+                description: >
+                  Dashboard shall display Entries Submitted Today.
+              - id: "AC138"
+                title: "Dashboard displays Average Wellness Score (AC-DASH-003)"
+                description: >
+                  Dashboard shall display Average Wellness Score.
+              - id: "AC139"
+                title: "Dashboard displays Average Stress Level (AC-DASH-004)"
+                description: >
+                  Dashboard shall display Average Stress Level.
+              - id: "AC140"
+                title: "Dashboard displays Employees Requiring Attention (AC-DASH-005)"
+                description: >
+                  Dashboard shall display Employees Requiring Attention.
+              - id: "AC141"
+                title: "Dashboard data reflects the latest database state (AC-DASH-008)"
+                description: >
+                  Dashboard data shall reflect the latest data available in the database.
+
+      - id: "F15"
+        title: "Employee Wellness Details Screen"
+        description: >
+          Provides Administrators and Managers a detailed, single-employee view combining
+          profile information, aggregate statistics, and 30-day trend charts.
+        stories:
+          - id: "S38"
+            title: "Build Employee Wellness Details profile and statistics"
+            description: >
+              Display employee identity and organizational information alongside
+              aggregate wellness statistics, restricted to Administrator and Manager
+              access.
+            acceptance_criteria:
+              - id: "AC142"
+                title: "Employee Wellness Details is restricted to Administrator and Manager"
+                description: >
+                  The Employee Wellness Details screen is accessible to the Administrator
+                  and Manager roles only.
+              - id: "AC143"
+                title: "Employee Information section displays required fields"
+                description: >
+                  The Employee Information section displays Employee Code, Employee Name,
+                  Department, and Joining Date.
+              - id: "AC144"
+                title: "Statistics section displays required averages"
+                description: >
+                  The Statistics section displays Average Wellness Score, Average Stress
+                  Level, Average Work Hours, and Average Sleep Hours.
+
+          - id: "S39"
+            title: "Build Employee Wellness Details trend charts"
+            description: >
+              Display 30-day wellness and stress trend charts for the selected employee.
+            acceptance_criteria:
+              - id: "AC145"
+                title: "Wellness Trend chart shows last 30 days (AC-DET-007)"
+                description: >
+                  The Wellness Trend chart displays the employee's wellness trend for the
+                  last 30 days.
+              - id: "AC146"
+                title: "Stress Trend chart shows last 30 days (AC-DET-008)"
+                description: >
+                  The Stress Trend chart displays the employee's stress level trend for the
+                  last 30 days.
+
+          - id: "S40"
+            title: "Employee Wellness Details acceptance behavior"
+            description: >
+              Define the full set of acceptance criteria for viewing employee wellness
+              details as Administrator or Manager.
+            acceptance_criteria:
+              - id: "AC147"
+                title: "Managers and Administrators can view employee wellness details (AC-DET-001)"
+                description: >
+                  Managers and Administrators shall be able to view employee wellness
+                  details.
+              - id: "AC148"
+                title: "System displays employee profile information (AC-DET-002)"
+                description: >
+                  System shall display employee profile information.
+              - id: "AC149"
+                title: "System displays average wellness score (AC-DET-003)"
+                description: >
+                  System shall display average wellness score.
+              - id: "AC150"
+                title: "System displays average stress level (AC-DET-004)"
+                description: >
+                  System shall display average stress level.
+              - id: "AC151"
+                title: "System displays average work hours (AC-DET-005)"
+                description: >
+                  System shall display average work hours.
+              - id: "AC152"
+                title: "System displays average sleep hours (AC-DET-006)"
+                description: >
+                  System shall display average sleep hours.
+
+      - id: "F16"
+        title: "Dashboard and Wellness Business Rules"
+        description: >
+          Codifies the formulas and thresholds that drive dashboard calculations and
+          wellness classification, ensuring KPI and widget values update consistently with
+          new submissions.
+        stories:
+          - id: "S41"
+            title: "Apply Employees Requiring Attention threshold"
+            description: >
+              Flag employees as requiring attention based on a stress level threshold.
+            acceptance_criteria:
+              - id: "AC153"
+                title: "Stress Level >= 8 flags attention (BR-012, AC-BR-001)"
+                description: >
+                  Per business rule BR-012, the condition for "Employees Requiring
+                  Attention" is Stress Level >= 8; employees with Stress Level >= 8 shall
+                  be included in "Employees Requiring Attention" (AC-BR-001).
+
+          - id: "S42"
+            title: "Apply Department Wellness Score formula"
+            description: >
+              Compute each department's wellness score from its average stress level.
+            acceptance_criteria:
+              - id: "AC154"
+                title: "Department Wellness Score formula (BR-013, AC-BR-002)"
+                description: >
+                  Per business rule BR-013 and AC-BR-002, Department Wellness Score shall be
+                  calculated as 100 - (Average Stress Level x 10).
+
+          - id: "S43"
+            title: "Apply Wellness Score formula and Energy Score mapping"
+            description: >
+              Compute the per-entry Wellness Score from stress level, sleep hours, and a
+              mapped energy score.
+            acceptance_criteria:
+              - id: "AC155"
+                title: "Wellness Score formula (BR-014)"
+                description: >
+                  Per business rule BR-014, Wellness Score is calculated as: ((10 -
+                  StressLevel) x 5) + (SleepHours x 2) + (Energy Score x 5).
+              - id: "AC156"
+                title: "Energy Score mapping is applied (BR-014)"
+                description: >
+                  Per business rule BR-014, Energy Level maps to Energy Score as follows:
+                  High = 3, Medium = 2, Low = 1.
+
+          - id: "S44"
+            title: "Apply Wellness Classification thresholds"
+            description: >
+              Classify a computed Wellness Score into Healthy, Moderate, or Critical bands.
+            acceptance_criteria:
+              - id: "AC157"
+                title: "Score 80-100 classifies as Healthy (AC-BR-005)"
+                description: >
+                  A Wellness Score in the range 80-100 shall be classified as "Healthy".
+              - id: "AC158"
+                title: "Score 60-79 classifies as Moderate (AC-BR-005)"
+                description: >
+                  A Wellness Score in the range 60-79 shall be classified as "Moderate".
+              - id: "AC159"
+                title: "Score below 60 classifies as Critical (AC-BR-005)"
+                description: >
+                  A Wellness Score below 60 shall be classified as "Critical".
+
+          - id: "S45"
+            title: "Keep dashboard values current with new submissions"
+            description: >
+              Ensure KPI and widget values reflect the latest submitted wellness data.
+            acceptance_criteria:
+              - id: "AC160"
+                title: "Dashboard KPIs update when new entries are submitted (AC-BR-004)"
+                description: >
+                  Dashboard KPI values shall update when new wellness entries are
+                  submitted.
+
+  - id: "E7"
+    title: "Non-Functional Requirements: Performance and Security"
+    description: >
+      Establishes the performance targets and security baseline that apply across all
+      screens and workflows in EWT.
+    features:
+      - id: "F17"
+        title: "Performance Requirements"
+        description: >
+          Defines maximum acceptable load times for dashboard rendering and search
+          operations.
+        stories:
+          - id: "S46"
+            title: "Enforce dashboard and search load-time targets"
+            description: >
+              Ensure the Wellness Dashboard and search functionality respond within
+              defined performance budgets.
+            acceptance_criteria:
+              - id: "AC161"
+                title: "Dashboard loads within 3 seconds"
+                description: >
+                  The Dashboard shall load within 3 seconds.
+              - id: "AC162"
+                title: "Search results load within 2 seconds"
+                description: >
+                  Search results shall load within 2 seconds.
+
+      - id: "F18"
+        title: "Security Requirements"
+        description: >
+          Defines the baseline security posture required across EWT, covering password
+          storage and authorization enforcement.
+        stories:
+          - id: "S47"
+            title: "Enforce password encryption and role-based authorization"
+            description: >
+              Ensure passwords are never stored in plaintext and that every action is
+              subject to role-based authorization checks.
+            acceptance_criteria:
+              - id: "AC163"
+                title: "Passwords must be stored in encrypted/hash format"
+                description: >
+                  Passwords must be stored in encrypted/hash format.
+              - id: "AC164"
+                title: "Role-based authorization is required"
+                description: >
+                  Role-based authorization is required across the application.

@@ -264,7 +264,8 @@ writing the final fix prompt."""
                 except Exception:
                     pass
             model = getattr(pg_cfg, "groq_model", None) or "llama-3.3-70b-versatile"
-            return self._stream_groq(system_prompt, user_prompt, groq_key, model, label, fallback, on_stdout)
+            groq_max_tokens = getattr(getattr(self._config, "groq", None), "max_tokens", 8192)
+            return self._stream_groq(system_prompt, user_prompt, groq_key, model, label, fallback, on_stdout, max_tokens=groq_max_tokens)
 
         # Ollama path — try Ollama, then cascade to OpenAI on failure
         ollama_cfg = getattr(self._config, "ollama", None)
@@ -297,11 +298,13 @@ writing the final fix prompt."""
             except Exception:
                 pass
         groq_model = getattr(pg_cfg, "groq_model", None) or "llama-3.3-70b-versatile"
+        groq_max_tokens = getattr(getattr(self._config, "groq", None), "max_tokens", 8192)
         if groq_key:
             _emit(f"[prompt-generator] Ollama unavailable — retrying with Groq {groq_model} …")
             result = self._stream_groq(
                 system_prompt, user_prompt, groq_key, groq_model,
                 label, fallback=None, on_stdout=on_stdout,
+                max_tokens=groq_max_tokens,
             )
             if result is not None:
                 return result
@@ -396,6 +399,7 @@ writing the final fix prompt."""
         label: str,
         fallback: str | None,
         on_stdout: Callable[[str], None] | None,
+        max_tokens: int = 8192,
     ) -> str | None:
         """Call Groq's OpenAI-compatible API with streaming."""
 
@@ -409,7 +413,7 @@ writing the final fix prompt."""
             logger.warning("No GROQ_API_KEY — skipping Groq for %s", label)
             return fallback if fallback is not None else None
 
-        _emit(f"[prompt-generator] Calling Groq {model} …")
+        _emit(f"[prompt-generator] Calling Groq {model} (max_tokens={max_tokens}) …")
         logger.info("Generating prompt (%s) via Groq %s", label, model)
 
         try:
@@ -424,6 +428,7 @@ writing the final fix prompt."""
                 model=model,
                 stream=True,
                 temperature=0.7,
+                max_tokens=max_tokens,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -431,14 +436,26 @@ writing the final fix prompt."""
             )
 
             full_text: list[str] = []
+            finish_reason: str | None = None
             for chunk in resp:
-                delta = chunk.choices[0].delta.content  # type: ignore[union-attr]
-                if not delta:
-                    continue
-                full_text.append(delta)
-                _emit(delta)
+                choice = chunk.choices[0]
+                delta = choice.delta.content  # type: ignore[union-attr]
+                if delta:
+                    full_text.append(delta)
+                    _emit(delta)
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
 
             generated = "".join(full_text).strip()
+            if finish_reason == "length":
+                _emit(
+                    f"\n[prompt-generator] WARNING: Groq output was truncated at "
+                    f"{max_tokens} tokens (finish_reason=length). "
+                    "Consider increasing groq.max_tokens in config.yaml."
+                )
+                logger.warning(
+                    "Groq output truncated at %d tokens for %s", max_tokens, label
+                )
             if generated:
                 logger.info("Groq prompt complete (%s, %d chars)", label, len(generated))
                 return generated
