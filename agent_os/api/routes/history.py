@@ -207,7 +207,11 @@ def get_bus_history(
 
 @router.get("/story-queue")
 def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)) -> dict:  # noqa: B008
-    """Return the current story queue state (GitHub Review mode)."""
+    """Return the current story queue state (GitHub Review mode).
+
+    The response now includes epic_id, epic_title, feature_id, feature_title
+    per story row (populated during step_analyse_dependencies in GHR mode).
+    """
     from ...orchestrator.story_queue import StoryQueueManager
 
     mgr = StoryQueueManager(orch.db)
@@ -220,6 +224,88 @@ def get_story_queue(orch: Orchestrator = Depends(get_orchestrator)) -> dict:  # 
         "stories_total": getattr(state, "stories_total", 0),
         "stories": stories,
     }
+
+
+@router.get("/story-queue/hierarchy")
+def get_story_queue_hierarchy(orch: Orchestrator = Depends(get_orchestrator)) -> dict:  # noqa: B008
+    """Return story queue grouped by Epic \u2192 Feature \u2192 Story hierarchy (GHR mode).
+
+    Three response buckets:
+      - ``epics``               \u2014 Scenario A: stories with full Epic + Feature parentage.
+      - ``ungrouped_features``  \u2014 Scenario B: stories with Feature but no Epic.
+      - ``flat_stories``        \u2014 Scenario C: stories with no parent context (flat requirements).
+
+    The frontend renders whichever buckets are non-empty, falling back gracefully
+    to the flat list when the requirements have no hierarchy.
+    """
+    from ...orchestrator.story_queue import StoryQueueManager
+
+    mgr = StoryQueueManager(orch.db)
+    stories = mgr.get_queue_state()
+    state = orch.state_mgr.state
+
+    epics: dict[str, dict] = {}
+    ungrouped_features: dict[str, dict] = {}
+    flat_stories: list[dict] = []
+
+    for s in stories:
+        eid    = s.get("epic_id", "") or ""
+        etitle = s.get("epic_title", "") or ""
+        fid    = s.get("feature_id", "") or ""
+        ftitle = s.get("feature_title", "") or ""
+
+        if eid:
+            # Scenario A \u2014 story has both Epic and (possibly) Feature parentage
+            if eid not in epics:
+                epics[eid] = {
+                    "epic_id":    eid,
+                    "epic_title": etitle,
+                    "features":   {},
+                    "stories":    [],   # stories directly under epic (no feature)
+                }
+            if fid:
+                if fid not in epics[eid]["features"]:
+                    epics[eid]["features"][fid] = {
+                        "feature_id":    fid,
+                        "feature_title": ftitle,
+                        "stories":       [],
+                    }
+                epics[eid]["features"][fid]["stories"].append(s)
+            else:
+                epics[eid]["stories"].append(s)
+        elif fid:
+            # Scenario B \u2014 story has Feature but no Epic
+            if fid not in ungrouped_features:
+                ungrouped_features[fid] = {
+                    "feature_id":    fid,
+                    "feature_title": ftitle,
+                    "stories":       [],
+                }
+            ungrouped_features[fid]["stories"].append(s)
+        else:
+            # Scenario C \u2014 flat story (no Epic / Feature)
+            flat_stories.append(s)
+
+    serialised_epics = [
+        {
+            "epic_id":    e["epic_id"],
+            "epic_title": e["epic_title"],
+            "features":   list(e["features"].values()),
+            "stories":    e["stories"],
+        }
+        for e in epics.values()
+    ]
+
+    return {
+        "mode": getattr(orch.config, "pipeline_mode", "standard") or "standard",
+        "current_story_id":   getattr(state, "current_story_id", None),
+        "stories_completed":  getattr(state, "stories_completed", 0),
+        "stories_total":      getattr(state, "stories_total", 0),
+        "epics":              serialised_epics,
+        "ungrouped_features": list(ungrouped_features.values()),
+        "flat_stories":       flat_stories,
+    }
+
 
 
 @router.get("/story-queue/{story_id}", response_model=StoryQueueDetailResponse)

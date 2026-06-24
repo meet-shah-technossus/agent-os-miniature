@@ -203,21 +203,54 @@ class StoryPipelineRunner:
         self._emit(EventType.STATE_CHANGED, {"step": "analyse_dependencies"})
 
         conn = self.db.conn
+        # Fetch stories with parent_id so we can walk up the tree
         story_rows = conn.execute(
-            "SELECT id, title, description FROM requirements WHERE type = 'story'"
+            "SELECT id, title, description, parent_id FROM requirements WHERE type = 'story'"
         ).fetchall()
 
         raw_stories = []
         for row in story_rows:
+            # ── Acceptance Criteria ───────────────────────────────────────────
             ac_rows = conn.execute(
                 "SELECT title FROM requirements WHERE parent_id = ? AND type = 'acceptance_criteria'",
                 (row["id"],),
             ).fetchall()
+
+            # ── Walk parent tree: Story → Feature → Epic ──────────────────────
+            feature_id = row["parent_id"] or ""
+            feature_title = ""
+            epic_id = ""
+            epic_title = ""
+
+            if feature_id:
+                feat_row = conn.execute(
+                    "SELECT id, title, parent_id FROM requirements"
+                    " WHERE id = ? AND type = 'feature'",
+                    (feature_id,),
+                ).fetchone()
+                if feat_row:
+                    feature_title = feat_row["title"] or ""
+                    parent_epic_id = feat_row["parent_id"] or ""
+                    if parent_epic_id:
+                        epic_row = conn.execute(
+                            "SELECT id, title FROM requirements"
+                            " WHERE id = ? AND type = 'epic'",
+                            (parent_epic_id,),
+                        ).fetchone()
+                        if epic_row:
+                            epic_id    = epic_row["id"] or ""
+                            epic_title = epic_row["title"] or ""
+
             raw_stories.append({
-                "story_id": row["id"],
-                "title": row["title"],
-                "description": row["description"] or "",
+                "story_id":            row["id"],
+                "title":               row["title"],
+                "description":         row["description"] or "",
                 "acceptance_criteria": [ac["title"] for ac in ac_rows],
+                # Parent hierarchy context — stored in story_queue DB and used in prompts
+                "epic_id":             epic_id,
+                "epic_title":          epic_title,
+                "feature_id":          feature_id,
+                "feature_title":       feature_title,
             })
 
         if not raw_stories:
@@ -239,8 +272,16 @@ class StoryPipelineRunner:
         self.state_mgr.update_story_context(stories_total=len(items), stories_completed=0)
         logger.info("[GHR] Queue built — %d stories in execution order", len(items))
         self._emit("queue_built", {"stories": [
-            {"story_id": it.story_id, "title": it.title, "position": it.position,
-             "depends_on": it.depends_on}
+            {
+                "story_id":      it.story_id,
+                "title":         it.title,
+                "position":      it.position,
+                "depends_on":    it.depends_on,
+                "epic_id":       it.epic_id,
+                "epic_title":    it.epic_title,
+                "feature_id":    it.feature_id,
+                "feature_title": it.feature_title,
+            }
             for it in items
         ]})
         self.state_mgr.transition_to(PipelineStatus.QUEUE_READY)
@@ -298,10 +339,29 @@ class StoryPipelineRunner:
             return
 
         acs_md = "\n".join(f"- {ac}" for ac in item.acceptance_criteria) or "(no acceptance criteria)"
+
+        # ── Parent context — Scenario A / B / C ──────────────────────────────
+        # Scenario A (Full hierarchy): Epic + Feature + Story
+        # Scenario B (Feature only):   Feature + Story
+        # Scenario C (Flat list):       Story only  (current behaviour preserved)
+        context_lines: list[str] = []
+        if item.epic_title:
+            context_lines.append(f"# Epic: {item.epic_title}")
+            if item.epic_id:
+                context_lines.append(f"*(Epic ID: {item.epic_id})*")
+            context_lines.append("")
+        if item.feature_title:
+            context_lines.append(f"## Feature: {item.feature_title}")
+            if item.feature_id:
+                context_lines.append(f"*(Feature ID: {item.feature_id})*")
+            context_lines.append("")
+        context_header = "\n".join(context_lines)
+
         requirements_text = (
-            f"## Story: {item.title}\n\n"
+            f"{context_header}"
+            f"### Story: {item.title}\n\n"
             f"{item.description}\n\n"
-            f"### Acceptance Criteria\n{acs_md}\n"
+            f"#### Acceptance Criteria\n{acs_md}\n"
         )
 
         review_json: dict | None = None
@@ -312,6 +372,24 @@ class StoryPipelineRunner:
                     review_json = _json.loads(review_raw) if isinstance(review_raw, str) else review_raw
                 except Exception:
                     review_json = {"raw": str(review_raw)}
+            # Also build parent context header for fix prompts so the code
+            # generator retains Epic/Feature framing during fix iterations
+            if item.epic_title or item.feature_title:
+                fix_context_lines: list[str] = []
+                if item.epic_title:
+                    fix_context_lines.append(f"# Epic: {item.epic_title}")
+                    if item.epic_id:
+                        fix_context_lines.append(f"*(Epic ID: {item.epic_id})*")
+                    fix_context_lines.append("")
+                if item.feature_title:
+                    fix_context_lines.append(f"## Feature: {item.feature_title}")
+                    if item.feature_id:
+                        fix_context_lines.append(f"*(Feature ID: {item.feature_id})*")
+                    fix_context_lines.append("")
+                fix_context_lines.append(
+                    f"*(Fixing issues for Story: {item.title} — {item.story_id})*"
+                )
+                requirements_text = "\n".join(fix_context_lines)
 
         _pg_session = f"pg-story-{story_id}-iter{story_iter}-{_uuid.uuid4().hex[:8]}"
         _pg_cfg = getattr(self.config, 'prompt_generator', None)

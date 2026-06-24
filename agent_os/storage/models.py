@@ -106,5 +106,12 @@ class StoryQueueItem(BaseModel):
     story_iteration: int = 0               # iterations done for this story
     depends_on: list[str] = Field(default_factory=list)  # list of story_ids
     dependency_reason: str = ""            # LLM-provided explanation
+    # ── Parent hierarchy context (GitHub Review mode only) ─────────────────────
+    # Populated during step_analyse_dependencies from the requirements tree.
+    # Empty strings when requirements have no Epic/Feature structure (flat list).
+    epic_id: str = ""
+    epic_title: str = ""
+    feature_id: str = ""
+    feature_title: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: datetime | None = None

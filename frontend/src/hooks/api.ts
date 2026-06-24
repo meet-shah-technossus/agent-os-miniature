@@ -37,6 +37,11 @@ export interface StoryQueueItem {
   story_iteration: number;
   depends_on: string[];
   dependency_reason: string;
+  // Parent hierarchy context (GitHub Review mode — empty strings for flat requirements)
+  epic_id: string;
+  epic_title: string;
+  feature_id: string;
+  feature_title: string;
   created_at: string;
   completed_at: string | null;
 }
@@ -47,6 +52,37 @@ export interface StoryQueueResponse {
   stories_completed: number;
   stories_total: number;
   stories: StoryQueueItem[];
+}
+
+// ── Hierarchy-grouped types (GitHub Review mode — /story-queue/hierarchy) ─────
+
+export interface HierarchyFeature {
+  feature_id: string;
+  feature_title: string;
+  stories: StoryQueueItem[];
+}
+
+export interface HierarchyEpic {
+  epic_id: string;
+  epic_title: string;
+  /** Features nested under this epic (Scenario A) */
+  features: HierarchyFeature[];
+  /** Stories directly under the epic with no Feature (rare edge case) */
+  stories: StoryQueueItem[];
+}
+
+/** Response shape for GET /orchestrator/story-queue/hierarchy */
+export interface StoryQueueHierarchyResponse {
+  mode: string;
+  current_story_id: string | null;
+  stories_completed: number;
+  stories_total: number;
+  /** Scenario A — full Epic → Feature → Story tree */
+  epics: HierarchyEpic[];
+  /** Scenario B — features without an Epic */
+  ungrouped_features: HierarchyFeature[];
+  /** Scenario C — flat stories with no Epic or Feature */
+  flat_stories: StoryQueueItem[];
 }
 
 export interface RequirementsUploadResponse {
@@ -283,6 +319,9 @@ export const api = {
 
   getStoryQueue: () =>
     fetchJson<StoryQueueResponse>('/orchestrator/story-queue'),
+
+  getStoryQueueHierarchy: () =>
+    fetchJson<StoryQueueHierarchyResponse>('/orchestrator/story-queue/hierarchy'),
 
   getStoryQueueItem: (story_id: string) =>
     fetchJson<StoryQueueItem>(`/orchestrator/story-queue/${encodeURIComponent(story_id)}`),

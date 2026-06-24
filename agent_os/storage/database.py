@@ -93,6 +93,10 @@ CREATE TABLE IF NOT EXISTS story_queue (
     story_iteration INTEGER DEFAULT 0,
     depends_on TEXT DEFAULT '[]',
     dependency_reason TEXT DEFAULT '',
+    epic_id TEXT DEFAULT '',
+    epic_title TEXT DEFAULT '',
+    feature_id TEXT DEFAULT '',
+    feature_title TEXT DEFAULT '',
     created_at TEXT NOT NULL,
     completed_at TEXT
 );
@@ -181,6 +185,11 @@ class Database:
             self._migrate_add_column("iterations", "cli_tool_used", "TEXT DEFAULT ''")
             self._migrate_add_column("iterations", "ci_result", "TEXT DEFAULT ''")
             self._migrate_add_column("iterations", "ci_output", "TEXT DEFAULT ''")
+            # story_queue hierarchy columns (added for GHR parent-context propagation)
+            self._migrate_add_column("story_queue", "epic_id",       "TEXT DEFAULT ''")
+            self._migrate_add_column("story_queue", "epic_title",    "TEXT DEFAULT ''")
+            self._migrate_add_column("story_queue", "feature_id",    "TEXT DEFAULT ''")
+            self._migrate_add_column("story_queue", "feature_title", "TEXT DEFAULT ''")
             self.conn.execute(
                 """INSERT OR IGNORE INTO pipeline_state (id, current_iteration,
                    pipeline_status, last_checkpoint, metadata) VALUES (1, 0, 'IDLE', ?, '{}')""",

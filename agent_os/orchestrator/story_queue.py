@@ -41,6 +41,10 @@ def _build_analysis_prompt(stories: list[dict[str, Any]]) -> str:
     lines = []
     for s in stories:
         lines.append(f"story_id: {s['story_id']}")
+        if s.get("epic_title"):
+            lines.append(f"  epic: {s['epic_title']}")
+        if s.get("feature_title"):
+            lines.append(f"  feature: {s['feature_title']}")
         lines.append(f"  title: {s['title']}")
         if s.get("description"):
             lines.append(f"  description: {s['description'][:300]}")
@@ -249,8 +253,9 @@ class StoryQueueManager:
                 INSERT INTO story_queue
                     (story_id, title, description, acceptance_criteria,
                      position, status, branch_name, pr_number, pr_url,
-                     story_iteration, depends_on, dependency_reason, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     story_iteration, depends_on, dependency_reason,
+                     epic_id, epic_title, feature_id, feature_title, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     story["story_id"],
@@ -265,6 +270,10 @@ class StoryQueueManager:
                     0,         # story_iteration
                     json.dumps(story.get("depends_on", [])),
                     story.get("dependency_reason", ""),
+                    story.get("epic_id", ""),
+                    story.get("epic_title", ""),
+                    story.get("feature_id", ""),
+                    story.get("feature_title", ""),
                     now,
                 ),
             )
@@ -277,6 +286,10 @@ class StoryQueueManager:
                     position=pos,
                     depends_on=story.get("depends_on", []),
                     dependency_reason=story.get("dependency_reason", ""),
+                    epic_id=story.get("epic_id", ""),
+                    epic_title=story.get("epic_title", ""),
+                    feature_id=story.get("feature_id", ""),
+                    feature_title=story.get("feature_title", ""),
                     created_at=datetime.now(timezone.utc),
                 )
             )
@@ -442,6 +455,10 @@ class StoryQueueManager:
             story_iteration=row["story_iteration"] or 0,
             depends_on=json.loads(row["depends_on"] or "[]"),
             dependency_reason=row["dependency_reason"] or "",
+            epic_id=row["epic_id"] if "epic_id" in row.keys() else "",
+            epic_title=row["epic_title"] if "epic_title" in row.keys() else "",
+            feature_id=row["feature_id"] if "feature_id" in row.keys() else "",
+            feature_title=row["feature_title"] if "feature_title" in row.keys() else "",
             created_at=datetime.fromisoformat(row["created_at"]),
             completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
         )
